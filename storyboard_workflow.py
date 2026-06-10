@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
 import discord
 
 _HERE = Path(__file__).parent.parent.resolve()
@@ -44,37 +43,6 @@ def load_script(script_id: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Script not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-async def _send_with_retry(channel, *args, attempts: int = 3, **kwargs):
-    """Send a Discord message with retry on transient network errors.
-
-    Discord uploads over flaky Windows network can throw aiohttp ClientOSError
-    (WinError 64 "network name no longer available") or discord.HTTPException.
-    These are usually transient — one shot upload failure shouldn't kill the
-    whole storyboard pipeline. Retry with backoff; on final failure, swallow
-    so the loop continues.
-    """
-    last_err = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return await channel.send(*args, **kwargs)
-        except (
-            aiohttp.ClientOSError,
-            aiohttp.ServerDisconnectedError,
-            aiohttp.ClientConnectionError,
-            ConnectionResetError,
-            discord.HTTPException,
-        ) as e:
-            last_err = e
-            log.warning(
-                f"channel.send attempt {attempt}/{attempts} failed: "
-                f"{type(e).__name__}: {e}"
-            )
-            if attempt < attempts:
-                await asyncio.sleep(2 * attempt)  # 2s, 4s
-    log.error(f"channel.send giving up after {attempts} attempts: {last_err}")
-    return None
 
 
 async def _free_vram_async():
@@ -133,19 +101,11 @@ async def generate_and_post_storyboard(
         label="Rendering frames",
         emoji="🎨",
     )
-    progress_state = {"last_update": 0.0, "last_current": 0}
+    progress_state = {"last_update": 0.0}
 
     def progress(text: str, current: int, total: int):
         """Runs in generator worker thread. Schedule Discord update on bot loop."""
         now = datetime.now(timezone.utc).timestamp()
-        # Detect step transition for rolling ETA samples
-        if current > progress_state["last_current"]:
-            # A frame just finished — feed duration into rolling window
-            if progress_state["last_current"] == 0:
-                tracker.mark_step_start()
-            tracker.mark_step_done()
-            tracker.mark_step_start()  # prime next step
-            progress_state["last_current"] = current
         if now - progress_state["last_update"] < 2.0 and current < total:
             return
         progress_state["last_update"] = now
@@ -186,19 +146,13 @@ async def generate_and_post_storyboard(
         await _free_vram_async()
         return None
 
-    _sb_secs = _t.time() - _job_start
-    _sb_m, _sb_s = divmod(int(round(_sb_secs)), 60)
-    _sb_dur = f"{_sb_m}m {_sb_s}s" if _sb_m else f"{_sb_s}s"
     await status_msg.edit(
-        content=f"✅ Storyboard generated for **{title}** (`{script_id}`) "
-                f"· ⏱ {_sb_dur}.\n"
+        content=f"✅ Storyboard generated for **{title}** (`{script_id}`).\n"
                 f"Posting frames below..."
     )
 
     await channel.send(f"━━━━━━━━━━━━━━━━━━━━━\n**📖 {title} — Storyboard**")
 
-    from modules.embed_styles import themed_embed
-    from modules.approval_buttons import ShotControlView
     for frame in result.frames:
         shot = next(
             (s for s in script["shots"] if s.get("shot_number") == frame.shot_number),
@@ -207,7 +161,7 @@ async def generate_and_post_storyboard(
         narration = shot.get("narration", "")
         abs_path = PROJECT_ROOT / frame.image_path
         if not abs_path.exists():
-            await _send_with_retry(channel, f"⚠️ Missing file: `{frame.image_path}`")
+            await channel.send(f"⚠️ Missing file: `{frame.image_path}`")
             continue
 
         # Truncate prompt for embed (Discord field max 1024 chars)
@@ -215,88 +169,23 @@ async def generate_and_post_storyboard(
         if len(prompt_text) >= 1000:
             prompt_text += "..."
 
+        from modules.embed_styles import themed_embed
+        from modules.approval_buttons import ShotControlView
         embed = themed_embed("shot", f"Shot {frame.shot_number}", f"🎙️ *{narration}*")
         if prompt_text:
             embed.add_field(name="🎨 Image Prompt", value=f"```{prompt_text}```", inline=False)
         embed.set_footer(text=f"seed={frame.seed} · {frame.backend_id}")
+        discord_file = discord.File(str(abs_path), filename=f"shot{frame.shot_number}.png")
         embed.set_image(url=f"attachment://shot{frame.shot_number}.png")
         shot_view = ShotControlView(
             script_id=script_id,
             shot_number=frame.shot_number,
             owner_id=owner_id,
         )
-        # Fresh discord.File per retry — file handle is consumed on each send attempt
-        async def _post_frame():
-            df = discord.File(str(abs_path), filename=f"shot{frame.shot_number}.png")
-            return await channel.send(embed=embed, file=df, view=shot_view)
-
-        sent = None
-        last_err = None
-        for attempt in range(1, 4):
-            try:
-                sent = await _post_frame()
-                break
-            except (
-                aiohttp.ClientOSError,
-                aiohttp.ServerDisconnectedError,
-                aiohttp.ClientConnectionError,
-                ConnectionResetError,
-                discord.HTTPException,
-            ) as e:
-                last_err = e
-                log.warning(
-                    f"Frame post shot {frame.shot_number} attempt {attempt}/3 failed: "
-                    f"{type(e).__name__}: {e}"
-                )
-                if attempt < 3:
-                    await asyncio.sleep(2 * attempt)
-        if sent is None:
-            log.error(
-                f"Could not post shot {frame.shot_number} after 3 attempts: {last_err}"
-            )
-            await _send_with_retry(
-                channel,
-                f"⚠️ Shot {frame.shot_number} image saved at `{frame.image_path}` "
-                f"but Discord upload failed: `{type(last_err).__name__}`."
-            )
+        await channel.send(embed=embed, file=discord_file, view=shot_view)
 
     await _free_vram_async()
-
-    # Contact-sheet — one composite PNG with every shot, posted above approval
-    try:
-        from modules import contact_sheet as cs
-        frame_paths: list[Path] = []
-        labels: list[str] = []
-        for f in result.frames:
-            ip = PROJECT_ROOT / f.image_path
-            if ip.exists():
-                frame_paths.append(ip)
-                beat = (getattr(f, "beat", "") or "").strip()
-                labels.append(f"Shot {f.shot_number}" + (f" · {beat}" if beat else ""))
-        if frame_paths:
-            sheet_path = STORYBOARDS_DIR / script_id / "_contact_sheet.png"
-            await asyncio.to_thread(
-                cs.build_contact_sheet,
-                frame_paths, sheet_path, shot_labels=labels,
-            )
-            size_mb = sheet_path.stat().st_size / (1024 * 1024)
-            if size_mb <= 9:
-                try:
-                    await channel.send(
-                        content=f"🖼️ **Storyboard contact sheet** — {len(frame_paths)} shots at a glance:",
-                        file=discord.File(str(sheet_path), filename=sheet_path.name),
-                    )
-                except discord.HTTPException as e:
-                    await channel.send(
-                        f"⚠️ Contact sheet upload failed (`{e}`). Saved at:\n`{sheet_path}`"
-                    )
-            else:
-                await channel.send(
-                    f"🖼️ Contact sheet too large for Discord ({size_mb:.1f} MB). "
-                    f"Saved at:\n`{sheet_path}`"
-                )
-    except Exception as e:
-        log.warning(f"Contact sheet build failed (non-fatal): {e}")
+    # ── End QA + Continuity pass ──
 
     from modules import approval_buttons
     view = approval_buttons.StoryboardApprovalView(script_id=script_id, owner_id=owner_id)

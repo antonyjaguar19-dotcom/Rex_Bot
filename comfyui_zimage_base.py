@@ -59,7 +59,6 @@ class Backend(ImageBackend):
                 f"Export it from ComfyUI GUI (Menu → Save (API Format))."
             )
         self._workflow_template = json.loads(WORKFLOW_PATH.read_text(encoding="utf-8"))
-        self._last_seed: int = -1  # exposed for manifest after generate()
         log.info(f"Z-Image adapter initialized. Workflow loaded from {WORKFLOW_PATH.name}")
 
     # --------------------------------------------------------------
@@ -93,27 +92,20 @@ class Backend(ImageBackend):
         aspect_ratio: str = "16:9",
         output_filename: Optional[str] = None,
         seed: Optional[int] = None,
-        cfg_override: Optional[float] = None,
     ) -> Path:
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
-        self._last_seed = int(seed)
 
         # Apply runtime overrides — user settings beat model defaults
         aspect_ratio = rs.get_resolution_override() or aspect_ratio
         width, height = model_registry.get_resolution(aspect_ratio)
         # Per-generation steps / cfg overrides
         effective_steps = rs.get_steps_override() if rs.get_steps_override() is not None else self.steps
-        if cfg_override is not None:
-            effective_cfg = float(cfg_override)
-        elif rs.get_cfg_override() is not None:
-            effective_cfg = rs.get_cfg_override()
-        else:
-            effective_cfg = self.cfg
+        effective_cfg = rs.get_cfg_override() if rs.get_cfg_override() is not None else self.cfg
         formatted_prompt = self.format_prompt_for_backend(prompt)
         negative = negative_prompt or DEFAULT_NEGATIVE
 
-        log.info(f"Generating image — seed={seed}, {width}x{height}, cfg={effective_cfg}, prompt='{prompt[:80]}...'")
+        log.info(f"Generating image — seed={seed}, {width}x{height}, prompt='{prompt[:80]}...'")
 
         workflow = self._build_workflow(
             prompt=formatted_prompt,
@@ -237,18 +229,8 @@ class Backend(ImageBackend):
 
         log.debug(f"Workflow injection complete: prompt={positive_set}, neg={negative_set}, "
                   f"dims={dims_set}, sampler={sampler_set}")
-        # FAIL FAST: production must never render with stale prompt or wrong dims.
-        missing = []
         if not positive_set:
-            missing.append("positive_prompt")
-        if not dims_set:
-            missing.append("dimensions")
-        if missing:
-            raise RuntimeError(
-                f"Z-Image workflow injection failed for: {missing}. "
-                f"Workflow file ({WORKFLOW_PATH.name}) likely changed shape. "
-                f"Re-export from ComfyUI GUI (Save (API Format)) and verify node titles."
-            )
+            log.warning("Positive prompt was not injected — check workflow structure.")
         return wf
 
     def _submit_prompt(self, workflow: dict, client_id: str) -> str:

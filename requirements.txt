@@ -1,44 +1,61 @@
-﻿aiohappyeyeballs==2.6.1
-aiohttp==3.13.5
-aiosignal==1.4.0
-annotated-doc==0.0.4
-annotated-types==0.7.0
-anyio==4.13.0
-APScheduler==3.11.2
-attrs==26.1.0
-certifi==2026.2.25
-charset-normalizer==3.4.7
-click==8.3.2
-colorama==0.4.6
-discord.py==2.7.1
-filelock==3.28.0
-frozenlist==1.8.0
-fsspec==2026.3.0
-h11==0.16.0
-hf-xet==1.4.3
-httpcore==1.0.9
-httpx==0.28.1
-huggingface_hub==1.11.0
-idna==3.11
-markdown-it-py==4.0.0
-mdurl==0.1.2
-multidict==6.7.1
-ollama==0.6.1
-packaging==26.1
-propcache==0.4.1
-pydantic==2.13.2
-pydantic_core==2.46.2
-Pygments==2.20.0
-python-dotenv==1.2.2
-PyYAML==6.0.3
-requests==2.33.1
-rich==15.0.0
-shellingham==1.5.4
-tqdm==4.67.3
-typer==0.24.1
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2026.1
-tzlocal==5.3.1
-urllib3==2.6.3
-yarl==1.23.0
+# ============================================================
+#  Claw Bot Agent - Python dependencies
+# ============================================================
+#
+#  Install everything with:
+#      pip install -r requirements.txt
+#
+#  NOTE on what's NOT in this file:
+#  --------------------------------
+#  - ComfyUI itself: cloned separately into 01_Tools/ComfyUI
+#    (it has its own requirements; install via its own setup)
+#  - PyTorch + CUDA: install manually for your GPU first.
+#    For RTX 3070 + Windows + CUDA 12.1:
+#       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#  - Ollama: separate native install from ollama.com
+#
+#  Pinned versions tested as of Phase 4 + Session 1A.
+# ============================================================
+
+
+# --- Discord bot framework ---------------------------------
+discord.py==2.3.2          # Bot client, slash commands, reactions
+
+# --- HTTP client for ComfyUI API ---------------------------
+aiohttp==3.9.5             # Async HTTP for /prompt + /history polling
+requests==2.32.3           # Sync HTTP for simple status checks
+
+# --- Configuration & environment ---------------------------
+python-dotenv==1.0.1       # Loads .env file (Discord token, secrets)
+
+# --- Ollama client (local LLM) -----------------------------
+ollama==0.3.3              # Python wrapper around local Ollama server
+
+# --- Image handling (storyboards, thumbnails) --------------
+Pillow==10.4.0             # Open, resize, convert PNG/JPG outputs
+
+# --- Logging & file utilities ------------------------------
+loguru==0.7.2              # Cleaner logging than stdlib (writes to 06_Logs/)
+watchdog==4.0.1            # Watch ComfyUI output folder for new files
+
+# --- GPU monitoring (for health dashboard) -----------------
+nvidia-ml-py==12.555.43    # VRAM usage stats from RTX 3070
+
+# --- Async + scheduling ------------------------------------
+APScheduler==3.10.4        # Daily script generation triggers
+aiofiles==24.1.0           # Async file I/O for non-blocking saves
+
+# --- JSON schema validation (for models.json, styles.json) -
+jsonschema==4.23.0         # Validates config files on bot startup
+
+
+# ============================================================
+#  Coming for Phase 5 (video) - DO NOT install yet
+# ============================================================
+# moviepy            # Video assembly (Phase 6)
+# ffmpeg-python      # ffmpeg bindings (Phase 6)
+# google-api-python-client    # YouTube upload (Phase 6)
+# google-auth-oauthlib        # YouTube OAuth (Phase 6)
+
+gradio>=5.0
+nicegui>=3.0

@@ -21,6 +21,7 @@ if str(_HERE) not in sys.path:
 
 from modules import model_registry
 from modules import gpu_utils
+from modules import generation_meta as gm
 
 log = logging.getLogger("claw_bot.health_monitor")
 
@@ -94,6 +95,12 @@ def build_status_embed(bot_version: str, bot_start_time: datetime,
             f"🎨 **Image:** `{img_cfg['_id']}`",
             f"🧠 **LLM:** `{llm_cfg.get('_id', 'unknown')}`",
         ]
+        try:
+            vid_cfg = model_registry.get_active("video_backend")
+            if vid_cfg:
+                backend_lines.append(f"🎥 **Video:** `{vid_cfg['_id']}`")
+        except Exception:
+            pass
         embed.add_field(name="Active Models", value="\n".join(backend_lines), inline=True)
     except Exception as e:
         embed.add_field(name="Active Models", value=f"error: {e}", inline=True)
@@ -112,8 +119,59 @@ def build_status_embed(bot_version: str, bot_start_time: datetime,
     stats_lines = [
         f"📝 Scripts: `{stats.get('generated', 0)}` gen · `{stats.get('approved', 0)}` ok · `{stats.get('rejected', 0)}` ❌",
         f"🎬 Storyboards: `{stats.get('storyboards_generated', 0)}` gen · `{stats.get('storyboards_approved', 0)}` ok · `{stats.get('storyboards_rejected', 0)}` ❌",
+        f"🎥 Videos: `{stats.get('videos_generated', 0)}` gen · `{stats.get('videos_approved', 0)}` ok · `{stats.get('videos_rejected', 0)}` ❌",
     ]
     embed.add_field(name="Session Stats", value="\n".join(stats_lines), inline=False)
+
+    # Recent generations (newest first, max 5 to keep embed compact)
+    recent = gm.get_recent(5)
+    if recent:
+        kind_emoji = {"script": "📝", "storyboard": "🎬", "video": "🎥"}
+        lines = []
+        for r in recent:
+            emoji = kind_emoji.get(r.get("kind"), "•")
+            sid = r.get("script_id", "?")[:8]
+            dur = r.get("duration_sec", 0)
+            ok = "✅" if r.get("success") else "❌"
+            settings = r.get("settings", {})
+            # Compact settings string — pick the most relevant per kind
+            kind = r.get("kind")
+            if kind == "video":
+                tag = settings.get("backend_id", "?")
+                extras = []
+                if settings.get("seed") is not None:
+                    extras.append(f"seed={settings['seed']}")
+                if settings.get("frames"):
+                    extras.append(f"{settings['frames']}f")
+                if settings.get("size_mb"):
+                    extras.append(f"{settings['size_mb']:.1f}MB")
+                detail = f"`{tag}` " + " ".join(extras)
+            elif kind == "storyboard":
+                tag = settings.get("backend_id", "?")
+                extras = []
+                if settings.get("frames_count"):
+                    extras.append(f"{settings['frames_count']} frames")
+                if settings.get("style"):
+                    extras.append(settings["style"])
+                if settings.get("aspect_ratio"):
+                    extras.append(settings["aspect_ratio"])
+                detail = f"`{tag}` " + " ".join(extras)
+            elif kind == "script":
+                tag = settings.get("backend_id", "?")
+                extras = []
+                if settings.get("style"):
+                    extras.append(settings["style"])
+                if settings.get("culture"):
+                    extras.append(settings["culture"])
+                if settings.get("shots"):
+                    extras.append(f"{settings['shots']} shots")
+                detail = f"`{tag}` " + " ".join(extras)
+            else:
+                detail = ""
+            vram = r.get("vram_peak_mb", 0)
+            vram_str = f" · 💾{vram//1024}GB" if vram else ""
+            lines.append(f"{emoji} {ok} `{sid}` · {dur}s{vram_str} · {detail}")
+        embed.add_field(name="Recent Generations", value="\n".join(lines), inline=False)
 
     embed.set_footer(text="Dashboard auto-refreshes every 30s")
     return embed
@@ -160,3 +218,36 @@ class StatusDashboard:
     async def stop(self):
         if self._task:
             self._task.cancel()
+
+    async def force_refresh(self):
+        """Refresh the dashboard immediately (called when a job finishes)."""
+        if self.message is None:
+            return
+        try:
+            embed = build_status_embed(
+                self.bot_version, self.start_time,
+                check_comfyui(), check_ollama(),
+                self.stats_getter(),
+            )
+            await self.message.edit(embed=embed)
+        except Exception as e:
+            log.warning(f"Force refresh failed: {e}")
+
+
+# Global singleton — set by claw_bot.py on startup; consumed by workflows.
+_INSTANCE: Optional["StatusDashboard"] = None
+
+
+def set_instance(dashboard: "StatusDashboard"):
+    global _INSTANCE
+    _INSTANCE = dashboard
+
+
+def get_instance() -> Optional["StatusDashboard"]:
+    return _INSTANCE
+
+
+async def trigger_refresh():
+    """Helper for workflow modules to call after logging a generation."""
+    if _INSTANCE is not None:
+        await _INSTANCE.force_refresh()

@@ -33,7 +33,6 @@ from modules import safety_filter as sf
 from modules import runtime_settings as rs
 from modules import generation_meta as gm
 from modules import feedback_thinker as ft
-from modules import story_writer as sw
 
 log = logging.getLogger("claw_bot.script_generator")
 
@@ -257,62 +256,6 @@ def _call_llm(prompt: str, system_prompt: str) -> str:
     r.raise_for_status()
     data = r.json()
     return data.get("response", "").strip()
-
-
-def rewrite_narration(current: str, instruction: str = "", *,
-                      shot: dict | None = None,
-                      title: str = "", moral: str = "") -> str:
-    """AI-rewrite ONE shot's voiceover narration line.
-
-    `instruction` is optional guidance ("make it funnier", "shorter"). When
-    empty, it rephrases freshly while keeping meaning + length. Returns a single
-    clean line (falls back to `current` on failure). Used by both the dashboard
-    and the Discord rewrite command.
-    """
-    shot = shot or {}
-    beat = (shot.get("beat") or "").strip()
-    visual = (shot.get("visual_description")
-              or shot.get("action")
-              or shot.get("description") or "").strip()
-    system_prompt = (
-        "You rewrite ONE line of voiceover narration for a 30-second animated "
-        "kids' story. Output ONLY the rewritten narration line — no quotes, no "
-        "labels, no commentary, no options. Keep it one or two short sentences "
-        "(about 8-22 words), warm, simple, child-friendly, present tense, third "
-        "person. Do NOT write character dialogue or speech tags."
-    )
-    parts = []
-    if title:
-        parts.append(f"Story title: {title}")
-    if moral:
-        parts.append(f"Moral: {moral}")
-    if beat:
-        parts.append(f"Story beat: {beat}")
-    if visual:
-        parts.append(f"What is on screen: {visual}")
-    if current:
-        parts.append(f"Current narration: {current}")
-    parts.append(
-        f"Rewrite instruction: {instruction}" if instruction.strip()
-        else "Rewrite instruction: rephrase it freshly, keep the same meaning "
-             "and roughly the same length."
-    )
-    user_prompt = "\n".join(parts) + "\n\nRewritten narration line:"
-    try:
-        out = _call_llm(user_prompt, system_prompt)
-    except Exception as e:
-        log.warning(f"rewrite_narration LLM call failed: {e}")
-        return current
-    if not out:
-        return current
-    # Model may add a stray label/extra lines — take first non-empty line, strip quotes.
-    line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
-    line = line.strip().strip('"').strip("'").strip()
-    # Drop a leading "Narration:" style label if the model added one.
-    for lbl in ("Rewritten narration line:", "Narration:", "Rewritten:"):
-        if line.lower().startswith(lbl.lower()):
-            line = line[len(lbl):].strip().strip('"').strip("'").strip()
-    return line or current
 
 
 # ==============================================================================
@@ -554,183 +497,44 @@ def _expand_script_to_buffer(script: dict) -> dict:
 
 
 # ==============================================================================
-# STAGE-2 STRUCTURER — turns stage-1 prose into the production JSON schema
-# ==============================================================================
-
-def _build_structurer_system_prompt(shot_min: int = 5, shot_max: int = 9) -> str:
-    """Narrow, schema-only system prompt.
-
-    Stage 1 (story_writer) already wrote the story in a natural voice. This
-    stage's ONLY job is to split that prose into shots and emit valid JSON.
-    No story rewriting. No tone changes. No banned-word policing. Narration
-    in the JSON must be drawn from the prose verbatim (or near-verbatim — only
-    splits and very light edits allowed).
-    """
-    available_styles = get_available_style_ids()
-    styles_data = _load_styles().get("available", {})
-    style_guide_lines = []
-    for sid, info in styles_data.items():
-        style_guide_lines.append(
-            f'  - "{sid}": {info.get("description", "")}'
-        )
-    style_guide = "\n".join(style_guide_lines)
-
-    return f"""You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with {{ end with }}.
-
-You are a story structurer. The story has already been WRITTEN by another author. Your only job is to break it into shots and emit the JSON schema below. You DO NOT rewrite the story. You DO NOT change the tone, vocabulary, or pacing.
-
-# RULES
-
-1. **Narration field = author's prose, split into shots.** Take the prose given to you, split it at natural sentence boundaries into {shot_min}-{shot_max} shots, and put each piece into the `narration` field of one shot. You may make tiny grammar fixes if a split leaves a half-sentence, but DO NOT rewrite the author's words. Keep the author's voice.
-
-2. **Each shot's narration: roughly 8-15 words**, depending on where natural breaks fall. Don't pad. Don't trim hard. Follow the prose.
-
-3. **Pick a beat for each shot** from this fixed list:
-   `atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence`
-   First shot is often `atmosphere` (no character, sets scene) or `hook` (introduces character). Middle shots are `spark`/`struggle`/`observation`/`reaction`. Near the end, `choice` then `consequence`.
-
-4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only — species, age, color, clothing, defining feature; NO poses, NO emotions, NO setting). Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature`.
-
-5. **If the prose only hints at a character's look ("a small girl", "a brown dog"), invent simple visual details that fit the story tone.** Pick concrete colors. Keep it kid-friendly. Be consistent across shots.
-
-6. **Setting field**: one short sentence describing where the story takes place.
-
-7. **Pick a music_mood** from: `cheerful | calm | adventurous | tender | magical | energetic` — match the emotional core of the story.
-
-8. **Style field**: pick from `{', '.join(available_styles)}` — match the story's feel. Style guide:
-{style_guide}
-
-9. **Culture field**: pick from `indian | western | japanese | mixed | animal-kingdom | fantasy` — infer from prose, default `mixed`.
-
-10. **Frame and motion prompts**: write SHORT placeholders only (~20-40 words each). A downstream module (shot_tailor) rewrites them beat-by-beat with rendering rules — don't waste effort here. Just describe: subject + brief pose + camera framing for first_frame_prompt; small change for last_frame_prompt; gentle motion for motion_prompt.
-
-11. **Moral**: one-sentence summary of the lesson for the parent (NOT spoken in the story).
-
-12. **JSON only. Every field comma-terminated except last. Test it would parse.**
-
-# OUTPUT FORMAT
-
-{{
-  "title": "<from the author>",
-  "theme": "<original theme>",
-  "culture": "indian | western | japanese | mixed | animal-kingdom | fantasy",
-  "style": "{' | '.join(available_styles)}",
-  "duration_seconds": 30,
-  "characters": [
-    {{
-      "name": "...",
-      "type": "human | animal | creature",
-      "appearance": "<visual traits sentence>",
-      "locked_visual_token": "<tight 15-30 word phrase>"
-    }}
-  ],
-  "setting": "<one sentence>",
-  "shots": [
-    {{
-      "shot_number": 1,
-      "beat": "atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence",
-      "narration": "<8-15 words taken from the author's prose>",
-      "visual_description": "<one short sentence>",
-      "first_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
-      "last_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
-      "motion_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>"
-    }}
-  ],
-  "moral": "<one sentence summary for parents>",
-  "music_mood": "cheerful | calm | adventurous | tender | magical | energetic"
-}}
-
-Output ONLY the JSON. Start with {{ end with }}. Nothing else."""
-
-
-def _structure_story(
-    title: str,
-    prose: str,
-    theme: str,
-    style_override: Optional[str] = None,
-    culture_override: Optional[str] = None,
-    shot_min: int = 5,
-    shot_max: int = 9,
-) -> dict:
-    """
-    Stage 2: feed the stage-1 prose to Qwen and ask it to emit the schema
-    JSON. Calls _call_llm but with the structurer system prompt.
-
-    shot_min/shot_max control how many shots the prose is split into. Defaults
-    5-9; revisions that ask for "more shots" raise these so the structurer
-    actually adds beats instead of clamping back to the original count.
-    """
-    system_prompt = _build_structurer_system_prompt(shot_min, shot_max)
-    user_prompt = (
-        f"Original theme: {theme}\n\n"
-        f"STORY TO STRUCTURE (author's prose — split this into shots; do NOT rewrite the words):\n\n"
-        f"TITLE: {title}\n\n"
-        f"{prose}\n\n"
-        f"Now output the JSON. Use the title above. Use the prose above for the narration field "
-        f"of each shot — split at natural sentence boundaries, do not paraphrase."
-    )
-    if style_override:
-        user_prompt += f"\n\nUse style: {style_override}"
-    if culture_override:
-        user_prompt += f"\n\nUse culture: {culture_override}"
-
-    raw = _call_llm(user_prompt, system_prompt)
-    script = _extract_json(raw)
-    script = _validate_and_default(script)
-    # Force the author's title in case the structurer paraphrased it
-    if title:
-        script["title"] = title
-    return script
-
-
-# ==============================================================================
-# PUBLIC API — 2-stage flow
+# PUBLIC API
 # ==============================================================================
 
 def generate_script(theme: str, style_override: Optional[str] = None,
                     culture_override: Optional[str] = None) -> dict:
     """
-    Generate a new script via 2-stage flow:
-      Stage 1 (story_writer)  → organic prose, chat-style prompt, high temp
-      Stage 2 (_structure_story) → JSON schema extraction, low temp
-    The narration in each shot comes from the stage-1 prose, preserving voice.
+    Generate a new script. Returns a dict with the parsed JSON + metadata.
+
+    Args:
+        theme: the creative prompt/theme for the story
+        style_override: if given, forces a specific style (else LLM picks)
+        culture_override: if given, forces a culture (else LLM picks)
     """
+    # (Note: input theme safety is enforced post-generation via script-level check below)
     _job_start = _t.time()
 
     # Apply persistent user override if caller didn't specify one
     effective_style = style_override or rs.get_style_override()
 
+    system_prompt = _build_system_prompt()
+    user_prompt = f"Theme: {theme}\n\nWrite the story this theme deserves. Choose shot count based on what the story needs — short and punchy, or longer if the story has more emotional weight. Do NOT pad."
+
     # Detect explicit shot-count request in theme (e.g. "in 5 shots")
     shot_match = re.search(r"in (\d+)\s*shots?", theme, re.IGNORECASE)
+    if shot_match:
+        user_prompt += f"\n\nThe user explicitly requested {shot_match.group(1)} shots — match that exactly."
 
-    # === STAGE 1: write the story as prose ===
-    log.info(f"Generating script for theme: '{theme[:80]}'")
-    story = sw.write_story(
-        theme=theme,
-        style_hint=effective_style,
-        culture_hint=culture_override,
-    )
-    log.info(
-        f"Stage 1 prose: '{story['title']}' ({story['word_count']} words, "
-        f"{story['duration_sec']}s)"
-    )
+    if effective_style:
+        user_prompt += f"\n\nYou MUST use style: {effective_style}"
+    if culture_override:
+        user_prompt += f"\n\nYou MUST use culture: {culture_override}"
 
-    # === STAGE 2: structure prose into JSON schema ===
-    log.info("Stage 2: structuring prose into JSON schema...")
-    script = _structure_story(
-        title=story["title"],
-        prose=story["prose"],
-        theme=theme,
-        style_override=effective_style,
-        culture_override=culture_override,
-    )
+    raw = _call_llm(user_prompt, system_prompt)
+    script = _extract_json(raw)
+    script = _validate_and_default(script)
 
-    # Stash the original prose for later inspection / revisions
-    script["_stage1_prose"] = story["prose"]
-    script["_stage1_word_count"] = story["word_count"]
-
-    # Ensure the story is long enough to fill the ~30s buffer.
-    # Honor explicit shot-count request — skip expansion if user pinned count.
+    # Ensure the story is long enough to fill the ~30s buffer (TTS-first sync).
+    # Honor an explicit shot-count request — don't expand if user pinned the count.
     if not shot_match:
         script = _expand_script_to_buffer(script)
         script = _validate_and_default(script)
@@ -789,142 +593,42 @@ def generate_script(theme: str, style_override: Optional[str] = None,
     return script
 
 
-# Words the LLM should add per NEW shot when expanding (≈ one narration line).
-_WORDS_PER_NEW_SHOT = 12
-
-_EXPAND_KEYWORDS = (
-    "more shot", "add shot", "extra shot", "another shot", "more scene",
-    "add scene", "more detail", "detailed", "longer", "expand", "elaborate",
-    "flesh out", "more depth", "drag out", "slow it down", "slower pace",
-    "break it up", "more beats", "add more", "make it bigger", "richer",
-)
-_SHRINK_KEYWORDS = (
-    "fewer shot", "less shot", "shorter", "trim", "condense", "tighten",
-    "cut it down", "too long", "remove a shot", "fewer scene",
-)
-
-
-def _resolve_revision_scale(feedback: str, cur_words: int, cur_shots: int):
-    """Translate vague length feedback into concrete stage targets.
-
-    Returns (length_instruction, shot_min, shot_max). Empty length_instruction
-    + default 5-9 range when the feedback isn't about size (so normal surgical
-    edits behave exactly as before).
-    """
-    fb = feedback.lower()
-
-    # Explicit count wins: "add 3 shots", "make it 10 shots", "in 8 shots".
-    target_shots = None
-    m = re.search(r"(?:make it|in|to|now)\s+(\d{1,2})\s*shots?", fb)
-    if m:
-        target_shots = int(m.group(1))
-    else:
-        m = re.search(r"add\s+(\d{1,2})\s*(?:more\s+)?shots?", fb)
-        if m:
-            target_shots = cur_shots + int(m.group(1))
-
-    wants_expand = target_shots is not None or any(k in fb for k in _EXPAND_KEYWORDS)
-    wants_shrink = target_shots is None and any(k in fb for k in _SHRINK_KEYWORDS)
-
-    if not wants_expand and not wants_shrink:
-        return "", 5, 9  # not a size change — leave defaults
-
-    if wants_shrink:
-        target_shots = max(3, cur_shots - 2)
-        new_words = max(MIN_NARRATION_WORDS, target_shots * _WORDS_PER_NEW_SHOT)
-        instruction = (
-            f"Make the story SHORTER and tighter — aim for about {new_words} words "
-            f"total (the system's 70-85 word note still roughly applies). Cut the "
-            f"weakest beats, keep the arc."
-        )
-        shot_min = max(3, target_shots - 1)
-        shot_max = target_shots + 1
-        return instruction, shot_min, shot_max
-
-    # Expand path. No explicit number → grow by ~3 shots.
-    if target_shots is None:
-        target_shots = cur_shots + 3
-    target_shots = max(cur_shots + 1, min(target_shots, 18))  # always more, cap 18
-
-    new_words = max(target_shots * _WORDS_PER_NEW_SHOT, cur_words + 30)
-    new_words = min(new_words, 260)  # sanity ceiling
-    instruction = (
-        f"IMPORTANT: ignore the 70-85 word length note in the system instructions "
-        f"for THIS revision. Make the story LONGER and more detailed — aim for about "
-        f"{new_words} words total so it can be split into roughly {target_shots} shots. "
-        f"Add new beats (atmosphere, reactions, small struggles) and enrich existing "
-        f"moments. Keep the same characters, arc, and moral."
-    )
-    shot_min = max(target_shots - 1, cur_shots + 1)
-    shot_max = target_shots + 2
-    return instruction, shot_min, shot_max
-
-
 def revise_script(original_script: dict, feedback: str) -> dict:
     """
-    Revise an existing script based on user feedback using the 2-stage flow:
-      Stage 1 (story_writer.revise_prose) → rewrites the prose with feedback
-      Stage 2 (_structure_story)          → re-structures into JSON schema
+    Revise an existing script based on user feedback.
+    Two-pass:
+      1. Thinker (Qwen 2.5 14B) interprets the feedback into an edit plan.
+      2. Script LLM rewrites the script guided by that plan.
+    Thinker is optional — if it fails, we fall back to a plain rewrite.
     """
-    log.info(f"Revising via 2-stage — feedback: '{feedback[:80]}'")
-
-    # --- Detect EXPAND intent up front -------------------------------------
-    # "add more shots / make it more detailed / longer" must actually grow the
-    # story. Without this, both stage prompts clamp back to ~70-85 words / 5-9
-    # shots and the feedback feels ignored.
-    cur_words = _count_narration_words(original_script)
-    cur_shots = len(original_script.get("shots", []))
-    length_instruction, shot_min, shot_max = _resolve_revision_scale(
-        feedback, cur_words, cur_shots
-    )
-    if length_instruction:
-        log.info(
-            f"Expand intent detected — target ~{shot_min}-{shot_max} shots "
-            f"(was {cur_shots}); growing narration from {cur_words} words."
-        )
-
-    # Best-effort thinker pass — still useful for surfacing extra hints to stage 1
+    log.info(f"Revising — running thinker pass on feedback: '{feedback[:80]}'")
     edit_plan = ft.think_about_feedback(original_script, feedback)
     plan_guidance = ft.plan_to_revision_prompt(edit_plan, feedback)
 
-    original_title = original_script.get("title", "Untitled Story")
-    theme = original_script.get("theme", "")
-    # Prefer the stashed stage-1 prose; fall back to concatenated narration
-    original_prose = (
-        original_script.get("_stage1_prose")
-        or " ".join(
-            (s.get("narration") or "").strip()
-            for s in original_script.get("shots", [])
-            if (s.get("narration") or "").strip()
-        ).strip()
+    system_prompt = _build_system_prompt()
+    user_prompt = (
+        f"Here is a previous version of the story JSON:\n\n"
+        f"```\n{json.dumps(original_script, indent=2, ensure_ascii=False)}\n```\n\n"
+        f"The user gave this feedback:\n\n"
+        f'"{feedback}"\n\n'
     )
-
-    feedback_for_stage1 = feedback
     if plan_guidance:
-        feedback_for_stage1 = f"{feedback}\n\nEditor notes:\n{plan_guidance}"
-
-    # === STAGE 1: revise the prose ===
-    revised_story = sw.revise_prose(
-        previous_prose=original_prose,
-        previous_title=original_title,
-        feedback=feedback_for_stage1,
-        theme=theme,
-        length_instruction=length_instruction,
+        user_prompt += (
+            f"A story editor has reviewed the feedback and produced this edit plan. "
+            f"Follow it carefully:\n\n{plan_guidance}\n\n"
+        )
+    user_prompt += (
+        f"Rewrite the story as new JSON, applying the user's feedback (and the edit plan above if present). "
+        f"Keep fields the feedback didn't mention. "
+        f"IMPORTANT: Preserve each character's locked_visual_token EXACTLY as written "
+        f"in the original — do not rephrase, expand, or shorten it, unless the user "
+        f"specifically asked you to change the character's appearance. "
+        f"Output ONLY the JSON."
     )
 
-    # === STAGE 2: structure revised prose ===
-    revised = _structure_story(
-        title=revised_story["title"] or original_title,
-        prose=revised_story["prose"] or original_prose,
-        theme=theme,
-        style_override=original_script.get("style"),
-        culture_override=original_script.get("culture"),
-        shot_min=shot_min,
-        shot_max=shot_max,
-    )
-    revised["theme"] = theme  # keep original theme through revisions
-    revised["_stage1_prose"] = revised_story["prose"]
-    revised["_stage1_word_count"] = revised_story["word_count"]
+    raw = _call_llm(user_prompt, system_prompt)
+    revised = _extract_json(raw)
+    revised = _validate_and_default(revised)
 
     # Safety net: if the LLM dropped or mangled any locked_visual_token,
     # restore it from the original. The lock only changes when the user
