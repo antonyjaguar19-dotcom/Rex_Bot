@@ -112,8 +112,8 @@ def load_stats() -> dict:
     if STATS_FILE.exists():
         try:
             data.update(json.loads(STATS_FILE.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"stats.json unreadable ({e}); counters reset to defaults")
     for k, v in DEFAULT_STATS.items():
         data.setdefault(k, v)
     return data
@@ -138,6 +138,23 @@ intents.reactions       = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 BOT_START_TIME = None
+
+# Optional command allowlist. Set CLAW_OWNER_IDS in secrets.env (comma-
+# separated Discord user ids) to lock every !command to those users —
+# useful the day someone else joins the server. Unset = open (solo default).
+_OWNER_IDS = {
+    int(x) for x in (os.getenv("CLAW_OWNER_IDS") or "").replace(";", ",").split(",")
+    if x.strip().isdigit()
+}
+
+
+@bot.check
+async def _owner_gate(ctx):
+    if not _OWNER_IDS or ctx.author.id in _OWNER_IDS:
+        return True
+    log.warning(f"Command '{ctx.command}' refused for user {ctx.author.id} "
+                f"(not in CLAW_OWNER_IDS)")
+    return False
 
 # ── Persistence helper ─────────────────────────────────────────────────────
 # Survives restart: on bot startup the saved dicts are reloaded and each
@@ -198,16 +215,29 @@ def _save_pending_state():
         log.warning(f"Could not persist pending state: {e}")
 
 
+_PENDING_STATE_CAP = 50  # newest entries kept per category
+
+
 def _load_pending_state() -> dict:
     if not PENDING_STATE_FILE.exists():
         return {"script": {}, "storyboard": {}, "video": {}}
     try:
         data = json.loads(PENDING_STATE_FILE.read_text(encoding="utf-8"))
-        return {
-            "script": data.get("script", {}),
-            "storyboard": data.get("storyboard", {}),
-            "video": data.get("video", {}),
-        }
+        out = {}
+        for cat in ("script", "storyboard", "video"):
+            entries = data.get(cat, {})
+            # Cap growth: keys are Discord message ids (chronological), so
+            # keeping the newest N drops months-old approvals whose messages
+            # are long deleted. Without this the file grew forever.
+            if len(entries) > _PENDING_STATE_CAP:
+                keep = sorted(entries,
+                              key=lambda k: int(k) if str(k).isdigit() else 0
+                              )[-_PENDING_STATE_CAP:]
+                dropped = len(entries) - len(keep)
+                entries = {k: entries[k] for k in keep}
+                log.info(f"Pruned {dropped} stale '{cat}' pending approvals")
+            out[cat] = entries
+        return out
     except Exception as e:
         log.warning(f"Could not load pending state ({e}); starting fresh")
         return {"script": {}, "storyboard": {}, "video": {}}
@@ -1306,7 +1336,9 @@ async def _sync_bridge_loop():
                     await _handle_sync_event(ev)
                 except Exception as e:
                     log.warning(f"sync event {ev.get('type')} #{ev.get('id')} failed: {e}")
-            sbr.set_cursor(cursor)
+                # Persist per event — a crash mid-batch otherwise re-posts
+                # every already-handled event on the next boot.
+                sbr.set_cursor(cursor)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -1757,6 +1789,10 @@ async def _dispatch_agent_tool(message: discord.Message, tool_name: str, args: d
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.CheckFailure):
+        # _owner_gate (or a permissions decorator) refused — stay quiet in
+        # chat, the refusal is already logged.
         return
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"⚠️ Missing argument. Usage: `!{ctx.command.name} <args>`")
