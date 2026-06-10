@@ -3,6 +3,7 @@ Claw Bot Agent — Phase 3 FINAL
 Adds: pause/resume feedback so you can revisit revisions later.
 """
 
+import functools
 import os
 import sys
 import asyncio
@@ -42,6 +43,7 @@ from modules import agent_router
 from modules import control_panel
 from modules import channel_cleanup
 from modules import approval_buttons
+from modules import job_lock
 from modules.file_utils import atomic_write_json
 
 
@@ -211,6 +213,36 @@ scheduler = AsyncIOScheduler(timezone=IST)
 # ============================================================
 # HELPERS
 # ============================================================
+
+def _gpu_job(label: str):
+    """Gate a pipeline entrypoint behind the shared GPU job lock.
+
+    Cross-frontend: the same lock is claimed by the dashboard's workers, so
+    a Discord command can't start rendering while the web UI is mid-job and
+    vice versa. The first positional arg must be a channel, ctx, or
+    interaction (anything with .send or .channel.send) so the busy notice
+    has somewhere to go.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(first, *args, **kwargs):
+            if not job_lock.acquire(f"discord:{label}"):
+                target = getattr(first, "channel", None) or first
+                try:
+                    await target.send(
+                        f"⏳ GPU busy with **{job_lock.holder_label()}** — "
+                        f"try again when it finishes."
+                    )
+                except Exception:
+                    log.warning("Could not deliver GPU-busy notice")
+                return None
+            try:
+                return await fn(first, *args, **kwargs)
+            finally:
+                job_lock.release()
+        return wrapper
+    return deco
+
 
 async def send_long_message(channel, text: str):
     if len(text) <= DISCORD_MSG_LIMIT:
@@ -522,6 +554,7 @@ async def _btn_clip_edit_prompt(interaction, script_id, shot_number, owner_id, n
         await channel.send(f"❌ Clip regen failed: `{e}`")
 
 
+@_gpu_job("clip regen")
 async def _btn_clip_regen(interaction, script_id, shot_number, owner_id):
     """Re-render a single video clip as-is (no prompt change, fresh seed)."""
     channel = interaction.channel
@@ -564,6 +597,7 @@ async def _btn_clip_regen(interaction, script_id, shot_number, owner_id):
         await channel.send(f"❌ Clip regen failed: `{e}`")
 
 
+@_gpu_job("storyboard shot regen")
 async def _btn_shot_regen(interaction, script_id, shot_number, owner_id, notes=""):
     """Per-shot regen button handler (button under each storyboard frame)."""
     channel = interaction.channel
@@ -779,6 +813,7 @@ class _FinalAssemblyView(discord.ui.View):
         )
 
 
+@_gpu_job("preview assembly")
 async def _run_preview_then_final(channel, script_id: str, owner_id: int, owner_mention: str):
     """Stage 1: Assemble low-res preview from original clips, post to Discord for approval."""
     from modules import assembly as asm
@@ -835,6 +870,7 @@ async def _run_preview_then_final(channel, script_id: str, owner_id: int, owner_
     }
 
 
+@_gpu_job("upscale + final render")
 async def _run_upscale_and_final(channel, script_id: str, owner_id: int):
     """Stage 2: Upscale originals (if enabled) then re-assemble at high-res."""
     upscale_on = rs.get_upscale_enabled()
@@ -938,6 +974,7 @@ async def _post_with_approval_reactions(channel, script: dict, owner_id: int):
     return approval_msg
 
 
+@_gpu_job("script generation")
 async def _generate_and_post(channel, theme: str, requested_by_id: int,
                              requested_by_mention: str, *, is_auto: bool = False):
     global STATS
@@ -1113,6 +1150,7 @@ async def _run_revision_loop(channel, original_script: dict, owner: discord.User
     await _do_revision(channel, original_script, notes, owner.id)
 
 
+@_gpu_job("script revision")
 async def _do_revision(channel, original_script: dict, notes: str, owner_id: int):
     """Perform the actual revision + post."""
     global STATS
@@ -1938,6 +1976,7 @@ async def on_reaction_add(reaction, user):
 # STORYBOARD PIPELINE HELPER
 # ============================================================
 
+@_gpu_job("prompt generation")
 async def _polish_then_storyboard(
     status_channel, storyboards_channel, script: dict,
     owner_id: int, owner_mention: str
@@ -2001,6 +2040,7 @@ async def _polish_then_storyboard(
             storyboards_channel, script_id, owner_id, owner_mention, is_auto=True
         ))
 
+@_gpu_job("storyboard render")
 async def _run_storyboard_pipeline(
     channel, script_id: str, owner_id: int, owner_mention: str, *, is_auto: bool = False
 ):
@@ -2028,6 +2068,7 @@ async def _run_storyboard_pipeline(
 # VIDEO PIPELINE HELPER
 # ============================================================
 
+@_gpu_job("video render")
 async def _run_video_pipeline(
     channel,
     script_id: str,
@@ -2054,6 +2095,7 @@ async def _run_video_pipeline(
         save_stats(STATS)
 
 
+@_gpu_job("video shot regen")
 async def _run_video_regen(channel, script_id: str, shot_numbers: list, owner_id: int):
     """Re-render specific video clips and register the approval."""
     # Wipe stale video approval messages so the new one lands at the bottom
@@ -3556,6 +3598,9 @@ async def cmd_upscale(ctx, script_id: str = None):
             bot_loop
         )
 
+    if not job_lock.acquire("discord:upscale"):
+        await ctx.send(f"⏳ GPU busy with **{job_lock.holder_label()}** — try again later.")
+        return
     try:
         result = await asyncio.to_thread(
             up.upscale_storyboard_videos, script_id, progress
@@ -3566,6 +3611,8 @@ async def cmd_upscale(ctx, script_id: str = None):
     except Exception as e:
         log.exception("Upscale command failed")
         await ctx.send(f"❌ Upscale failed: `{e}`")
+    finally:
+        job_lock.release()
 
 
 @bot.command(name="assemble", aliases=["asm", "final"])
@@ -3598,6 +3645,9 @@ async def cmd_assemble(ctx, script_id: str = None):
             bot_loop
         )
 
+    if not job_lock.acquire("discord:assembly"):
+        await ctx.send(f"⏳ GPU busy with **{job_lock.holder_label()}** — try again later.")
+        return
     try:
         result = await asyncio.to_thread(asm.assemble_final, script_id, progress)
         summary = (
@@ -3628,6 +3678,8 @@ async def cmd_assemble(ctx, script_id: str = None):
     except Exception as e:
         log.exception("Assemble command failed")
         await ctx.send(f"❌ Assembly failed: `{e}`")
+    finally:
+        job_lock.release()
 
 
 @bot.command(name="generate_video", aliases=["gv", "video"])

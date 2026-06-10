@@ -41,6 +41,7 @@ from modules import upscaler
 from modules import sync_bridge as sbr
 from modules.theme_bank import get_random_theme, get_theme_count
 from modules.file_utils import atomic_write_json
+from modules import job_lock
 
 # Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
 VOICE_CHOICES = [
@@ -316,6 +317,29 @@ def _bg(fn, *args, **kwargs):
     threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
 
 
+def _try_begin(label: str) -> bool:
+    """Claim the dashboard busy flag + the shared GPU job lock.
+
+    The job lock is cross-frontend: it also blocks while a Discord command
+    or the daily scheduler is rendering. Returns False (and notifies) when
+    anything else holds the GPU.
+    """
+    if S.busy:
+        ui.notify("⏳ Already busy.", type="warning")
+        return False
+    if not job_lock.acquire(f"dashboard:{label}"):
+        ui.notify(f"⏳ GPU busy: {job_lock.holder_label()}", type="warning")
+        return False
+    S.busy = True
+    return True
+
+
+def _end():
+    """Counterpart of _try_begin — call from the worker's finally block."""
+    S.busy = False
+    job_lock.release()
+
+
 def _stage_index(stage: str) -> int:
     return STAGES.index(stage) if stage in STAGES else -1
 
@@ -325,13 +349,11 @@ def _stage_index(stage: str) -> int:
 # ==============================================================================
 
 def generate_script_action(theme: str, culture: str, style: str, refresh_cb):
-    if S.busy:
-        ui.notify("⏳ Already busy.", type="warning")
-        return
     if not theme.strip():
         ui.notify("❌ Theme required.", type="negative")
         return
-    S.busy = True
+    if not _try_begin("script generation"):
+        return
     S.stage = "script"
     S.push(f"Generating script — theme='{theme}'")
     refresh_cb()
@@ -347,7 +369,7 @@ def generate_script_action(theme: str, culture: str, style: str, refresh_cb):
         except Exception as e:
             S.push(f"Script gen failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -356,10 +378,8 @@ def revise_script_action(feedback: str, refresh_cb):
     if not S.script:
         ui.notify("❌ No script loaded.", type="negative")
         return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning")
+    if not _try_begin("script revision"):
         return
-    S.busy = True
     S.push(f"Revising {S.script_id}")
     refresh_cb()
 
@@ -372,7 +392,7 @@ def revise_script_action(feedback: str, refresh_cb):
         except Exception as e:
             S.push(f"Revision failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -381,10 +401,8 @@ def approve_script_gen_prompts(refresh_cb):
     if not S.script:
         ui.notify("❌ No script loaded.", type="negative")
         return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning")
+    if not _try_begin("prompt generation"):
         return
-    S.busy = True
     S.stage = "prompts"
     S.push(f"Generating prompts for {S.script_id}…")
     refresh_cb()
@@ -403,7 +421,7 @@ def approve_script_gen_prompts(refresh_cb):
         except Exception as e:
             S.push(f"Prompt gen failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -421,10 +439,8 @@ def approve_all_run_storyboard(refresh_cb):
         p["approved"] = True
     pap._save(state)
     pap._ACTIVE_STATES[sid] = state
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning")
+    if not _try_begin("storyboard render"):
         return
-    S.busy = True
     S.stage = "storyboard"
     S.push(f"Storyboard render started for {sid}…")
     refresh_cb()
@@ -443,7 +459,7 @@ def approve_all_run_storyboard(refresh_cb):
         except Exception as e:
             S.push(f"Storyboard worker crashed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -457,10 +473,8 @@ def run_video(refresh_cb):
     if not sb_manifest.exists():
         ui.notify("❌ Storyboard not generated yet.", type="negative")
         return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning")
+    if not _try_begin("video render"):
         return
-    S.busy = True
     S.stage = "video"
     S.push(f"Video render started for {sid}…")
     refresh_cb()
@@ -505,7 +519,7 @@ def run_video(refresh_cb):
         except Exception as e:
             S.push(f"Video worker crashed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -515,10 +529,8 @@ def assemble_final(refresh_cb):
     if not sid:
         ui.notify("❌ No script.", type="negative")
         return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning")
+    if not _try_begin("final assembly"):
         return
-    S.busy = True
     S.stage = "final"
     S.push(f"Final assembly for {sid}…")
     refresh_cb()
@@ -532,7 +544,7 @@ def assemble_final(refresh_cb):
         except Exception as e:
             S.push(f"Assembly failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -592,9 +604,8 @@ def ai_rewrite_narration(shot_num: int, instruction: str, refresh_cb):
     sid = S.script_id
     if not sid:
         ui.notify("❌ No script.", type="negative"); return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning"); return
-    S.busy = True
+    if not _try_begin("narration rewrite"):
+        return
     S.push(f"AI rewriting narration — shot {shot_num}…")
     refresh_cb()
 
@@ -616,7 +627,7 @@ def ai_rewrite_narration(shot_num: int, instruction: str, refresh_cb):
         except Exception as e:
             S.push(f"AI rewrite failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -626,9 +637,8 @@ def regen_storyboard_shot(shot_num: int, refresh_cb):
     sid = S.script_id
     if not sid:
         ui.notify("❌ No script.", type="negative"); return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning"); return
-    S.busy = True
+    if not _try_begin(f"storyboard regen shot {shot_num}"):
+        return
     S.push(f"Regen storyboard shot {shot_num}…")
     refresh_cb()
 
@@ -651,7 +661,7 @@ def regen_storyboard_shot(shot_num: int, refresh_cb):
         except Exception as e:
             S.push(f"Storyboard regen failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -664,9 +674,8 @@ def regen_video_shot(shot_num: int, refresh_cb):
     sb_manifest = STORYBOARDS_DIR / sid / "storyboard.json"
     if not sb_manifest.exists():
         ui.notify("❌ Storyboard not generated yet.", type="negative"); return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning"); return
-    S.busy = True
+    if not _try_begin(f"video regen shot {shot_num}"):
+        return
     S.push(f"Regen video shot {shot_num}…")
     refresh_cb()
 
@@ -710,7 +719,7 @@ def regen_video_shot(shot_num: int, refresh_cb):
         except Exception as e:
             S.push(f"Video regen failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
@@ -719,9 +728,8 @@ def run_upscale_action(refresh_cb):
     sid = S.script_id
     if not sid:
         ui.notify("❌ No script.", type="negative"); return
-    if S.busy:
-        ui.notify("⏳ Busy.", type="warning"); return
-    S.busy = True
+    if not _try_begin("upscale"):
+        return
     S.push(f"Upscaling clips for {sid}…")
     refresh_cb()
 
@@ -734,7 +742,7 @@ def run_upscale_action(refresh_cb):
         except Exception as e:
             S.push(f"Upscale failed: {e}")
         finally:
-            S.busy = False
+            _end()
             refresh_cb()
     _bg(worker)
 
