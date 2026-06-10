@@ -1,0 +1,65 @@
+# ============================================================
+#  Claw Bot Agent — .gitignore
+# ============================================================
+
+# --- SECRETS (never commit) -------------------------------
+.env
+.env.*
+secrets.env
+*.pem
+*.key
+discord_token.txt
+youtube_credentials.json
+oauth_token.json
+
+# --- Python venv & cache ----------------------------------
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- Models (huge, downloaded separately) -----------------
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+
+# --- Generated content / logs ------------------------------
+*.log
+output/
+temp/
+input/
+
+# --- App runtime state (per-machine, not source) -----------
+.nicegui/
+.qwen-history.json
+
+# --- Archives / manual backups ------------------------------
+*.zip
+
+# --- IDE & OS noise ---------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Build artifacts --------------------------------------
+build/
+dist/
+*.spec
+
+# --- Claude Code session caches -----------------------------
+.claude/cache/
+.claude/sessions/
+*_tmp_sig.txt
