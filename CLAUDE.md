@@ -98,7 +98,21 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ---
 
-## 3. What We Changed Today (2026-06-04)
+## 3. What We Changed Today (2026-06-10) — production hardening pass
+- **Git repo FIXED.** Ignore file was named `gitignore` (no dot) → git never read it; venv (3,496 files) + .pyc were tracked, and most live modules were NEVER committed. Now: `.gitignore` proper (adds secrets.env, .nicegui/, *.zip), venv/pycache untracked, ALL live source committed + pushed to GitHub `origin` (Rex_Bot repo). 85 tracked files.
+- **Atomic JSON writes** — new `modules/file_utils.py` (`atomic_write_json`: tmp + fsync + rename). All 16 state-write sites converted (stats, pending_state, scripts, approved prompts, runtime settings, registry, panel state, seeds, gen history, feedback, agent memory). Crash mid-write keeps old file.
+- **Shared GPU job lock** — new `modules/job_lock.py`. Same-thread reentrant (Discord pipeline chains), cross-thread release (dashboard UI-thread acquire → worker release), on-disk marker `05_Config/job_lock.json` (blocks 2nd bot process; stale/dead-pid markers stolen; 4h staleness). Discord entrypoints via `_gpu_job(label)` decorator; `!upscale`/`!assemble` inline; dashboard via `_try_begin/_end` (keeps S.busy). NOTE: two Discord commands on the same event loop can still interleave (same thread = reentrant) — status quo kept.
+- **subprocess timeouts** — every ffmpeg/ffprobe `subprocess.run` now has timeout (60s probes, 300–900s encodes): assembly, clip_generator, music_generator, upscaler.
+- **Dashboard login hardened** — `secrets.compare_digest` + 60s lockout after 5 failed attempts (public tunnel exposure).
+- **Log rotation** — claw_bot.log rotates at 10 MB, 5 backups.
+- **Crash auto-restart** — `00_Tools/launch_clawbot.ps1` runs bot in a loop: exit 0 (`!shutdown`/`!restart_bot`) = stop; non-zero = relaunch after 10s, max 5 crashes/5 min.
+- **Boot config validation** — new `modules/config_check.py`: models.json (active∈available per backend), styles.json, runtime_settings parse; refuses boot w/ clear error. Warns on secrets.env BOM + <10 GB disk. Disk also checked per GPU job (decorator + _try_begin).
+- **Test suite** — `tests/` pytest, 72 tests, no GPU: import smoke (all modules), clip fps/duration math + LTX 8N+1 rule + fps-relabel regression, atomic writes, job-lock semantics, sync-bridge cursor, config validation. Run: `venv\Scripts\python -m pytest tests -q`.
+- **requirements.txt re-pinned to venv reality** (discord.py 2.7.1, aiohttp 3.13.5, nicegui 3.12.1…); dropped unused ollama/watchdog/nvidia-ml-py/loguru pkgs; full snapshot in `requirements.lock.txt`. pytest added.
+- **22 stale root dups DELETED** (recoverable from git history). Root keeps only claw_bot, agent, agent_router, status_check, inspect_workflow, preflight, test_*.
+- **Sync cursor per-event** (no batch re-posts after crash). **pending_state capped** 50/category on load. **`CLAW_OWNER_IDS`** optional in secrets.env = lock all !commands to listed user ids (unset = open).
+
+## Earlier (2026-06-04)
 - **Dashboard UI redesign** (`dashboard_nicegui.py`): long scroll → left-nav drawer + vertical tabs (Pipeline/Settings/Models/Queue/Tools). Section cards built at page level then `.move()`'d into tab panels (avoids mass re-indent). Live log → collapsible footer. CSS toned down (static gradient hero, less glow). Mobile: header ☰ button toggles drawer (Quasar auto-hides drawer on phones).
 - **Web↔Discord sync.** Discord→Web already free (dashboard polls disk every 1.5s). Web→Discord NEW: `modules/sync_bridge.py` on-disk event queue (`sync_events.json` web-writes, `sync_cursor.json` bot-writes). Bot poller `_sync_bridge_loop` (claw_bot, 5s) re-posts updated clip/frame to #videos/#storyboards. Emits: video_regen, storyboard_regen, video_done, final_done. Bot skips backlog (cursor=latest_id at startup).
 - **Per-shot narration edit** (dashboard Prompts tab): 🎙️ textarea + Save → writes script JSON `shots[].narration` (`update_shot_narration`). Read from disk each render → synced across front-ends.
@@ -121,6 +135,7 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 ---
 
 ## 4. In Progress / Half-Done
+- **Bot restart needed (2026-06-10)** — hardening-pass edits (atomic writes, job lock, login lockout, config validation, owner gate) on disk, NOT live until restart. Tests pass (72), but live Discord + dashboard flows unverified.
 - **Bot restart needed (2026-06-04)** — today's .py edits (UI tabs, sync_bridge, auth, narration edit, AI rewrite) on disk, NOT live until restart.
 - **Mobile nav ☰** — verified by server build only, not a live phone browser. Confirm on device after restart + hard-refresh.
 - **Discord→Web settings widgets** — web reads runtime settings live on render, but the select WIDGETS show stale value until page reload.
@@ -140,18 +155,18 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - **Mobile drawer** hidden < Quasar breakpoint → needs header ☰ toggle (added).
 - **`sync_events.json`** capped at 200 events; cursor in `sync_cursor.json`.
 
-1. **Stale root .py duplicates** (18) — drift risk. Diff periodically or replace w/ import shims.
-2. **discord.py version mismatch** — requirements 2.3.2 vs venv 2.7.1. Pin.
+1. ~~Stale root .py duplicates~~ DELETED 2026-06-10 (in git history if needed).
+2. ~~discord.py version mismatch~~ RE-PINNED 2026-06-10 (requirements match venv).
 3. **audiocraft 1.3.0 dep conflict** — torch pin vs installed. Music gen may crash; verify.
 4. **Continuation part motion prompt** — Part B+ reuses Part A motion; Wan may stall. Split per part via LLM.
 5. **Continuation seed bump +7919** — heuristic; may jump at part boundary. Try frame-0 latent init.
 6. **No per-part regen** — UI regens whole shot.
-7. **Dashboard no watchdog** — NiceGUI thread death = silent UI loss.
+7. **Dashboard no watchdog** — NiceGUI thread death = silent UI loss. (Bot process itself now auto-restarts on crash via launcher loop.)
 8. **`CUT_GAP_SEC=0.4` hardcoded** in assembly.py — make runtime (`!set_cut_gap`) if needed.
 9. **beat_policy frame-cap field** unused — delete or repurpose.
 10. **Per-character LoRA** — chars drift across shots; needs per-character LoRA train.
 11. **YouTube uploader** — not built; upload manual.
-12. **Pending state JSON** unbounded — needs TTL cleanup.
+12. ~~Pending state JSON unbounded~~ CAPPED 2026-06-10 (newest 50/category kept on load).
 
 ---
 
