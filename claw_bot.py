@@ -1345,6 +1345,40 @@ async def _sync_bridge_loop():
             log.warning(f"sync bridge loop error: {e}")
 
 
+async def _dashboard_watchdog_loop():
+    """Alert when the NiceGUI dashboard dies.
+
+    The dashboard runs as a daemon thread inside this process — if it
+    crashes, the bot keeps running and the loss is silent until someone
+    opens the page. This poller pings port 7860 every 60s and posts a
+    one-time alert to #status on the up→down transition. Recovery is
+    `!restart_bot` (relaunching NiceGUI in-process would fight the dead
+    server for the port).
+    """
+    from modules import health_monitor as hm
+    await bot.wait_until_ready()
+    await asyncio.sleep(90)   # let the dashboard finish booting first
+    was_up = True
+    while not bot.is_closed():
+        try:
+            up, msg = hm.check_web_dashboard()
+            if was_up and not up:
+                log.error(f"Web dashboard DOWN ({msg}). Use !restart_bot to recover.")
+                for guild in bot.guilds:
+                    ch = get_channel_by_name(guild, "status")
+                    if ch:
+                        await ch.send(
+                            "🔴 **Web dashboard is DOWN** (port 7860 not responding).\n"
+                            "Run `!restart_bot` to bring it back."
+                        )
+            elif not was_up and up:
+                log.info("Web dashboard back up.")
+            was_up = up
+        except Exception as e:
+            log.warning(f"dashboard watchdog error: {e}")
+        await asyncio.sleep(60)
+
+
 # ============================================================
 # EVENTS
 # ============================================================
@@ -1483,6 +1517,11 @@ async def on_ready():
     if not getattr(bot, "_sync_loop_started", False):
         bot._sync_loop_started = True
         bot.loop.create_task(_sync_bridge_loop())
+
+    # --- Start dashboard watchdog (once) ---
+    if not getattr(bot, "_watchdog_started", False):
+        bot._watchdog_started = True
+        bot.loop.create_task(_dashboard_watchdog_loop())
 
 
 async def _restore_pending_approvals():

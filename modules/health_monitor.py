@@ -22,6 +22,7 @@ if str(_HERE) not in sys.path:
 from modules import model_registry
 from modules import gpu_utils
 from modules import generation_meta as gm
+from modules import job_lock
 
 log = logging.getLogger("claw_bot.health_monitor")
 
@@ -37,6 +38,23 @@ def check_comfyui() -> tuple[bool, str]:
         return False, f"HTTP {r.status_code}"
     except requests.exceptions.ConnectionError:
         return False, "offline"
+    except Exception as e:
+        return False, f"error: {type(e).__name__}"
+
+
+def check_web_dashboard(port: int = 7860) -> tuple[bool, str]:
+    """Is the NiceGUI dashboard answering on localhost?
+
+    It runs as a daemon thread inside the bot process — if it dies, the bot
+    stays up and nothing complains until you notice the page is gone. Any
+    HTTP response counts as alive (the login gate answers 302/200).
+    """
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/", timeout=3,
+                         allow_redirects=False)
+        return True, f"online (HTTP {r.status_code})"
+    except requests.exceptions.ConnectionError:
+        return False, "DOWN — restart bot to recover"
     except Exception as e:
         return False, f"error: {type(e).__name__}"
 
@@ -81,12 +99,24 @@ def build_status_embed(bot_version: str, bot_start_time: datetime,
         color=color,
     )
 
+    web_up, web_msg = check_web_dashboard()
     services_lines = [
         f"{'🟢' if comfy_up else '🔴'} **ComfyUI** — {comfy_msg}",
         f"{'🟢' if ollama_up else '🔴'} **Ollama** — {ollama_msg}",
+        f"{'🟢' if web_up else '🔴'} **Web dashboard** — {web_msg}",
         f"🟢 **Bot** — online · v{bot_version} · uptime {uptime_str}",
     ]
     embed.add_field(name="Services", value="\n".join(services_lines), inline=False)
+
+    # Current GPU job (shared lock across Discord / dashboard / scheduler)
+    marker = job_lock.current()
+    if marker:
+        started = marker.get("started", 0)
+        mins = int((datetime.now(timezone.utc).timestamp() - started) / 60)
+        job_line = f"🔒 **{marker.get('label', '?')}** — running {mins}m"
+    else:
+        job_line = "🟢 idle"
+    embed.add_field(name="GPU Job", value=job_line, inline=False)
 
     try:
         img_cfg = model_registry.get_active("image_backend")
