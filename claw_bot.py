@@ -232,8 +232,8 @@ def _gpu_job(label: str):
     def deco(fn):
         @functools.wraps(fn)
         async def wrapper(first, *args, **kwargs):
+            target = getattr(first, "channel", None) or first
             if not job_lock.acquire(f"discord:{label}"):
-                target = getattr(first, "channel", None) or first
                 try:
                     await target.send(
                         f"⏳ GPU busy with **{job_lock.holder_label()}** — "
@@ -243,6 +243,17 @@ def _gpu_job(label: str):
                     log.warning("Could not deliver GPU-busy notice")
                 return None
             try:
+                from modules import config_check
+                disk_ok, free_gb = config_check.check_disk_space()
+                if not disk_ok:
+                    try:
+                        await target.send(
+                            f"⚠️ Low disk: only **{free_gb} GB** free — "
+                            f"clear space in 04_Outputs before rendering."
+                        )
+                    except Exception:
+                        pass
+                    return None
                 return await fn(first, *args, **kwargs)
             finally:
                 job_lock.release()
@@ -3805,6 +3816,22 @@ async def cmd_switch_model(ctx, backend_id: str = None, backend_type: str = None
 
 if __name__ == "__main__":
     log.info(f"Starting Claw Bot v{BOT_VERSION}...")
+
+    # Fail fast on broken config — a models.json typo should stop the boot
+    # with a clear message, not crash a render two hours in.
+    from modules import config_check
+    _cfg_errors = config_check.validate_configs()
+    if _cfg_errors:
+        for _err in _cfg_errors:
+            log.error(f"CONFIG ERROR: {_err}")
+        log.error("Fix 05_Config and relaunch. Bot NOT started.")
+        sys.exit(1)
+    config_check.warn_on_secrets_bom()
+    _disk_ok, _free_gb = config_check.check_disk_space()
+    if not _disk_ok:
+        log.warning(f"LOW DISK: only {_free_gb} GB free on the project drive — "
+                    f"video renders may fail mid-write.")
+
     try:
         bot.run(DISCORD_BOT_TOKEN, log_handler=None)
     except discord.LoginFailure:

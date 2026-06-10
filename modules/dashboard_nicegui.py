@@ -43,6 +43,7 @@ from modules import sync_bridge as sbr
 from modules.theme_bank import get_random_theme, get_theme_count
 from modules.file_utils import atomic_write_json
 from modules import job_lock
+from modules import config_check
 
 # Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
 VOICE_CHOICES = [
@@ -334,6 +335,12 @@ def _try_begin(label: str) -> bool:
         return False
     if not job_lock.acquire(f"dashboard:{label}"):
         ui.notify(f"⏳ GPU busy: {job_lock.holder_label()}", type="warning")
+        return False
+    disk_ok, free_gb = config_check.check_disk_space()
+    if not disk_ok:
+        job_lock.release()
+        ui.notify(f"⚠️ Low disk: only {free_gb} GB free — clear 04_Outputs first.",
+                  type="negative")
         return False
     S.busy = True
     return True
