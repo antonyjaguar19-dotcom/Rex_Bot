@@ -135,7 +135,8 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 ---
 
 ## 4. In Progress / Half-Done
-- **Bot restart needed (2026-06-10)** — hardening-pass edits (atomic writes, job lock, login lockout, config validation, owner gate) on disk, NOT live until restart. Tests pass (72), but live Discord + dashboard flows unverified.
+- **RESTARTED 2026-06-10 23:08** — hardening pass + watchdog LIVE. Verified: 1 bot instance, dashboard answers HTTP 307 (login gate active), status embed posted, sync poller up, no stale lock. Still unverified by hand: Discord busy-notice when dashboard renders, login lockout, mobile ☰.
+- **Launcher restart-loop gotcha (fixed)** — first version of the crash-restart loop in `00_Tools/launch_clawbot.ps1` caused launcher windows to ping-pong: new launcher kills old launcher's bot → old loop sees non-zero exit → respawns → 2-3 simultaneous bots. Loop now exits if another claw_bot.py is already running. Launcher is OUTSIDE the repo — back it up manually if edited.
 - **Bot restart needed (2026-06-04)** — today's .py edits (UI tabs, sync_bridge, auth, narration edit, AI rewrite) on disk, NOT live until restart.
 - **Mobile nav ☰** — verified by server build only, not a live phone browser. Confirm on device after restart + hard-refresh.
 - **Discord→Web settings widgets** — web reads runtime settings live on render, but the select WIDGETS show stale value until page reload.
