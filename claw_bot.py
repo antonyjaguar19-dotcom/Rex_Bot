@@ -42,6 +42,7 @@ from modules import agent_router
 from modules import control_panel
 from modules import channel_cleanup
 from modules import approval_buttons
+from modules.file_utils import atomic_write_json
 
 
 # ============================================================
@@ -111,7 +112,7 @@ def load_stats() -> dict:
 
 
 def save_stats(stats: dict):
-    STATS_FILE.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    atomic_write_json(STATS_FILE, stats)
 
 
 STATS = load_stats()
@@ -184,10 +185,7 @@ def _save_pending_state():
             "video": {str(k): v for k, v in PENDING_VIDEO_APPROVALS.items()},
         }
         PENDING_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PENDING_STATE_FILE.write_text(
-            json.dumps(snapshot, indent=2, ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
+        atomic_write_json(PENDING_STATE_FILE, snapshot, default=str)
     except Exception as e:
         log.warning(f"Could not persist pending state: {e}")
 
@@ -2356,7 +2354,7 @@ async def cmd_rewrite_narration(ctx, script_id: str = None, shot_num=None,
         return
     shot["narration"] = new
     try:
-        path.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(path, script)
     except Exception as e:
         await status.edit(content=f"❌ Could not save: `{e}`")
         return

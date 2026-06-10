@@ -40,6 +40,7 @@ from modules import pending_feedback as pf
 from modules import upscaler
 from modules import sync_bridge as sbr
 from modules.theme_bank import get_random_theme, get_theme_count
+from modules.file_utils import atomic_write_json
 
 # Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
 VOICE_CHOICES = [
@@ -577,8 +578,7 @@ def update_shot_narration(shot_num: int, new_text: str) -> bool:
     if not found:
         return False
     try:
-        path.write_text(json.dumps(script, indent=2, ensure_ascii=False),
-                        encoding="utf-8")
+        atomic_write_json(path, script)
     except Exception as e:
         S.push(f"Narration save failed (write): {e}")
         return False

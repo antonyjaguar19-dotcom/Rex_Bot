@@ -16,6 +16,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from modules import model_registry
+from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.runtime_settings")
 
@@ -39,7 +40,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(SETTINGS_PATH, data)
 
 
 # ==============================================================================

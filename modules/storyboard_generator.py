@@ -35,6 +35,7 @@ from modules import prompt_assembler as pa
 from modules import script_generator as sg
 from modules import runtime_settings as rs
 from modules import prompt_approval as pap
+from modules.file_utils import atomic_write_json
 
 CAST_SHEET_SEED = 777  # fixed so the cast sheet is reproducible per script
 
@@ -204,7 +205,7 @@ def _save_manifest(result: StoryboardResult):
     path = _manifest_path(result.script_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(result)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, data)
     log.info(f"Manifest saved: {path}")
 
 

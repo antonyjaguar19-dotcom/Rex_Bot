@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.agent")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -46,7 +48,7 @@ def save_memory(channel_id: int | str, memory: dict) -> None:
     """Persist memory to disk."""
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     path = _memory_path(channel_id)
-    path.write_text(json.dumps(memory, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, memory)
 
 
 # ==============================================================================

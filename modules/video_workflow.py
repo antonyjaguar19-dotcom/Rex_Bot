@@ -32,6 +32,7 @@ from modules import runtime_settings as rs
 from modules import generation_meta as gm
 from modules import health_monitor as hm
 from modules import prompt_approval as pap
+from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.video_workflow")
 
@@ -300,7 +301,7 @@ async def generate_and_post_video(
             if seeds_path.exists():
                 existing = json.loads(seeds_path.read_text(encoding="utf-8"))
             existing[str(shot_num)] = seed_used
-            seeds_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            atomic_write_json(seeds_path, existing)
         except Exception as e:
             log.warning(f"Could not persist seed for shot {shot_num}: {e}")
 

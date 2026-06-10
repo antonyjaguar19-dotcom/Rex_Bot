@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.generation_meta")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -37,7 +39,7 @@ def _load_persisted() -> list[dict]:
 
 def _save_persisted(data: list[dict]):
     META_FILE.parent.mkdir(parents=True, exist_ok=True)
-    META_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(META_FILE, data)
 
 
 # Hydrate _RECENT from disk on import (so dashboard shows history across restarts)

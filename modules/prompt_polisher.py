@@ -16,6 +16,8 @@ from pathlib import Path
 
 import requests
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.prompt_polisher")
 
 
@@ -438,11 +440,11 @@ def polish_script(script: dict, unload_llama: bool = True) -> dict:
 
     # Save the polished version as audit copy
     polished_path = OUTPUTS_DIR / f"script_{script_id}_polished.json"
-    polished_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(polished_path, merged)
 
     # ALSO overwrite the main script file so storyboard_workflow picks it up
     main_path = OUTPUTS_DIR / f"script_{script_id}.json"
-    main_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(main_path, merged)
 
     log.info(f"Polished script saved: {polished_path} (and replaced {main_path}) ({_t.time() - _start:.1f}s)")
 

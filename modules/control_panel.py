@@ -14,6 +14,8 @@ from typing import Optional
 import discord
 from discord import ui
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.control_panel")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -50,7 +52,7 @@ def _load_state() -> dict:
 
 def _save_state(data: dict) -> None:
     PANEL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PANEL_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_write_json(PANEL_STATE_PATH, data)
 
 
 # ============================================================

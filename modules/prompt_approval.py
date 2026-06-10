@@ -37,6 +37,7 @@ if str(_HERE) not in sys.path:
 
 from modules import prompt_assembler as pa
 from modules import script_generator as sg
+from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.prompt_approval")
 
@@ -77,7 +78,7 @@ def get_shot_prompts(script_id: str, shot_number: int) -> Optional[dict]:
 def _save(state: dict):
     path = approved_prompts_path(state["script_id"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, state)
 
 
 def backfill_from_disk(script_id: str, script: Optional[dict] = None) -> Optional[dict]:

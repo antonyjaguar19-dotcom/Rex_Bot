@@ -31,6 +31,7 @@ from modules.prompt_polisher import (
     _sanitize_characters,
     _enforce_appearance_in_prompt,
 )
+from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.shot_tailor")
 
@@ -479,10 +480,10 @@ def tailor_script(script: dict, unload_qwen_after: bool = True) -> dict:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     tailored_path = OUTPUTS_DIR / f"script_{script_id}_tailored.json"
-    tailored_path.write_text(json.dumps(tailored, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(tailored_path, tailored)
 
     main_path = OUTPUTS_DIR / f"script_{script_id}.json"
-    main_path.write_text(json.dumps(tailored, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(main_path, tailored)
 
     log.info(f"Tailored script saved: {tailored_path} (and replaced {main_path}) ({_t.time() - _start:.1f}s)")
 

@@ -34,6 +34,7 @@ from modules import runtime_settings as rs
 from modules import generation_meta as gm
 from modules import feedback_thinker as ft
 from modules import story_writer as sw
+from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.script_generator")
 
@@ -763,7 +764,7 @@ def generate_script(theme: str, style_override: Optional[str] = None,
     # Save to disk
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUTS_DIR / f"script_{script_id}.json"
-    output_path.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_path, script)
     log.info(f"Script saved: {output_path}")
 
     # Record to generation_meta (dashboard auto-refresh picks it up)
@@ -970,7 +971,7 @@ def revise_script(original_script: dict, feedback: str) -> dict:
 
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUTS_DIR / f"script_{new_id}.json"
-    output_path.write_text(json.dumps(revised, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_path, revised)
     log.info(f"Revised script saved: {output_path}")
     return revised
 

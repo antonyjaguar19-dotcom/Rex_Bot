@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.registry")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -28,7 +30,7 @@ def _load() -> dict:
 
 
 def _save(data: dict):
-    REGISTRY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(REGISTRY_FILE, data)
 
 
 # --------------- Read API ---------------

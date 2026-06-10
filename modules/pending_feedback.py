@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from modules.file_utils import atomic_write_json
+
 log = logging.getLogger("claw_bot.pending_feedback")
 
 # Single JSON file. Simple, atomic enough for our scale.
@@ -28,7 +30,7 @@ def _load_all() -> dict:
 
 def _save_all(data: dict):
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STORE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(STORE_PATH, data)
 
 
 def add(script: dict, owner_id: int, channel_id: int, reason: str = "paused") -> None:
