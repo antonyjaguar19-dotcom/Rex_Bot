@@ -8,6 +8,7 @@ import os
 import sys
 import asyncio
 import logging
+import logging.handlers
 import json
 import time
 from datetime import datetime, timezone
@@ -83,7 +84,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOGS_DIR / "claw_bot.log", encoding="utf-8"),
+        # Rotate at 10 MB, keep 5 backups — the old single FileHandler grew
+        # without bound across multi-hour render sessions.
+        logging.handlers.RotatingFileHandler(
+            LOGS_DIR / "claw_bot.log", encoding="utf-8",
+            maxBytes=10 * 1024 * 1024, backupCount=5,
+        ),
         logging.StreamHandler(sys.stdout),
     ],
 )

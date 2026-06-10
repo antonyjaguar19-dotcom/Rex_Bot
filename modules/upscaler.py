@@ -131,7 +131,7 @@ def _has_audio_stream(path: Path) -> bool:
         "-of", "csv=p=0",
         str(path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     return bool(r.stdout.strip())
 
 
@@ -148,7 +148,7 @@ def _probe_fps(path: Path, fallback: float = 16.0) -> float:
         "-of", "csv=p=0",
         str(path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     raw = r.stdout.strip()
     try:
         if "/" in raw:
@@ -179,7 +179,7 @@ def _reattach_audio(silent_video: Path, audio_source: Path, output_path: Path) -
         "-b:a", "192k",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg audio re-mux failed:\n{result.stderr.strip()}"

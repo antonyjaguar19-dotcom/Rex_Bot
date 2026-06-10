@@ -83,7 +83,7 @@ def _mix_music_under_narration(
         "-movflags", "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg music-mix failed:\n{result.stderr.strip()}"
@@ -99,7 +99,7 @@ def _probe_duration(path: Path) -> float:
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
     return float(r.stdout.strip())
 
 
@@ -113,7 +113,7 @@ def _has_audio(path: Path) -> bool:
         "-of", "csv=p=0",
         str(path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     return bool(r.stdout.strip())
 
 
@@ -397,7 +397,7 @@ def _assemble_one_aspect(
         str(output_path),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg assembly failed ({aspect_key}):\n{result.stderr.strip()}"

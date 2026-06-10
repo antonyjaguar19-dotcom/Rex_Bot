@@ -224,7 +224,8 @@ class ClipGenerator:
             "-of", "default=noprint_wrappers=1:nokey=1",
             str(media_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                timeout=60)
         return float(result.stdout.strip())
 
     def _frames_for_duration(self, seconds: float) -> int:
@@ -303,7 +304,7 @@ class ClipGenerator:
                 "-t", f"{audio_duration:.3f}",
                 str(out_path),
             ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg mux failed:\n{result.stderr.strip()}"

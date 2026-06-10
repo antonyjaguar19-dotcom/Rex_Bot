@@ -189,7 +189,7 @@ def _generate_with_musicgen(
                 "-c:a", "libmp3lame", "-b:a", "192k",
                 str(output_path),
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0:
                 log.warning(f"MP3 transcode failed, keeping WAV: {r.stderr}")
                 return wav_path
@@ -265,7 +265,7 @@ def _trim_or_loop_to_duration(
         "-c:a", "libmp3lame", "-b:a", "192k",
         str(output_path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg trim/loop failed:\n{r.stderr.strip()}")
     return output_path

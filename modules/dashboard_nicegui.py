@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import random
+import secrets as pysecrets
 import sys
 import threading
 import time
@@ -100,6 +101,10 @@ app.add_middleware(_AuthMiddleware)
 if not DASHBOARD_PASSWORD:
     log.warning("DASHBOARD_PASSWORD not set — dashboard has NO login gate. "
                 "Do NOT expose it on a public tunnel until you set one.")
+
+# Failed-login throttle state (shared across sessions on purpose — one GPU
+# box, one dashboard; a global lockout is the simplest brute-force brake).
+_LOGIN_FAILS = {"count": 0, "locked_until": 0.0}
 
 
 # ==============================================================================
@@ -760,11 +765,27 @@ def login_page():
         return
 
     def _try_login():
-        if pw.value == DASHBOARD_PASSWORD:
+        # Brute-force throttle: the login page is reachable from the public
+        # tunnel URL, so 5 wrong guesses lock the form for 60 seconds.
+        now = time.time()
+        if now < _LOGIN_FAILS["locked_until"]:
+            wait = int(_LOGIN_FAILS["locked_until"] - now) + 1
+            ui.notify(f"🚫 Too many attempts — wait {wait}s.", type="negative")
+            return
+        if pysecrets.compare_digest(str(pw.value or ""), DASHBOARD_PASSWORD):
+            _LOGIN_FAILS["count"] = 0
             app.storage.user.update({"authenticated": True})
             ui.navigate.to(app.storage.user.get("referrer_path", "/") or "/")
         else:
-            ui.notify("❌ Wrong password", type="negative")
+            _LOGIN_FAILS["count"] += 1
+            if _LOGIN_FAILS["count"] >= 5:
+                _LOGIN_FAILS["count"] = 0
+                _LOGIN_FAILS["locked_until"] = now + 60.0
+                log.warning("Dashboard login locked for 60s after 5 failures")
+                ui.notify("🚫 Too many wrong attempts — locked for 60s.",
+                          type="negative")
+            else:
+                ui.notify("❌ Wrong password", type="negative")
 
     with ui.column().classes("w-full items-center").style("margin-top: 14vh;"):
         with ui.card().classes("rex-card").style("max-width: 360px; padding: 26px;"):
