@@ -45,7 +45,19 @@ NO_CHARACTER_BEATS = {"atmosphere"}
 # SYSTEM PROMPT — narrow, schema-light
 # ==============================================================================
 
-def _build_system_prompt(beat: str, no_chars: bool) -> str:
+# shot_type → concrete spatial framing the diffusion model understands.
+SHOT_TYPE_FRAMING = {
+    "wide": ("the whole location is visible and any character occupies less "
+             "than a third of the frame height, viewed from a distance"),
+    "medium": ("the character is seen from the waist up or full body, "
+               "filling about half the frame"),
+    "closeup": ("the character's face fills most of the frame"),
+    "insert": ("the hands (or paws or beak) and the object they touch fill "
+               "the frame; the face is partly or fully out of frame"),
+}
+
+
+def _build_system_prompt(beat: str, no_chars: bool, shot_type: str = "") -> str:
     char_rule = (
         "ABSOLUTE RULE: this shot's beat is a BREATHING SHOT. The output prompt "
         "MUST contain ZERO characters. No people. No animals. No silhouettes. "
@@ -54,9 +66,19 @@ def _build_system_prompt(beat: str, no_chars: bool) -> str:
         if no_chars else
         "Inject EVERY character whose locked_visual_token is provided BELOW. "
         "Use the locked_visual_token verbatim for each character — never "
-        "paraphrase the appearance. Combine each character's appearance with "
-        "their pose/action in a single sentence per character. Do not mention "
-        "any character whose locked_visual_token was NOT provided to you."
+        "paraphrase the appearance, and NEVER drop the age words (the token "
+        "starts with the character's age; it must survive into your output "
+        "verbatim). Combine each character's appearance with their pose/action "
+        "in a single sentence per character. Do not mention any character "
+        "whose locked_visual_token was NOT provided to you."
+    )
+
+    framing = SHOT_TYPE_FRAMING.get((shot_type or "").strip().lower(), "")
+    shot_type_rule = (
+        f"\n# SHOT TYPE: \"{shot_type}\"\n\n"
+        f"The camera framing sentence MUST express this exactly: {framing}. "
+        f"This overrides any framing implied by the body text.\n"
+        if framing else ""
     )
 
     return f"""You output ONE paragraph of plain text — the final image prompt sent to Z-Image Turbo, a paragraph-style diffusion model. No JSON. No markdown. No labels. No preamble. Just the prompt paragraph.
@@ -64,6 +86,7 @@ def _build_system_prompt(beat: str, no_chars: bool) -> str:
 You are a senior prompt engineer. You assemble inputs into ONE clean Z-Image prompt.
 
 # THIS SHOT'S BEAT: "{beat}"
+{shot_type_rule}
 
 # CHARACTER RULE (this is the most important rule)
 
@@ -262,6 +285,7 @@ def assemble_image_prompt(
 
     user_payload = {
         "beat": beat,
+        "shot_type": (shot.get("shot_type") or "").strip().lower(),
         "frame_type": frame_type,
         "style_suffix": style_suffix or "",
         "setting": setting_clean,
@@ -291,7 +315,8 @@ def assemble_image_prompt(
         f"verbatim. End with camera framing + lighting. 60-110 words."
     )
 
-    raw = _call_llm(user_prompt, _build_system_prompt(beat, no_chars))
+    raw = _call_llm(user_prompt, _build_system_prompt(
+        beat, no_chars, shot_type=(shot.get("shot_type") or "")))
     final = _strip_meta(raw)
 
     # Safety net: if it's a breathing beat and the LLM still slipped a name in,
@@ -357,19 +382,22 @@ GOOD: "The snail slowly inches forward along the leaf. Its eye-stalks tilt up. A
 
 BAD: "A beautiful sense of wonder unfolds as the brave little snail experiences the joy of discovery in this magical garden moment."
 
-# COMPOSITION RULES
+# COMPOSITION RULES — SIMPLE IS BETTER
 
-1. **First sentence: main subject motion.** Concrete verb. What moves first.
-2. **Second sentence: secondary motion** (other characters, environment, props).
-3. **Last sentence: camera move.** Short, explicit: "slow push in", "static hold", "gentle pan left", "subtle drift up".
-4. **Length: 35-70 words.** Tight. Every word maps to pixels moving.
+A motion prompt is ONE main action plus ONE camera move. Wan stalls or
+hallucinates when given several competing actions — keep it minimal.
+
+1. **First sentence: the ONE main action.** Concrete verb, one subject. "Max drops a pebble into the bucket."
+2. **Optional second sentence: one small secondary motion** (grass sways, light shifts). Skip it if the main action is enough.
+3. **Last sentence: the ONE camera move.** Short, explicit: "slow push in", "static hold", "gentle pan left", "subtle drift up". Match the framing: insert/closeup shots want "static hold" or "slow push in"; wide shots want a slow pan or drift.
+4. **Length: 25-50 words.** Tight. Every word maps to pixels moving.
 5. **No abstract motion words.** Banned: gracefully, beautifully, magically, dreamlike, ethereal, captures, evokes.
 6. **No speech, no mouth movement, no lip sync.** Add: "No speech. No mouth movement." at end.
 7. **No mode change.** Don't introduce new characters, new locations, or scene cuts. Wan animates the existing frame.
 
 # OUTPUT
 
-ONE paragraph, plain text, 35-70 words. Pure motion description. End with the camera move and the no-speech disclaimer."""
+ONE paragraph, plain text, 25-50 words. One action, one camera move. End with the camera move and the no-speech disclaimer."""
 
 
 def assemble_motion_prompt(
@@ -408,6 +436,7 @@ def assemble_motion_prompt(
 
     user_payload = {
         "beat": beat,
+        "shot_type": (shot.get("shot_type") or "").strip().lower(),
         "starting_frame_description": approved_image_prompt or shot.get("first_frame_prompt", ""),
         "intended_motion_seed": motion_seed,
         "camera_angle": (shot.get("camera_angle") or "").strip(),
@@ -421,9 +450,9 @@ def assemble_motion_prompt(
     user_prompt = (
         f"Write the Wan 2.2 14B I2V motion prompt for this shot. Inputs:\n\n"
         f"```\n{json.dumps(user_payload, indent=2, ensure_ascii=False)}\n```\n\n"
-        f"Output ONE paragraph, 35-70 words, per the system rules. Describe how "
-        f"the starting frame animates. End with camera direction + "
-        f"'No speech. No mouth movement.'"
+        f"Output ONE paragraph, 25-50 words, per the system rules: ONE main "
+        f"action, optionally one small secondary motion, then ONE camera move. "
+        f"End with 'No speech. No mouth movement.'"
     )
 
     raw = _call_llm(user_prompt, _build_motion_system_prompt(beat, no_chars), temperature=0.45)

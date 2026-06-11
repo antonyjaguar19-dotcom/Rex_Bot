@@ -162,6 +162,13 @@ Each shot should advance the story AND add texture — a detail of the world, a 
 
 5. **Camera variety (CRITICAL CAMERA RULE):** For every `visual_description`, `first_frame_prompt`, and `last_frame_prompt`, you MUST specify a dynamic cinematic camera angle. Never use flat, side-by-side theatrical staging. Alternate between Extreme Close-Ups (ECU), Over-The-Shoulder (OTS), High-Angle Drone shots, and Low-Angle tracking shots. If two characters are interacting, use alternating close-ups or OTS shots instead of placing them side-by-side.
 
+5b. **Shot type grammar (REQUIRED FIELD `shot_type`):** every shot declares its framing in a `shot_type` field. Pick exactly one:
+- `"wide"` — establishing shot. The whole location is visible; any character is small in frame. REQUIRED for the first shot in every new location, and good for atmosphere beats.
+- `"medium"` — character action, waist-up or full body. The default for plot beats (hook/spark/struggle/choice).
+- `"closeup"` — the face fills the frame. Use for reaction and moment-of-decision beats so the emotion lands.
+- `"insert"` — extreme close-up of HANDS + OBJECT (a paw, a beak, or fingers gripping something counts). REQUIRED whenever a character picks up, holds, drops, places, or manipulates an object — show the action detail, not the whole body. The face may be out of frame entirely.
+Across the story: at least ONE wide establishing shot, at least ONE insert or closeup, and never two consecutive shots with the same shot_type unless a held repeat is deliberately dramatic. Wide → medium → insert → closeup variety is what makes the film feel directed instead of staged.
+
 6. **First & last frame coherence:** the locked_visual_token guarantees identical character appearance across ALL shots. Your first_frame_prompt and last_frame_prompt must NEVER re-describe the character's hair, clothes, glasses, age, species, or any appearance trait — refer to them by name only. Different pose/expression/position shows the change across the shot. If you describe the character's appearance inside a shot prompt, you are breaking the system.
 
 7. **Motion prompt:** describes only physical motion + camera movement. Forbidden words: says, speaks, talking, mouth, lip, voice. Characters never speak — narration is voiceover.
@@ -194,7 +201,7 @@ Each shot should advance the story AND add texture — a detail of the world, a 
     {{
       "name": "...",
       "type": "human | animal | creature",
-      "appearance": "<one specific sentence describing ONLY visual traits: species, age, color, body shape, clothing, distinctive features. NO poses, NO locations, NO actions. BAD: 'a black crow perched on a branch'. GOOD: 'a sleek black crow with sharp amber eyes and glossy black feathers'.>",
+      "appearance": "<one specific sentence describing ONLY visual traits, and it MUST state an explicit AGE first: for humans give a number ('a 7-year-old girl...'), for animals/creatures give a clear life stage ('a young sparrow...', 'an old grey-whiskered dog...'). Then species, color, body shape, clothing, distinctive features. NO poses, NO locations, NO actions. BAD: 'a black crow perched on a branch'. GOOD: 'a young sleek black crow with sharp amber eyes and glossy black feathers'.>",
       "locked_visual_token": "<the SAME visual description as 'appearance' but compressed to a tight 15-30 word phrase that can be pasted verbatim into every shot prompt. Must include: age + species/race + hair + clothing colors + ONE distinctive feature. NO actions, NO emotions, NO setting. Example: 'a 6-year-old boy with curly brown hair and round glasses, wearing a red t-shirt, blue shorts, and white sneakers'.>"
     }}
   ],
@@ -203,6 +210,7 @@ Each shot should advance the story AND add texture — a detail of the world, a 
     {{
       "shot_number": 1,
       "beat": "atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence",
+      "shot_type": "wide | medium | closeup | insert",
       "narration": "<8-15 words, specific actions, no emotion labels>",
       "visual_description": "<one sentence>",
       "first_frame_prompt": "<40-70 words: ONLY pose + setting + camera framing + lighting. DO NOT re-describe the character's hair, clothes, age, species, glasses, or any appearance trait — the locked_visual_token will be injected automatically. Refer to the character by NAME only. Example: 'Rohan stands at the edge of a dusty courtyard, head tilted down, hands clasped behind his back. Wide shot, late afternoon golden light, soft warm shadows.'>",
@@ -474,6 +482,18 @@ def _validate_and_default(script: dict) -> dict:
             log.warning(f"Duplicate narration detected: '{narr[:60]}...'")
         seen_narration.add(narr)
 
+    # Default shot_type when the LLM omitted it — derive from the beat
+    _beat_to_shot_type = {
+        "atmosphere": "wide",
+        "reaction": "closeup",
+        "moment-of-decision": "closeup",
+    }
+    for s in script["shots"]:
+        st_val = (s.get("shot_type") or "").strip().lower()
+        if st_val not in ("wide", "medium", "closeup", "insert"):
+            beat = (s.get("beat") or "").strip().lower()
+            s["shot_type"] = _beat_to_shot_type.get(beat, "medium")
+
     return script
 
 
@@ -590,7 +610,14 @@ You are a story structurer. The story has already been WRITTEN by another author
    `atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence`
    First shot is often `atmosphere` (no character, sets scene) or `hook` (introduces character). Middle shots are `spark`/`struggle`/`observation`/`reaction`. Near the end, `choice` then `consequence`.
 
-4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only — species, age, color, clothing, defining feature; NO poses, NO emotions, NO setting). Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature`.
+3b. **Pick a shot_type for each shot** (REQUIRED FIELD) — the camera framing:
+   - `"wide"` — establishing shot, whole location visible, character small in frame. REQUIRED for the first shot in every new location; natural for atmosphere beats.
+   - `"medium"` — character action, waist-up or full body. The default for plot beats.
+   - `"closeup"` — the face fills the frame. Use for reaction and moment-of-decision beats.
+   - `"insert"` — extreme close-up of HANDS + OBJECT (paw, beak, fingers count). REQUIRED whenever a character picks up, holds, drops, places, or manipulates an object.
+   Across the story: at least ONE wide, at least ONE insert or closeup, and never two consecutive shots with the same shot_type unless deliberately dramatic.
+
+4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only; NO poses, NO emotions, NO setting) that MUST state an explicit AGE first: for humans give a number ("a 7-year-old girl..."), for animals/creatures give a clear life stage ("a young sparrow...", "an old grey-whiskered dog..."). Then species, color, body shape, clothing, distinctive features. Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature` — it must start with the age words.
 
 5. **If the prose only hints at a character's look ("a small girl", "a brown dog"), invent simple visual details that fit the story tone.** Pick concrete colors. Keep it kid-friendly. Be consistent across shots.
 
@@ -630,6 +657,7 @@ You are a story structurer. The story has already been WRITTEN by another author
     {{
       "shot_number": 1,
       "beat": "atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence",
+      "shot_type": "wide | medium | closeup | insert",
       "narration": "<8-15 words taken from the author's prose>",
       "visual_description": "<one short sentence>",
       "first_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
