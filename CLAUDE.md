@@ -75,6 +75,7 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `runtime_settings.py` — JSON overrides: style/voice/aspect/cfg/sync/upscale/music/reference/**transition_mode**.
 - `safety_filter.py` — block unsafe words.
 - `script_generator.py` — 2-stage story gen: story_writer (prose) → structurer (schema JSON). Targets ~30s / 70-85 words.
+- `shot_editor.py` — insert new shot anywhere (LLM-written), renumber + shift all on-disk artifacts.
 - `shot_tailor.py` — per-shot beat tailor; NOT in auto pipeline (superseded by prompt_assembler).
 - `storyboard_generator.py` — one image/shot via active backend; reads approved prompts/seeds.
 - `storyboard_workflow.py` — Discord workflow: gen frames, per-shot embeds, contact sheet, approval.
@@ -98,7 +99,15 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ---
 
-## 3. What We Changed Today (2026-06-10) — production hardening pass
+## 3. What We Changed Today (2026-06-11) — dramatic storytelling pass
+- **Insert-shot feature** — new `modules/shot_editor.py` `insert_shot(script_id, position, brief)`: LLM writes a new shot from surrounding-shot context (fallback builds from brief if Ollama down), script renumbers, on-disk artifacts shift DESCENDING so rendered work stays attached (approved_prompts keys, `shot{N}_*.png` + storyboard.json manifest, `clip_{sid}_shot{N}[_vK].mp4` incl. revisions, seeds json). New shot gets an UNAPPROVED prompts entry. Discord: `!add_shot <id> <before|after> <shot#> [brief]`. Dashboard: per-shot "➕ Add shot" button + before/after dialog. After insert: `!regen_shot` + `!regen_video_shot` that shot only, then `!assemble`. Tests: `tests/test_shot_editor.py` (3 tests).
+- **Shot-type grammar** — required `shot_type` field (wide|medium|closeup|insert) in BOTH script-gen prompts (single-stage AND 2-stage structurer): insert REQUIRED when a character handles an object, wide REQUIRED for new locations, closeup for reactions; never two consecutive same types. `_validate_and_default` derives shot_type from beat when LLM omits. `prompt_assembler.SHOT_TYPE_FRAMING` injects concrete spatial framing into image prompts per shot_type.
+- **Age-first appearance** — character `appearance` + `locked_visual_token` must START with explicit age (number for humans, life stage for animals); assembler never drops the age words.
+- **Simpler motion prompts** — motion system prompt rewritten: ONE main action + ONE camera move, 25-50 words, camera matched to shot_type (insert/closeup → static/push-in, wide → pan/drift).
+- **Casting confirmation gate** — after script approval + health gate, 🎭 casting embed (name/type/appearance per char) with Continue/Edit cast/Cancel. Edit modal (≤5 chars) updates BOTH appearance and locked_visual_token in script JSON. View NOT crash-persistent — re-run `!generate_storyboard <id>` to re-post. Skipped when no structured characters.
+- **NOT YET LIVE** — bot needs restart to load these edits. 75 tests green.
+
+## Earlier (2026-06-10) — production hardening pass
 - **Git repo FIXED.** Ignore file was named `gitignore` (no dot) → git never read it; venv (3,496 files) + .pyc were tracked, and most live modules were NEVER committed. Now: `.gitignore` proper (adds secrets.env, .nicegui/, *.zip), venv/pycache untracked, ALL live source committed + pushed to GitHub `origin` (Rex_Bot repo). 85 tracked files.
 - **Atomic JSON writes** — new `modules/file_utils.py` (`atomic_write_json`: tmp + fsync + rename). All 16 state-write sites converted (stats, pending_state, scripts, approved prompts, runtime settings, registry, panel state, seeds, gen history, feedback, agent memory). Crash mid-write keeps old file.
 - **Shared GPU job lock** — new `modules/job_lock.py`. Same-thread reentrant (Discord pipeline chains), cross-thread release (dashboard UI-thread acquire → worker release), on-disk marker `05_Config/job_lock.json` (blocks 2nd bot process; stale/dead-pid markers stolen; 4h staleness). Discord entrypoints via `_gpu_job(label)` decorator; `!upscale`/`!assemble` inline; dashboard via `_try_begin/_end` (keeps S.busy). NOTE: two Discord commands on the same event loop can still interleave (same thread = reentrant) — status quo kept.
