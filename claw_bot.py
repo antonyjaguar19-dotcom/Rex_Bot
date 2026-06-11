@@ -2070,16 +2070,154 @@ async def on_reaction_add(reaction, user):
 # ============================================================
 
 @_gpu_job("prompt generation")
+def _casting_embed(script: dict) -> discord.Embed:
+    """🎭 Cast sheet — name, type, appearance per character."""
+    e = discord.Embed(
+        title=f"🎭 Casting — {script.get('title', 'Untitled')}",
+        description=(
+            "Confirm the cast before prompts are written. The appearance "
+            "below locks every shot — fix ages, colors, clothing NOW.\n"
+            "✅ Continue · ✏️ Edit cast · 🛑 Cancel"
+        ),
+        color=discord.Color.purple(),
+    )
+    for c in script.get("characters", [])[:10]:
+        if not isinstance(c, dict):
+            continue
+        e.add_field(
+            name=f"{c.get('name', '?')}  ({c.get('type', 'character')})",
+            value=(c.get("appearance") or "_(no appearance)_")[:1000],
+            inline=False,
+        )
+    e.set_footer(text=f"Script {script.get('_id') or script.get('script_id', '')}")
+    return e
+
+
+class _CastingEditModal(discord.ui.Modal):
+    """One paragraph input per character (Discord caps modals at 5 inputs).
+    Saving updates BOTH `appearance` and `locked_visual_token` in the script
+    JSON so the new look propagates to every shot prompt."""
+
+    def __init__(self, script: dict, parent_view: "_CastingView"):
+        super().__init__(title="Edit cast appearance")
+        self.script = script
+        self.parent_view = parent_view
+        self._inputs: list[tuple[int, discord.ui.TextInput]] = []
+        chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
+        for idx, c in enumerate(chars[:5]):
+            ti = discord.ui.TextInput(
+                label=(c.get("name") or f"Character {idx + 1}")[:45],
+                style=discord.TextStyle.paragraph,
+                default=(c.get("appearance") or "")[:1000],
+                max_length=1000,
+                required=False,
+            )
+            self.add_item(ti)
+            self._inputs.append((idx, ti))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        script_id = self.script.get("_id") or self.script.get("script_id")
+        chars = [c for c in self.script.get("characters", []) if isinstance(c, dict)]
+        changed = []
+        for idx, ti in self._inputs:
+            new = (ti.value or "").strip()
+            if not new or idx >= len(chars):
+                continue
+            if new != (chars[idx].get("appearance") or "").strip():
+                chars[idx]["appearance"] = new
+                # Lock token = compressed appearance (age-first, ≤30 words)
+                chars[idx]["locked_visual_token"] = " ".join(new.split()[:30])
+                changed.append(chars[idx].get("name", f"#{idx + 1}"))
+        if not changed:
+            await interaction.response.send_message(
+                "No changes.", ephemeral=True)
+            return
+        try:
+            path = OUTPUTS_DIR / f"script_{script_id}.json"
+            atomic_write_json(path, self.script)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Could not save: `{e}`", ephemeral=True)
+            return
+        # Refresh the casting embed in place
+        note = (f"✏️ Cast updated ({', '.join(changed)}) — appearance + locked "
+                f"token saved. Press ✅ Continue when happy.")
+        try:
+            await interaction.response.edit_message(
+                embed=_casting_embed(self.script), view=self.parent_view)
+            await interaction.followup.send(note)
+        except Exception:
+            try:
+                await interaction.response.send_message(note)
+            except Exception:
+                pass
+
+
+class _CastingView(discord.ui.View):
+    """Continue / Edit cast / Cancel gate posted right after script approval.
+    Not crash-persistent — if the bot restarts, re-run `!generate_storyboard
+    <id>` and the gate is posted again."""
+
+    def __init__(self, script: dict, owner_id: int, on_proceed):
+        super().__init__(timeout=None)
+        self.script = script
+        self.owner_id = owner_id
+        self.on_proceed = on_proceed
+
+    async def _gate(self, interaction) -> bool:
+        if self.owner_id and interaction.user.id != self.owner_id \
+                and not getattr(interaction.user.guild_permissions,
+                                "administrator", False):
+            await interaction.response.send_message(
+                "⚠️ Only the requester can decide the casting.", ephemeral=True)
+            return False
+        return True
+
+    def _disable_all(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="✅ Continue", style=discord.ButtonStyle.success)
+    async def btn_continue(self, interaction, button):
+        if not await self._gate(interaction):
+            return
+        self._disable_all()
+        await interaction.response.edit_message(view=self)
+        await self.on_proceed(interaction)
+        self.stop()
+
+    @discord.ui.button(label="✏️ Edit cast", style=discord.ButtonStyle.primary)
+    async def btn_edit(self, interaction, button):
+        if not await self._gate(interaction):
+            return
+        await interaction.response.send_modal(
+            _CastingEditModal(self.script, self))
+
+    @discord.ui.button(label="🛑 Cancel", style=discord.ButtonStyle.danger)
+    async def btn_cancel(self, interaction, button):
+        if not await self._gate(interaction):
+            return
+        self._disable_all()
+        await interaction.response.edit_message(view=self)
+        sid = self.script.get("_id") or self.script.get("script_id")
+        await interaction.channel.send(
+            f"🛑 Casting for `{sid}` cancelled by {interaction.user.mention}. "
+            f"Revise the script or re-run `!generate_storyboard {sid}`."
+        )
+        self.stop()
+
+
 async def _polish_then_storyboard(
     status_channel, storyboards_channel, script: dict,
     owner_id: int, owner_mention: str
 ):
     """Approval-gated prompt flow:
       1. Health gate (ComfyUI + Ollama alive)
-      2. Generate image + motion prompts for every shot via Qwen
-      3. Post per-shot Discord embeds with Edit/Reseed/Approve-Shot buttons
-      4. User reviews, edits, locks each shot, then clicks Approve-All
-      5. Approve-All → storyboard pipeline (which reads approved prompts + seeds)
+      2. 🎭 Casting confirmation — user reviews/edits character appearance
+      3. Generate image + motion prompts for every shot via Qwen
+      4. Post per-shot Discord embeds with Edit/Reseed/Approve-Shot buttons
+      5. User reviews, edits, locks each shot, then clicks Approve-All
+      6. Approve-All → storyboard pipeline (which reads approved prompts + seeds)
 
     Shot tailor + polish were removed from the auto pipeline — the user now
     approves prompts directly. Polisher still available via !repolish for
@@ -2115,23 +2253,39 @@ async def _polish_then_storyboard(
             f"🛑 Prompt approval for `{script_id}` cancelled by {interaction.user.mention}."
         )
 
+    async def _proceed_to_prompts(_interaction=None):
+        try:
+            await pap.post_approval_ui(
+                channel=storyboards_channel,
+                script=script,
+                owner_id=owner_id,
+                on_approve_all=_on_approve_all,
+                on_cancel=_on_cancel,
+            )
+        except Exception as e:
+            log.exception(f"Prompt approval setup failed: {e}")
+            await status_channel.send(
+                f"❌ Could not post prompt approvals for `{script_id}`: `{e}`\n"
+                f"Falling back to legacy direct storyboard render."
+            )
+            asyncio.create_task(_run_storyboard_pipeline(
+                storyboards_channel, script_id, owner_id, owner_mention, is_auto=True
+            ))
+
+    # 🎭 Casting gate — skip when the script has no structured characters.
+    chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
+    if not chars:
+        await _proceed_to_prompts()
+        return
     try:
-        await pap.post_approval_ui(
-            channel=storyboards_channel,
-            script=script,
-            owner_id=owner_id,
-            on_approve_all=_on_approve_all,
-            on_cancel=_on_cancel,
+        await storyboards_channel.send(
+            content=f"{owner_mention} — confirm the cast for `{script_id}`:",
+            embed=_casting_embed(script),
+            view=_CastingView(script, owner_id, _proceed_to_prompts),
         )
     except Exception as e:
-        log.exception(f"Prompt approval setup failed: {e}")
-        await status_channel.send(
-            f"❌ Could not post prompt approvals for `{script_id}`: `{e}`\n"
-            f"Falling back to legacy direct storyboard render."
-        )
-        asyncio.create_task(_run_storyboard_pipeline(
-            storyboards_channel, script_id, owner_id, owner_mention, is_auto=True
-        ))
+        log.exception(f"Casting gate failed, proceeding without it: {e}")
+        await _proceed_to_prompts()
 
 @_gpu_job("storyboard render")
 async def _run_storyboard_pipeline(
