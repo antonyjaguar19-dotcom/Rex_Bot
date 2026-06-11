@@ -2069,7 +2069,6 @@ async def on_reaction_add(reaction, user):
 # STORYBOARD PIPELINE HELPER
 # ============================================================
 
-@_gpu_job("prompt generation")
 def _casting_embed(script: dict) -> discord.Embed:
     """🎭 Cast sheet — name, type, appearance per character."""
     e = discord.Embed(
@@ -2253,7 +2252,10 @@ async def _polish_then_storyboard(
             f"🛑 Prompt approval for `{script_id}` cancelled by {interaction.user.mention}."
         )
 
-    async def _proceed_to_prompts(_interaction=None):
+    # GPU lock is taken HERE (not around the casting gate) so the lock is
+    # never held while waiting for the user to press Continue.
+    @_gpu_job("prompt generation")
+    async def _proceed_to_prompts(first=None):
         try:
             await pap.post_approval_ui(
                 channel=storyboards_channel,
@@ -2275,7 +2277,7 @@ async def _polish_then_storyboard(
     # 🎭 Casting gate — skip when the script has no structured characters.
     chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
     if not chars:
-        await _proceed_to_prompts()
+        await _proceed_to_prompts(storyboards_channel)
         return
     try:
         await storyboards_channel.send(
@@ -2285,7 +2287,7 @@ async def _polish_then_storyboard(
         )
     except Exception as e:
         log.exception(f"Casting gate failed, proceeding without it: {e}")
-        await _proceed_to_prompts()
+        await _proceed_to_prompts(storyboards_channel)
 
 @_gpu_job("storyboard render")
 async def _run_storyboard_pipeline(
@@ -2657,7 +2659,7 @@ async def cmd_rewrite_narration(ctx, script_id: str = None, shot_num=None,
 
 @bot.command(name="add_shot", aliases=["insert_shot", "new_shot"])
 async def cmd_add_shot(ctx, script_id: str = None, where: str = None,
-                       shot_num=None, *brief_words):
+                       shot_num=None, *brief_words, brief: str = None):
     """Insert a new shot into an existing script — works even after the
     storyboard/videos are rendered. Existing shots renumber and their
     frames/clips follow them; only the new shot needs rendering.
@@ -2678,7 +2680,7 @@ async def cmd_add_shot(ctx, script_id: str = None, where: str = None,
     except ValueError:
         await ctx.send(f"❌ Shot number must be an integer, got `{shot_num}`.")
         return
-    brief = " ".join(brief_words).strip()
+    brief = (brief or " ".join(brief_words)).strip()
     position = shot_n if where == "before" else shot_n + 1
 
     path = OUTPUTS_DIR / f"script_{script_id}.json"

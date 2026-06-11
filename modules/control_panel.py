@@ -159,6 +159,40 @@ class ValueModal(ui.Modal):
         await _run_cmd(interaction, self.cmd_key, **{self.arg_name: val})
 
 
+class AddShotModal(ui.Modal, title="➕ Add Shot"):
+    script_id = ui.TextInput(
+        label="Script ID", placeholder="e.g. 20260611_081952",
+        required=True, max_length=40,
+    )
+    where = ui.TextInput(
+        label="Where? (before/after + shot number)",
+        placeholder="e.g. after 3", required=True, max_length=20,
+    )
+    brief = ui.TextInput(
+        label="What should happen? (optional)",
+        placeholder="e.g. closeup of paws gripping the rope — AI invents if empty",
+        required=False, max_length=300,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction):
+        parts = str(self.where).strip().lower().split()
+        where = parts[0] if parts else ""
+        shot = parts[1] if len(parts) > 1 else ""
+        if where not in ("before", "after") or not shot.isdigit():
+            await interaction.response.send_message(
+                "❌ Where must look like `after 3` or `before 2`.",
+                ephemeral=True,
+            )
+            return
+        await _run_cmd(
+            interaction, "add_shot",
+            script_id=str(self.script_id).strip(),
+            where=where, shot_num=shot,
+            brief=str(self.brief).strip(),
+        )
+
+
 class NarrationRewriteModal(ui.Modal, title="🪄 AI Rewrite Narration"):
     script_id = ui.TextInput(
         label="Script ID", placeholder="e.g. 20260502_1430",
@@ -315,6 +349,9 @@ class StoryboardsView(_SubView):
             extra_arg_name="shot_num", extra_arg_label="Shot number",
             extra_arg_placeholder="e.g. 2",
         ))
+
+    @ui.button(label="➕ Add Shot", style=discord.ButtonStyle.primary, row=1, custom_id="cp:stb:add")
+    async def b4(self, i, b): await i.response.send_modal(AddShotModal())
 
 class VideosView(_SubView):
     @ui.button(label="🎥 Generate", style=discord.ButtonStyle.primary, row=0, custom_id="cp:vid:gen")

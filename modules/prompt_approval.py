@@ -169,6 +169,25 @@ def _random_seed() -> int:
     return random.randint(1, 2_147_483_647)
 
 
+def _update_script_narration(script_id: str, shot_num: int, new_text: str) -> bool:
+    """Write a narration edit back to the script JSON — the narration source
+    of truth (`shots[].narration`), read at render time by TTS + dashboard."""
+    sp = SCRIPTS_DIR / f"script_{script_id}.json"
+    if not sp.exists():
+        return False
+    try:
+        script = json.loads(sp.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning(f"narration edit: could not read script {script_id}: {e}")
+        return False
+    for s in script.get("shots", []):
+        if s.get("shot_number") == shot_num:
+            s["narration"] = new_text
+            atomic_write_json(sp, script)
+            return True
+    return False
+
+
 # ==============================================================================
 # PROMPT GENERATION (one Qwen call per shot, image + motion)
 # ==============================================================================
@@ -580,6 +599,33 @@ class _ShotApprovalView(ui.View):
             script_id=self.script_id, shot_num=self.shot_num,
             prompt_kind="motion",
             current_value=shot_state.get("motion_seed", -1),
+            on_done=on_done,
+        )
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="🎙️ Edit Narration", style=discord.ButtonStyle.primary, row=2)
+    async def edit_narration(self, interaction, button):
+        shot_state = _get_state(self.script_id)["prompts"].get(str(self.shot_num), {})
+
+        async def on_done(inter, new_text):
+            new_text = new_text.strip()
+            ok = _update_script_narration(self.script_id, self.shot_num, new_text)
+
+            def mut(s):
+                s["narration"] = new_text
+            self._update_shot(mut)
+            await self._refresh_message(inter)
+            await inter.followup.send(
+                f"🎙️ Shot {self.shot_num} narration updated"
+                + ("" if ok else " (prompts only — script file not found)")
+                + ". Voiceover uses the new line at render.",
+                ephemeral=True,
+            )
+
+        modal = _PromptEditModal(
+            script_id=self.script_id, shot_num=self.shot_num,
+            prompt_kind="narration",
+            current_value=shot_state.get("narration", ""),
             on_done=on_done,
         )
         await interaction.response.send_modal(modal)
