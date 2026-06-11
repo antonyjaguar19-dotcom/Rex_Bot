@@ -1440,6 +1440,7 @@ async def on_ready():
                     "list_scripts":        cmd_list_scripts,
                     "show_script":         cmd_show_script,
                     "rewrite_narration":   cmd_rewrite_narration,
+                    "add_shot":            cmd_add_shot,
                     "repolish":            cmd_repolish,
                     "generate_storyboard": cmd_generate_storyboard,
                     "list_storyboards":    cmd_list_storyboards,
@@ -2500,6 +2501,75 @@ async def cmd_rewrite_narration(ctx, script_id: str = None, shot_num=None,
     )
 
 
+@bot.command(name="add_shot", aliases=["insert_shot", "new_shot"])
+async def cmd_add_shot(ctx, script_id: str = None, where: str = None,
+                       shot_num=None, *brief_words):
+    """Insert a new shot into an existing script — works even after the
+    storyboard/videos are rendered. Existing shots renumber and their
+    frames/clips follow them; only the new shot needs rendering.
+
+    `!add_shot <script_id> <before|after> <shot_num> [what should happen]`
+    """
+    usage = ("Usage: `!add_shot <script_id> <before|after> <shot_num> "
+             "[what should happen in the new shot]`")
+    if not script_id or not where or shot_num is None:
+        await ctx.send(usage)
+        return
+    where = where.strip().lower()
+    if where not in ("before", "after"):
+        await ctx.send(f"❌ Second argument must be `before` or `after`.\n{usage}")
+        return
+    try:
+        shot_n = int(str(shot_num).strip())
+    except ValueError:
+        await ctx.send(f"❌ Shot number must be an integer, got `{shot_num}`.")
+        return
+    brief = " ".join(brief_words).strip()
+    position = shot_n if where == "before" else shot_n + 1
+
+    path = OUTPUTS_DIR / f"script_{script_id}.json"
+    if not path.exists():
+        await ctx.send(f"❌ No script `{script_id}`. Try `!list_scripts`.")
+        return
+
+    from modules import shot_editor as se
+    status = await ctx.send(
+        f"🎬 Writing a new shot {where} shot `{shot_n}` of `{script_id}`…"
+    )
+    try:
+        result = await asyncio.to_thread(se.insert_shot, script_id, position, brief)
+    except Exception as e:
+        log.exception(f"add_shot failed for {script_id}")
+        await status.edit(content=f"❌ Insert failed: `{e}`")
+        return
+
+    ns = result["new_shot"]
+    total = len(result["script"].get("shots", []))
+    moved = []
+    if result["shifted_shots"]:
+        moved.append(f"{result['shifted_shots']} shots renumbered")
+    if result["renamed_frames"]:
+        moved.append(f"{result['renamed_frames']} storyboard frames moved")
+    if result["renamed_clips"]:
+        moved.append(f"{result['renamed_clips']} clips moved")
+    moved_line = f"📦 {', '.join(moved)}.\n" if moved else ""
+    prompts_line = (
+        "📝 Unapproved prompts added — review with `!edit_prompts "
+        f"{script_id}`.\n" if result["prompts_entry_added"] else ""
+    )
+    await status.edit(
+        content=(
+            f"✅ **New shot {position} inserted** (`{script_id}`, now {total} shots)\n"
+            f"🎞️ Beat: `{ns['beat']}` · Framing: `{ns['shot_type']}`\n"
+            f"🎙️ {ns['narration']}\n"
+            f"🖼️ {ns['visual_description']}\n"
+            f"{moved_line}{prompts_line}"
+            f"➡️ Render just this shot: `!regen_shot {script_id} {position}` then "
+            f"`!regen_video_shot {script_id} {position}`, then `!assemble {script_id}`."
+        )
+    )
+
+
 # ============================================================
 # COMMANDS — Pending / Resume / Drop
 # ============================================================
@@ -2637,7 +2707,10 @@ async def cmd_help(ctx):
             "`!today_script` — today's theme of the day\n"
             "`!suggest_theme` — random theme suggestion\n"
             "`!list_scripts` — recent scripts with IDs\n"
-            "`!show_script <id>` — display a specific script"
+            "`!show_script <id>` — display a specific script\n"
+            "`!rewrite_narration <id> <shot#> [hint]` — AI-rewrite one narration line\n"
+            "`!add_shot <id> <before|after> <shot#> [brief]` — insert a new shot\n"
+            "  ↳ *Example:* `!add_shot 20260420_213414 after 3 closeup of paws gripping the rope`"
         ),
         inline=False,
     )

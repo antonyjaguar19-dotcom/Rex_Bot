@@ -678,6 +678,40 @@ def regen_storyboard_shot(shot_num: int, refresh_cb):
     _bg(worker)
 
 
+def add_shot_action(position: int, brief: str, refresh_cb):
+    """Insert a new LLM-written shot at `position` (1-based). Existing shots
+    renumber and their frames/clips follow; only the new shot needs rendering."""
+    sid = S.script_id
+    if not sid:
+        ui.notify("❌ No script.", type="negative"); return
+    if not _try_begin(f"add shot {position}"):
+        return
+    S.push(f"Writing new shot {position}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import shot_editor as se
+            result = se.insert_shot(sid, position, brief or "")
+            ns = result["new_shot"]
+            S.push(
+                f"New shot {position} inserted ({ns['beat']}/{ns['shot_type']}): "
+                f"{ns['narration'][:80]}"
+            )
+            S.push("Next: regen this shot's storyboard + video, then re-assemble.")
+            try:
+                S.script = json.loads(
+                    (SCRIPTS_DIR / f"script_{sid}.json").read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        except Exception as e:
+            S.push(f"Add shot failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
 def regen_video_shot(shot_num: int, refresh_cb):
     """Re-render a single shot's clip (reuses the run_video per-shot logic)."""
     sid = S.script_id
@@ -1402,6 +1436,32 @@ def main_page():
                     ui.button("🔁 Regen shot",
                               on_click=lambda s=shot_n: regen_storyboard_shot(s, full_refresh)) \
                         .props("flat dense").classes("w-full")
+
+                    def _open_add_shot(s=shot_n):
+                        with ui.dialog() as dlg, ui.card().classes("w-96"):
+                            ui.label(f"➕ Insert a new shot next to shot {s}") \
+                                .classes("text-lg font-bold")
+                            where = ui.radio(["before", "after"], value="after") \
+                                .props("inline")
+                            brief = ui.textarea(
+                                "What should happen? (optional — AI invents "
+                                "a dramatic beat if left empty)"
+                            ).classes("w-full")
+                            with ui.row():
+                                def _go():
+                                    pos = s if where.value == "before" else s + 1
+                                    dlg.close()
+                                    add_shot_action(pos, brief.value or "",
+                                                    full_refresh)
+                                ui.button("➕ Insert", on_click=_go) \
+                                    .props("color=teal")
+                                ui.button("Cancel", on_click=dlg.close) \
+                                    .props("flat")
+                        dlg.open()
+
+                    ui.button("➕ Add shot", on_click=_open_add_shot) \
+                        .props("flat dense").classes("w-full") \
+                        .tooltip("Insert a new shot before/after this one")
 
     def render_video():
         clips = video_clips(S.script_id)
