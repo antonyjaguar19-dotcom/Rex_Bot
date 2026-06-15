@@ -56,6 +56,33 @@ def get_active(backend_type: str) -> dict:
     return cfg
 
 
+def get_for_role(role: str) -> dict:
+    """
+    Return the LLM config for a named pipeline role (e.g. 'creative',
+    'structurer'), resolved via llm_backend.roles. Falls back to the active
+    LLM backend when the role map is missing or the role isn't listed.
+
+    Lets different pipeline stages use different models (creative prose vs.
+    reliable JSON) without each call site hardcoding a model id.
+    """
+    reg = _load()
+    section = reg.get("llm_backend")
+    if section is None:
+        raise KeyError("Unknown backend type: llm_backend")
+    roles = section.get("roles", {})
+    backend_id = roles.get(role) or roles.get("default") or section.get("active")
+    if backend_id is None:
+        return None
+    cfg = section.get("available", {}).get(backend_id)
+    if cfg is None:
+        # Role pointed at a missing entry — fall back to active rather than crash.
+        log.warning(f"Role '{role}' -> '{backend_id}' not in available; using active.")
+        return get_active("llm_backend")
+    cfg = dict(cfg)
+    cfg["_id"] = backend_id
+    return cfg
+
+
 def list_available(backend_type: str) -> dict:
     """Return all available backends of a type as {id: description}."""
     reg = _load()

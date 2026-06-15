@@ -100,6 +100,8 @@ class Backend(ImageBackend):
         seed: Optional[int] = None,
         reference_image: Optional[Path] = None,
         environment_image: Optional[Path] = None,
+        cfg_override: Optional[float] = None,
+        **kwargs,
     ) -> Path:
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
@@ -135,7 +137,13 @@ class Backend(ImageBackend):
         rs_steps = rs.get_steps_override()
         rs_cfg = rs.get_cfg_override()
         effective_steps = rs_steps if rs_steps is not None else self.steps
-        effective_cfg = rs_cfg if rs_cfg is not None else self.cfg
+        # Precedence: explicit per-shot cfg_override (beat bias) > runtime setting > model default.
+        if cfg_override is not None:
+            effective_cfg = float(cfg_override)
+        elif rs_cfg is not None:
+            effective_cfg = rs_cfg
+        else:
+            effective_cfg = self.cfg
 
         formatted_prompt = self.format_prompt_for_backend(prompt)
         negative = negative_prompt or DEFAULT_NEGATIVE

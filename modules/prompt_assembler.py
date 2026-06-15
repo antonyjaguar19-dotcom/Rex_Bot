@@ -69,15 +69,28 @@ def _build_system_prompt(beat: str, no_chars: bool, shot_type: str = "") -> str:
         "paraphrase the appearance, and NEVER drop the age words (the token "
         "starts with the character's age; it must survive into your output "
         "verbatim). Combine each character's appearance with their pose/action "
-        "in a single sentence per character. Do not mention any character "
-        "whose locked_visual_token was NOT provided to you."
+        "in a single sentence per character. State each character's visual "
+        "traits ONCE, only via the locked_visual_token — do NOT add extra "
+        "adjectives elsewhere that repeat traits already in the token (if the "
+        "token says 'white fur', never also write 'snowy-white fur gleaming'). "
+        "After that one sentence, refer to the character by NAME only. "
+        "Do not mention any character whose locked_visual_token was NOT "
+        "provided to you."
     )
 
     framing = SHOT_TYPE_FRAMING.get((shot_type or "").strip().lower(), "")
     shot_type_rule = (
         f"\n# SHOT TYPE: \"{shot_type}\"\n\n"
-        f"The camera framing sentence MUST express this exactly: {framing}. "
-        f"This overrides any framing implied by the body text.\n"
+        f"Compose the frame so that: {framing}. "
+        f"Do NOT paste that wording verbatim, and do NOT write rule-like or "
+        f"camera-operator phrases ('the camera framing shows', 'occupies less "
+        f"than a third of the frame height', 'a medium shot that fills half the "
+        f"frame', 'viewed from a distance the whole location is visible'). "
+        f"Instead TRANSLATE it into plain painting language — where the subject "
+        f"sits in the picture, how near or far it reads, and what surrounds it "
+        f"(e.g. 'the rabbit is small against the wide meadow' or 'the tortoise's "
+        f"face nearly fills the picture'). This framing overrides any framing "
+        f"implied by the body text.\n"
         if framing else ""
     )
 
@@ -376,9 +389,9 @@ You are a senior animation director. You describe how the starting frame should 
 
 # WAN 2.2 I2V PROMPT PHILOSOPHY
 
-Wan 2.2 reads physical action verbs and camera movement directives. It ignores adjectives about mood. Lead with the largest motion in the frame.
+Wan 2.2 reads physical action verbs and real camera vocabulary. It was trained on detailed cinematic captions, so it DOES respond to lighting and atmosphere CHANGES (light shifting warmer, a glint moving, dust catching the sun) and to named camera moves. Lead with the largest motion in the frame.
 
-GOOD: "The snail slowly inches forward along the leaf. Its eye-stalks tilt up. A small breeze rustles the marigolds behind it. The camera drifts in slightly."
+GOOD: "The snail slowly inches forward along the leaf. Warm light shifts across its shell as a breeze rustles the marigolds behind it. The camera dollies in slowly."
 
 BAD: "A beautiful sense of wonder unfolds as the brave little snail experiences the joy of discovery in this magical garden moment."
 
@@ -388,10 +401,10 @@ A motion prompt is ONE main action plus ONE camera move. Wan stalls or
 hallucinates when given several competing actions — keep it minimal.
 
 1. **First sentence: the ONE main action.** Concrete verb, one subject. "Max drops a pebble into the bucket."
-2. **Optional second sentence: one small secondary motion** (grass sways, light shifts). Skip it if the main action is enough.
-3. **Last sentence: the ONE camera move.** Short, explicit: "slow push in", "static hold", "gentle pan left", "subtle drift up". Match the framing: insert/closeup shots want "static hold" or "slow push in"; wide shots want a slow pan or drift.
+2. **Optional second sentence: one small secondary motion** — a moving object (grass sways) OR a lighting/atmosphere change (light warms, a glint slides across, dust drifts in a sunbeam). Wan 2.2 renders these well. Skip it if the main action is enough.
+3. **Last sentence: the ONE camera move.** Use Wan's real camera vocabulary, explicit and short: "slow dolly in", "static hold", "gentle pan left", "slow tracking shot following the subject", "subtle crane up", "slow tilt down". Match the framing: insert/closeup shots want "static hold" or "slow dolly in"; wide shots want a slow pan, tracking shot, or crane.
 4. **Length: 25-50 words.** Tight. Every word maps to pixels moving.
-5. **No abstract motion words.** Banned: gracefully, beautifully, magically, dreamlike, ethereal, captures, evokes.
+5. **No abstract mood words.** Banned: gracefully, beautifully, magically, dreamlike, ethereal, captures, evokes. (A concrete lighting CHANGE is fine — "light warms" is allowed; "a magical glow" is not.)
 6. **No speech, no mouth movement, no lip sync.** Add: "No speech. No mouth movement." at end.
 7. **No mode change.** Don't introduce new characters, new locations, or scene cuts. Wan animates the existing frame.
 

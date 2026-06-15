@@ -712,6 +712,48 @@ def add_shot_action(position: int, brief: str, refresh_cb):
     _bg(worker)
 
 
+def add_breathing_shot_action(position: int, image_prompt: str,
+                              motion_prompt: str, narration: str,
+                              shot_type: str, refresh_cb):
+    """Insert a manually-prompted breathing shot (quiet atmospheric beat) at
+    `position` (1-based). No LLM — the typed prompts are used verbatim."""
+    sid = S.script_id
+    if not sid:
+        ui.notify("❌ No script.", type="negative"); return
+    if not (image_prompt or "").strip():
+        ui.notify("❌ Image prompt required for a breathing shot.", type="negative")
+        return
+    if not _try_begin(f"breathing shot {position}"):
+        return
+    S.push(f"Inserting breathing shot {position}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import shot_editor as se
+            result = se.insert_breathing_shot(
+                sid, position,
+                image_prompt=image_prompt, motion_prompt=motion_prompt,
+                narration=narration, shot_type=shot_type)
+            ns = result["new_shot"]
+            S.push(
+                f"Breathing shot {position} inserted ({ns['shot_type']}): "
+                f"{ns['visual_description'][:80]}"
+            )
+            S.push("Next: regen this shot's storyboard + video, then re-assemble.")
+            try:
+                S.script = json.loads(
+                    (SCRIPTS_DIR / f"script_{sid}.json").read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        except Exception as e:
+            S.push(f"Breathing shot failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
 def regen_video_shot(shot_num: int, refresh_cb):
     """Re-render a single shot's clip (reuses the run_video per-shot logic)."""
     sid = S.script_id
@@ -1462,6 +1504,44 @@ def main_page():
                     ui.button("➕ Add shot", on_click=_open_add_shot) \
                         .props("flat dense").classes("w-full") \
                         .tooltip("Insert a new shot before/after this one")
+
+                    def _open_breathing(s=shot_n):
+                        with ui.dialog() as dlg, ui.card().classes("w-96"):
+                            ui.label(f"🌬️ Breathing shot next to shot {s}") \
+                                .classes("text-lg font-bold")
+                            ui.label("Quiet atmospheric beat — type the prompts "
+                                     "yourself (no AI).").classes("text-xs opacity-75")
+                            where = ui.radio(["before", "after"], value="after") \
+                                .props("inline")
+                            stype = ui.select(
+                                ["wide", "medium", "closeup", "insert"],
+                                value="wide", label="Shot type").classes("w-full")
+                            img = ui.textarea(
+                                "Image prompt (what's on screen) — required"
+                            ).classes("w-full")
+                            mot = ui.textarea(
+                                "Motion prompt (camera/ambient move) — optional"
+                            ).classes("w-full")
+                            narr = ui.textarea(
+                                "Narration (optional — leave empty for a silent hold)"
+                            ).classes("w-full")
+                            with ui.row():
+                                def _go():
+                                    pos = s if where.value == "before" else s + 1
+                                    dlg.close()
+                                    add_breathing_shot_action(
+                                        pos, img.value or "", mot.value or "",
+                                        narr.value or "", stype.value or "wide",
+                                        full_refresh)
+                                ui.button("🌬️ Insert", on_click=_go) \
+                                    .props("color=teal")
+                                ui.button("Cancel", on_click=dlg.close) \
+                                    .props("flat")
+                        dlg.open()
+
+                    ui.button("🌬️ Breathing shot", on_click=_open_breathing) \
+                        .props("flat dense").classes("w-full") \
+                        .tooltip("Insert a manually-prompted quiet beat before/after")
 
     def render_video():
         clips = video_clips(S.script_id)

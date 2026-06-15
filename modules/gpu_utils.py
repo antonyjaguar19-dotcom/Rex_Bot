@@ -74,61 +74,97 @@ def free_comfyui_vram() -> tuple[bool, str]:
         return False, f"Failed to free ComfyUI VRAM: {e}"
 
 
-def free_ollama_vram(model_name: Optional[str] = None) -> tuple[bool, str]:
-    """Unload the LLM from VRAM.
-
-    Primary path is the Ollama HTTP API (`keep_alive: 0` forces an immediate
-    unload) because it has NO dependency on `ollama` being on PATH — the bot's
-    environment frequently doesn't expose the CLI, in which case `ollama stop`
-    silently fails and the 12GB model stays resident, starving the video model
-    into RAM-offload (the 4min→15min slowdown). CLI is only a fallback.
-    """
+def _ollama_server_url() -> str:
+    """Resolve the Ollama server URL from the LLM backend config (fallback localhost)."""
     server_url = "http://127.0.0.1:11434"
-    if model_name is None:
-        try:
-            llm_cfg = model_registry.get_active("llm_backend")
+    try:
+        llm_cfg = model_registry.get_active("llm_backend")
+        if llm_cfg:
             server_url = (llm_cfg.get("server_url") or server_url).rstrip("/")
-            model_name = (
-                llm_cfg.get("model_id")
-                or llm_cfg.get("model_name")
-                or llm_cfg.get("model")
-                or "llama3.1:8b-instruct-q8_0"
-            )
-        except Exception:
-            model_name = "llama3.1:8b-instruct-q4_K_M"
+    except Exception:
+        pass
+    return server_url.rstrip("/")
 
-    # --- Primary: HTTP API. keep_alive=0 evicts the model immediately. ---
+
+def _ollama_resident_models(server_url: str) -> Optional[list[str]]:
+    """Names of every model currently loaded in VRAM via /api/ps.
+
+    Returns None if the server is unreachable (caller treats as 'nothing to do').
+    """
     try:
-        r = requests.post(
-            f"{server_url}/api/generate",
-            json={"model": model_name, "keep_alive": 0},
-            timeout=30,
-        )
-        if r.status_code == 200:
-            log.info(f"Ollama unloaded via API: {model_name}")
-            return True, f"Ollama model '{model_name}' unloaded (API)"
-        log.warning(f"Ollama API unload returned HTTP {r.status_code}; trying CLI.")
+        r = requests.get(f"{server_url}/api/ps", timeout=5)
+        if r.status_code != 200:
+            return []
+        models = r.json().get("models", []) or []
+        return [m.get("name") or m.get("model") for m in models if (m.get("name") or m.get("model"))]
     except requests.exceptions.ConnectionError:
-        return True, "Ollama not running (nothing to unload)"
+        return None
     except Exception as e:
-        log.warning(f"Ollama API unload failed ({e}); trying CLI.")
+        log.warning(f"Ollama /api/ps failed ({e}); will fall back to configured model.")
+        return []
 
-    # --- Fallback: CLI (only works if `ollama` is on PATH). ---
-    try:
-        result = subprocess.run(
-            ["ollama", "stop", model_name],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            log.info(f"Ollama unloaded via CLI: {model_name}")
-            return True, f"Ollama model '{model_name}' unloaded (CLI)"
-        if "could not locate ollama app" in (result.stderr or ""):
-            return True, "Ollama not running (nothing to unload)"
-        return False, f"ollama stop failed: {result.stderr.strip()}"
-    except FileNotFoundError:
-        return False, "ollama not on PATH and API unload failed"
-    except Exception as e:
-        return False, f"Failed to free Ollama VRAM: {e}"
+
+def free_ollama_vram(model_name: Optional[str] = None) -> tuple[bool, str]:
+    """Unload ALL resident LLMs from VRAM via the Ollama HTTP API.
+
+    Queries `/api/ps` for every model currently loaded and evicts each with
+    `keep_alive: 0`. Unloading only the *configured active* id (the old
+    behaviour) leaves any second model — e.g. a creative + a structurer in a
+    role-routed setup — hogging VRAM, starving the 12GB video model into
+    RAM-offload (the 4min→15min slowdown). HTTP API only (no `ollama` CLI/PATH
+    dependency); keep_alive=0 forces an immediate unload.
+    """
+    server_url = _ollama_server_url()
+
+    resident = _ollama_resident_models(server_url)
+    if resident is None:
+        return True, "Ollama not running (nothing to unload)"
+
+    targets = list(resident)
+    if not targets:
+        # /api/ps empty (nothing loaded) or unavailable — fall back to the
+        # explicit / configured model name so a load that hasn't registered yet
+        # still gets a keep_alive=0 eviction request.
+        if model_name:
+            targets = [model_name]
+        else:
+            try:
+                llm_cfg = model_registry.get_active("llm_backend")
+                name = (
+                    llm_cfg.get("model_id")
+                    or llm_cfg.get("model_name")
+                    or llm_cfg.get("model")
+                )
+                if name:
+                    targets = [name]
+            except Exception:
+                pass
+        if not targets:
+            return True, "No Ollama model resident (nothing to unload)"
+
+    unloaded, failed = [], []
+    for name in targets:
+        try:
+            r = requests.post(
+                f"{server_url}/api/generate",
+                json={"model": name, "keep_alive": 0},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                unloaded.append(name)
+                log.info(f"Ollama unloaded via API: {name}")
+            else:
+                failed.append(f"{name} (HTTP {r.status_code})")
+                log.warning(f"Ollama unload {name} returned HTTP {r.status_code}")
+        except Exception as e:
+            failed.append(f"{name} ({type(e).__name__})")
+            log.warning(f"Ollama unload {name} failed: {e}")
+
+    if unloaded and not failed:
+        return True, f"Ollama unloaded: {', '.join(unloaded)}"
+    if unloaded:
+        return True, f"Ollama unloaded: {', '.join(unloaded)}; failed: {', '.join(failed)}"
+    return False, f"Ollama unload failed: {', '.join(failed)}"
 
 
 def cleanup_after_job(free_comfy: bool = True, free_ollama: bool = False) -> dict:

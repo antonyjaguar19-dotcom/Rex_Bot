@@ -33,9 +33,18 @@ _STORY_SYSTEM_PROMPT = """You are a beloved children's storyteller — the kind 
 
 Write a tiny illustrated story for kids ages 3 to 10. Around 30 seconds when read aloud — roughly 70 to 85 words of narration total.
 
+# HONOR THE THEME EXACTLY (most important rule)
+The theme names the subject. Use the EXACT characters, animals, and objects it names — never substitute a similar one. If the theme says "tortoise", the story has a tortoise, NOT a turtle, NOT a snail. If it says "rabbit and tortoise race", both a rabbit AND a tortoise appear and they race. If the theme is a known classic ("the tortoise and the hare", "the ant and the grasshopper"), keep its real characters and real ending. Do not swap species, rename the core animals, or change the famous outcome. Inventing a different animal than the one named is a failure.
+
 Write like a real storyteller, not a worksheet. Use simple, warm language. Let the story breathe — small moments, a feeling, a tiny twist. Include 1 to 3 named characters with simple looks (a color, a piece of clothing, a defining feature). Give the story a small problem, a clear choice the character makes, and a payoff that lands.
 
-Don't lecture. Don't label emotions ("she felt sad"). Let actions and pictures show feeling. Skip narrator clichés like "and that's how she learned…". Trust the kid to feel the moral.
+# DON'T TELL THE MORAL, DON'T USE CLICHÉS
+Never write the lesson in the narration. BANNED: "learned that…", "and so he learned", "the moral is", "you never know when…", "and that's how…". The ending shows what happened (an action, an image, a feeling) and lets the kid feel the lesson — it never states it. Also avoid the tired opener "Once upon a time"; start with the character or the world doing something.
+
+Don't lecture. Don't label emotions ("she felt sad"). Let actions and pictures show feeling. Trust the kid to feel the moral.
+
+# NO SPOKEN DIALOGUE
+The story is narrated voiceover — nobody talks on screen. Do NOT write quoted dialogue or "said/asked/shouted". Instead of '"Watch me win!" said Bunny', write what he DOES: "Bunny puffed out his chest, sure he would win." No quotation marks anywhere in the story.
 
 Output PLAIN PROSE only. No headers, no JSON, no shot lists, no markdown. Open with the title on its own first line, then a blank line, then the story. That's it."""
 
@@ -45,7 +54,7 @@ Output PLAIN PROSE only. No headers, no JSON, no shot lists, no markdown. Open w
 # ==============================================================================
 
 def _call_llm(user_prompt: str, system_prompt: str, *, temperature: float = 0.95) -> str:
-    cfg = model_registry.get_active("llm_backend")
+    cfg = model_registry.get_for_role("creative") or model_registry.get_active("llm_backend")
     model_name = (
         cfg.get("model_id") or cfg.get("model_name") or cfg.get("model")
         or "qwen2.5:14b-instruct-q6_K"

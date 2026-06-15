@@ -402,9 +402,14 @@ class Backend(ImageBackend):
         return raw_prompt.strip()
 
     def generate(self, prompt, negative_prompt=None, aspect_ratio="9:16",
-                 output_filename=None, seed=None, reference_image=None):
+                 output_filename=None, seed=None, reference_image=None, **kwargs):
+        # **kwargs absorbs adapter-agnostic extras the caller passes (cfg_override,
+        # environment_image, ...) that Kontext doesn't use. Without it, the
+        # storyboard_generator reference-image path would TypeError on cfg_override
+        # and fail every shot.
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
+        self._last_seed = int(seed)  # storyboard_generator reads this for the manifest
         try:
             from modules import runtime_settings as rs
             aspect_ratio = rs.get_resolution_override() or aspect_ratio

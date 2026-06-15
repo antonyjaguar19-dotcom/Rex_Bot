@@ -327,6 +327,67 @@ def _make_prompts_entry(script: dict, shot: dict) -> dict:
 # PUBLIC API
 # ==============================================================================
 
+def _commit_insert(script_id: str, script: dict, shots: list, position: int,
+                   new_shot: dict, max_shot: int,
+                   prompts_entry: Optional[dict] = None) -> dict:
+    """Renumber + insert `new_shot`, shift all on-disk artifacts, and add an
+    unapproved prompts entry. Shared by insert_shot and insert_breathing_shot.
+
+    If `prompts_entry` is given it is used verbatim (manual prompts); otherwise
+    the prompt assembler builds one via `_make_prompts_entry`.
+    """
+    # Renumber script shots and insert
+    shifted = 0
+    for s in shots:
+        n = int(s.get("shot_number", 0))
+        if n >= position:
+            s["shot_number"] = n + 1
+            shifted += 1
+    shots.append(new_shot)
+    shots.sort(key=lambda s: int(s.get("shot_number", 0)))
+    script["shots"] = shots
+    script["_edited_at"] = datetime.now(timezone.utc).isoformat()
+    atomic_write_json(SCRIPTS_DIR / f"script_{script_id}.json", script)
+    log.info(
+        f"insert: {script_id} new shot {position} "
+        f"({new_shot['beat']}/{new_shot['shot_type']}), {shifted} shots shifted"
+    )
+
+    # Shift artifacts (all best-effort; renames are descending = collision-free)
+    state = _shift_approved_prompts(script_id, position)
+    renamed_frames = _shift_storyboard(script_id, position, max_shot)
+    renamed_clips = _shift_clips(script_id, position)
+    _shift_json_keys(CLIPS_DIR / f"clip_{script_id}_seeds.json", position, "seeds")
+
+    # Add an unapproved prompts entry for the new shot (if a prompts file exists)
+    prompts_added = False
+    if state is not None:
+        try:
+            entry = prompts_entry if prompts_entry is not None \
+                else _make_prompts_entry(script, new_shot)
+            state["prompts"][str(position)] = entry
+            atomic_write_json(APPROVED_PROMPTS_DIR / f"{script_id}.json", state)
+            prompts_added = True
+        except Exception as e:
+            log.warning(f"insert: could not add prompts entry: {e}")
+
+    # Invalidate prompt_approval's in-memory cache so its views reload from disk
+    try:
+        from modules import prompt_approval as pap
+        pap._ACTIVE_STATES.pop(script_id, None)
+    except Exception:
+        pass
+
+    return {
+        "script": script,
+        "new_shot": new_shot,
+        "shifted_shots": shifted,
+        "renamed_frames": renamed_frames,
+        "renamed_clips": renamed_clips,
+        "prompts_entry_added": prompts_added,
+    }
+
+
 def insert_shot(script_id: str, position: int, brief: str = "") -> dict:
     """Insert a new LLM-written shot so it becomes shot `position` (1-based);
     every existing shot at/after that position shifts +1, and all on-disk
@@ -347,7 +408,7 @@ def insert_shot(script_id: str, position: int, brief: str = "") -> dict:
     max_shot = max(int(s.get("shot_number", 0)) for s in shots)
     position = max(1, min(int(position), max_shot + 1))
 
-    # 1. Write the new shot (LLM, fallback to brief)
+    # Write the new shot (LLM, fallback to brief)
     try:
         raw_shot = _generate_shot_llm(script, position, brief)
     except Exception as e:
@@ -355,51 +416,63 @@ def insert_shot(script_id: str, position: int, brief: str = "") -> dict:
         raw_shot = _fallback_shot(brief)
     new_shot = _sanitize_new_shot(raw_shot, position)
 
-    # 2. Renumber script shots and insert
-    shifted = 0
-    for s in shots:
-        n = int(s.get("shot_number", 0))
-        if n >= position:
-            s["shot_number"] = n + 1
-            shifted += 1
-    shots.append(new_shot)
-    shots.sort(key=lambda s: int(s.get("shot_number", 0)))
-    script["shots"] = shots
-    script["_edited_at"] = datetime.now(timezone.utc).isoformat()
-    atomic_write_json(script_path, script)
-    log.info(
-        f"insert_shot: {script_id} new shot {position} "
-        f"({new_shot['beat']}/{new_shot['shot_type']}), {shifted} shots shifted"
-    )
+    return _commit_insert(script_id, script, shots, position, new_shot, max_shot)
 
-    # 3. Shift artifacts (all best-effort; renames are descending = collision-free)
-    state = _shift_approved_prompts(script_id, position)
-    renamed_frames = _shift_storyboard(script_id, position, max_shot)
-    renamed_clips = _shift_clips(script_id, position)
-    _shift_json_keys(CLIPS_DIR / f"clip_{script_id}_seeds.json", position, "seeds")
 
-    # 4. Add an unapproved prompts entry for the new shot (if a prompts file exists)
-    prompts_added = False
-    if state is not None:
-        try:
-            state["prompts"][str(position)] = _make_prompts_entry(script, new_shot)
-            atomic_write_json(APPROVED_PROMPTS_DIR / f"{script_id}.json", state)
-            prompts_added = True
-        except Exception as e:
-            log.warning(f"insert_shot: could not add prompts entry: {e}")
+def insert_breathing_shot(script_id: str, position: int,
+                          image_prompt: str, motion_prompt: str = "",
+                          narration: str = "", shot_type: str = "wide") -> dict:
+    """Insert a manually-prompted "breathing shot" (a quiet atmospheric beat)
+    so it becomes shot `position` (1-based). No LLM — the user's image/motion
+    prompts are used verbatim. Narration is optional; when empty the renderer
+    falls back to the visual_description (a near-silent hold).
 
-    # Invalidate prompt_approval's in-memory cache so its views reload from disk
-    try:
-        from modules import prompt_approval as pap
-        pap._ACTIVE_STATES.pop(script_id, None)
-    except Exception:
-        pass
+    Returns the same dict shape as insert_shot.
+    """
+    script_path = SCRIPTS_DIR / f"script_{script_id}.json"
+    if not script_path.exists():
+        raise FileNotFoundError(f"Script not found: {script_path}")
+    script = json.loads(script_path.read_text(encoding="utf-8"))
 
-    return {
-        "script": script,
-        "new_shot": new_shot,
-        "shifted_shots": shifted,
-        "renamed_frames": renamed_frames,
-        "renamed_clips": renamed_clips,
-        "prompts_entry_added": prompts_added,
+    shots = script.get("shots", []) or []
+    if not shots:
+        raise ValueError(f"Script {script_id} has no shots")
+    max_shot = max(int(s.get("shot_number", 0)) for s in shots)
+    position = max(1, min(int(position), max_shot + 1))
+
+    image_prompt = (image_prompt or "").strip()
+    motion_prompt = (motion_prompt or "").strip()
+    narration = (narration or "").strip()
+    shot_type = (shot_type or "wide").strip().lower()
+    if shot_type not in _VALID_SHOT_TYPES:
+        shot_type = "wide"
+    if not image_prompt:
+        raise ValueError("Breathing shot needs an image prompt")
+    if not motion_prompt:
+        motion_prompt = "Slow, gentle camera drift. Subtle ambient motion."
+    if "no speech" not in motion_prompt.lower():
+        motion_prompt = motion_prompt.rstrip(".") + ". No speech. No mouth movement."
+
+    # Build the shot dict directly from manual prompts (atmosphere beat).
+    new_shot = _sanitize_new_shot({
+        "beat": "atmosphere",
+        "shot_type": shot_type,
+        "narration": narration,
+        "visual_description": image_prompt,
+        "first_frame_prompt": image_prompt,
+        "last_frame_prompt": image_prompt,
+        "motion_prompt": motion_prompt,
+    }, position)
+
+    prompts_entry = {
+        "image_prompt": image_prompt,
+        "image_seed": -1,
+        "motion_prompt": motion_prompt,
+        "motion_seed": -1,
+        "beat": "atmosphere",
+        "narration": narration,
+        "approved": False,
     }
+
+    return _commit_insert(script_id, script, shots, position, new_shot,
+                          max_shot, prompts_entry=prompts_entry)

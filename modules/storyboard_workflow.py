@@ -163,6 +163,19 @@ async def generate_and_post_storyboard(
             status_msg.edit(content=new_content), bot_loop
         )
 
+    # Decisive VRAM handover INTO the image stage: prompts are approved, so the
+    # LLM is done — evict every resident Ollama model (~12GB) before Z-Image
+    # loads. If the LLM stays put, the image model offloads layers to RAM and
+    # every frame renders slow. Storyboard generates all shots in one batch and
+    # the image model stays resident across them.
+    try:
+        ok, msg = await asyncio.to_thread(gpu_utils.free_ollama_vram)
+        log.info(f"Pre-storyboard Ollama unload: {msg}")
+    except Exception as e:
+        log.warning(f"Pre-storyboard Ollama unload failed (non-fatal): {e}")
+    _vram = gpu_utils.get_vram_stats()
+    log.info(f"Pre-storyboard VRAM: {_vram.get('free_gb', '?')} GB free of {_vram.get('total_gb', '?')} GB")
+
     try:
         result = await asyncio.to_thread(
             sg.generate_storyboard,

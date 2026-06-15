@@ -434,7 +434,12 @@ def generate_storyboard(
                                         reference_image=reference_image, **_gen_kwargs
                                     )
                                 except TypeError:
-                                    saved_path = backend.generate(**_gen_kwargs)
+                                    # Backend accepts neither reference nor cfg_override/
+                                    # negative_prompt — drop the optional extras (mirrors
+                                    # the no-reference path below).
+                                    fallback = {k: v for k, v in _gen_kwargs.items()
+                                                if k not in ("cfg_override", "negative_prompt")}
+                                    saved_path = backend.generate(**fallback)
                         else:
                             try:
                                 saved_path = backend.generate(**_gen_kwargs)

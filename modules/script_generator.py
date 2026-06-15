@@ -238,9 +238,14 @@ Output ONLY the JSON object. Start with {{ end with }}. Nothing else."""
 # OLLAMA CALL
 # ==============================================================================
 
-def _call_llm(prompt: str, system_prompt: str) -> str:
-    """Call Ollama's generate endpoint and return raw text response."""
-    cfg = model_registry.get_active("llm_backend")
+def _call_llm(prompt: str, system_prompt: str, role: str = "structurer") -> str:
+    """Call Ollama's generate endpoint and return raw text response.
+
+    role: pipeline role for per-stage model routing (see model_registry.
+    get_for_role). Defaults to 'structurer' (reliable JSON model) — the
+    structurer + expand passes need schema discipline, not creativity.
+    """
+    cfg = model_registry.get_for_role(role) or model_registry.get_active("llm_backend")
     model_name = cfg.get("model_id") or cfg.get("model_name") or cfg.get("model") or "llama3.1:8b-instruct-q8_0"
     url = cfg.get("server_url", "http://127.0.0.1:11434") + "/api/generate"
 
@@ -308,7 +313,7 @@ def rewrite_narration(current: str, instruction: str = "", *,
     )
     user_prompt = "\n".join(parts) + "\n\nRewritten narration line:"
     try:
-        out = _call_llm(user_prompt, system_prompt)
+        out = _call_llm(user_prompt, system_prompt, role="creative")
     except Exception as e:
         log.warning(f"rewrite_narration LLM call failed: {e}")
         return current
@@ -494,6 +499,17 @@ def _validate_and_default(script: dict) -> dict:
             beat = (s.get("beat") or "").strip().lower()
             s["shot_type"] = _beat_to_shot_type.get(beat, "medium")
 
+    # Deterministic narration scrub: narration is voiceover, never on-screen
+    # speech. The LLM keeps slipping quoted dialogue in despite the prompt ban,
+    # so strip quote marks here as a hard guarantee (TTS reads the line fine
+    # without them). Only quote chars are removed — apostrophes/contractions kept.
+    for s in script["shots"]:
+        narr = s.get("narration")
+        if isinstance(narr, str) and ('"' in narr or "“" in narr or "”" in narr):
+            cleaned = narr.replace('"', "").replace("“", "").replace("”", "")
+            cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+            s["narration"] = cleaned
+
     return script
 
 
@@ -602,9 +618,15 @@ You are a story structurer. The story has already been WRITTEN by another author
 
 # RULES
 
-1. **Narration field = author's prose, split into shots.** Take the prose given to you, split it at natural sentence boundaries into {shot_min}-{shot_max} shots, and put each piece into the `narration` field of one shot. You may make tiny grammar fixes if a split leaves a half-sentence, but DO NOT rewrite the author's words. Keep the author's voice.
+1. **Narration field = author's prose, split into shots.** Take the prose given to you, split it into {shot_min}-{shot_max} shots, and put each piece into the `narration` field of one shot. You may make tiny grammar fixes if a split leaves a half-sentence, but DO NOT rewrite the author's words. Keep the author's voice.
 
-2. **Each shot's narration: roughly 8-15 words**, depending on where natural breaks fall. Don't pad. Don't trim hard. Follow the prose.
+1a. **SPLIT ONLY AT SENTENCE ENDS (. ! ?).** Every shot's narration must be one or more COMPLETE sentences. NEVER split in the middle of a sentence — not at a comma, not at "and", not at "while". A fragment with no subject or no verb (e.g. "Once upon a time in a bright forest") is FORBIDDEN. If one sentence is long, keep it whole in one shot rather than breaking it. If two short sentences fit one beat, combine them into one shot.
+
+1b. **PRESERVE PUNCTUATION VERBATIM.** Keep the author's commas, periods, and capitalization exactly. Do not drop the period after a name ("Mr. Snail", never "Mr Snail"). Each narration line ends with proper end punctuation.
+
+1c. **NO SPOKEN DIALOGUE IN NARRATION.** Narration is voiceover — characters never speak on screen. If the prose contains a quoted line (e.g. 'Mr. Snail said, "Let's race!"'), rewrite it as reported description ("Mr. Snail suggested a race.") — no quotation marks, no "said".
+
+2. **Each shot's narration: roughly 8-15 words** of complete sentence(s), depending on where sentence breaks fall. Don't pad. Don't trim hard. Follow the prose.
 
 3. **Pick a beat for each shot** from this fixed list:
    `atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence`
