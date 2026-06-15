@@ -34,6 +34,27 @@ def test_gender_guess():
     assert vc.guess_gender({"name": "Rock", "appearance": "a grey stone"}) == "neutral"
 
 
+def test_gender_from_narration_context():
+    # Appearance is gender-neutral; the narration pronoun decides.
+    char = {"name": "Bunny", "appearance": "a young rabbit with white fur"}
+    assert vc.guess_gender(char) == "neutral"
+    assert vc.guess_gender(char, "Bunny stretched his long legs at the line.") == "male"
+
+
+def test_assign_uses_narration_pronouns():
+    # Bunny is male per narration ("his"), even though appearance is neutral.
+    script = {
+        "characters": [{"name": "Bunny", "appearance": "a young rabbit with white fur"}],
+        "shots": [
+            {"shot_number": 1, "speaker": "narrator",
+             "narration": "Bunny stretched his long legs at the starting line."},
+            {"shot_number": 2, "speaker": "Bunny", "narration": "I will win!"},
+        ],
+    }
+    vc.assign_voices(script, narrator_voice="af_heart")
+    assert script["characters"][0]["voice"] in vc.MALE_VOICES
+
+
 def test_male_gets_male_voice():
     script = {"characters": [{"name": "Dad", "appearance": "a tall man, father of two"}]}
     vc.assign_voices(script, narrator_voice="af_heart")

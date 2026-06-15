@@ -61,10 +61,13 @@ def is_valid_voice(voice: str) -> bool:
     return bool(voice) and voice in set(ALL_VOICES)
 
 
-def guess_gender(character: dict) -> str:
-    """'male' | 'female' | 'neutral' from name + appearance text."""
+def guess_gender(character: dict, context: str = "") -> str:
+    """'male' | 'female' | 'neutral' from the character fields PLUS optional
+    story context (narration pronouns like 'his'/'her' are the strongest signal,
+    since appearance text rarely states gender)."""
     blob = " ".join(str(character.get(k, "")) for k in ("name", "appearance",
-                                                         "locked_visual_token", "type"))
+                                                        "locked_visual_token", "type"))
+    blob = f"{blob} {context}"
     male = len(_MALE_HINTS.findall(blob))
     female = len(_FEMALE_HINTS.findall(blob))
     if male > female:
@@ -72,6 +75,23 @@ def guess_gender(character: dict) -> str:
     if female > male:
         return "female"
     return "neutral"
+
+
+def _gender_context(script: dict, name: str) -> str:
+    """Collect narration from shots that this character speaks in or is named in,
+    so pronoun cues ('his'/'her') can disambiguate gender."""
+    if not name:
+        return ""
+    want = name.strip().lower()
+    parts = []
+    for sh in script.get("shots", []):
+        if not isinstance(sh, dict):
+            continue
+        narr = str(sh.get("narration", ""))
+        spk = str(sh.get("speaker", "")).strip().lower()
+        if spk == want or want in narr.lower():
+            parts.append(narr)
+    return " ".join(parts)
 
 
 def assign_voices(script: dict, narrator_voice: Optional[str] = None) -> dict:
@@ -104,7 +124,7 @@ def assign_voices(script: dict, narrator_voice: Optional[str] = None) -> dict:
     for c in chars:
         if c.get("voice"):
             continue
-        g = guess_gender(c)
+        g = guess_gender(c, _gender_context(script, c.get("name", "")))
         if g == "male":
             voice = _pick(MALE_VOICES, "male")
         elif g == "female":

@@ -421,8 +421,14 @@ _SPEECH_VERBS = (
     r"murmured|added|offered|admitted|agreed|suggested|announced|declared|"
     r"mumbled|sighed|laughed|grinned|crowed|clucked|chirped|barked|squeaked|"
     r"roared|exclaimed|continued|insisted|promised|warned|begged|wondered|"
-    r"thought|spoke|yelled|giggled|hummed|snapped|gasped|moaned|boasted)"
+    r"thought|spoke|yelled|giggled|hummed|snapped|gasped|moaned|boasted|"
+    # action verbs the LLM uses as a dialogue tag ("Tortoise smiled, ...")
+    r"smiled|nodded|beamed|shrugged|chuckled|grumbled|huffed|purred|smirked|"
+    r"whimpered|sniffed|winked|waved|yawned|panted|breathed|groaned|whined|"
+    r"cheered|pleaded|bragged|wailed|hollered|stammered|chimed)"
 )
+# Optional adverb(s) between the subject and the verb: "he softly replied".
+_ADV = r"(?:\w+ly\s+)?"
 
 
 def _strip_attribution(text: str, speaker: str) -> str:
@@ -440,13 +446,13 @@ def _strip_attribution(text: str, speaker: str) -> str:
     # drops any stage-action the author appended after it ("..., said Fox
     # nervously, tugging his tail." -> "..."). Handles both subject-verb
     # ("he said") and inverted ("said Fox") order.
-    t = re.sub(rf"[,\s]+(?:{subj})\s+{_SPEECH_VERBS}\b.*$", "", t,
+    t = re.sub(rf"[,\s]+(?:{subj})\s+{_ADV}{_SPEECH_VERBS}\b.*$", "", t,
                flags=re.IGNORECASE)
-    t = re.sub(rf"[,\s]+{_SPEECH_VERBS}\s+(?:{subj})\b.*$", "", t,
+    t = re.sub(rf"[,\s]+{_ADV}{_SPEECH_VERBS}\s+(?:{subj})\b.*$", "", t,
                flags=re.IGNORECASE)
     # Leading: "Featherlite said, " / "He replied: " — the comma/colon is
     # REQUIRED so a real description ("He said nothing and left.") is not eaten.
-    t = re.sub(rf"^(?:{subj})\s+{_SPEECH_VERBS}\b[,:]\s*", "", t,
+    t = re.sub(rf"^(?:{subj})\s+{_ADV}{_SPEECH_VERBS}\b[,:]\s*", "", t,
                flags=re.IGNORECASE)
     t = t.strip().strip(",").strip()
     if not t:

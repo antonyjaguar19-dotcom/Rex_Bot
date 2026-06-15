@@ -108,6 +108,26 @@ def test_strip_attribution_with_trailing_action():
     ) == "I don't know if I can do it."
 
 
+def test_strip_attribution_adverb_between():
+    # "he softly replied" — adverb between subject and verb.
+    assert sg._strip_attribution(
+        "Racing isn't just about speed, he softly replied.", "Tortoise"
+    ) == "Racing isn't just about speed."
+
+
+def test_strip_attribution_action_verb_tag():
+    # action verb used as a dialogue tag ("Tortoise smiled, ...").
+    assert sg._strip_attribution(
+        "Slow and steady, Tortoise smiled, tapping his shell.", "Tortoise"
+    ) == "Slow and steady."
+
+
+def test_strip_attribution_yawned_tag():
+    assert sg._strip_attribution(
+        "Just a tiny nap, she yawned.", "Henny"
+    ) == "Just a tiny nap."
+
+
 def test_strip_attribution_inverted():
     assert sg._strip_attribution(
         "Let's race, said Featherlite.", "Featherlite"
