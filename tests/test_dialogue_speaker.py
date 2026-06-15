@@ -64,3 +64,77 @@ def test_quote_marks_stripped_from_dialogue():
     ]))
     assert '"' not in out["shots"][0]["narration"]
     assert out["shots"][0]["narration"] == "Wait for me!"
+
+
+def test_strip_attribution_trailing_pronoun():
+    assert sg._strip_attribution(
+        "I'll wake everyone with my crow, he said.", "Redcomb"
+    ) == "I'll wake everyone with my crow."
+
+
+def test_strip_attribution_trailing_keeps_address():
+    # ", she replied" stripped; the dialogue address ", Red" stays.
+    assert sg._strip_attribution(
+        "But you're so loud, Red, she replied.", "Featherlite"
+    ) == "But you're so loud, Red."
+
+
+def test_looks_like_narration_third_person():
+    assert sg._looks_like_narration("Little Fox watched the river quietly.", "Little Fox")
+    assert sg._looks_like_narration("He started hopping across the stones.", "Little Fox")
+
+
+def test_looks_like_narration_keeps_dialogue():
+    assert not sg._looks_like_narration("I want to cross the river.", "Fox")     # first person
+    assert not sg._looks_like_narration("Why so quiet?", "Fox")                  # question
+    assert not sg._looks_like_narration("Thanks, Squirrely!", "Fox")            # exclamation
+    assert not sg._looks_like_narration("Over here.", "Fox")                     # not name/pronoun start
+
+
+def test_validator_retags_narration_to_narrator():
+    out = sg._validate_and_default(_script([
+        {"shot_number": 1, "speaker": "Terry", "narration": "Terry watched the water for a while."},
+        {"shot_number": 2, "speaker": "Terry", "narration": "I can do this!"},
+    ]))
+    assert out["shots"][0]["speaker"] == "narrator"   # third-person → retagged
+    assert out["shots"][1]["speaker"] == "Terry"      # real dialogue kept
+
+
+def test_strip_attribution_with_trailing_action():
+    # Attribution followed by stage-action — cut everything from the tag to end.
+    assert sg._strip_attribution(
+        "I don't know if I can do it, said Shy Fox nervously, tugging his tail.",
+        "Shy Fox",
+    ) == "I don't know if I can do it."
+
+
+def test_strip_attribution_inverted():
+    assert sg._strip_attribution(
+        "Let's race, said Featherlite.", "Featherlite"
+    ) == "Let's race."
+
+
+def test_strip_attribution_leading():
+    assert sg._strip_attribution(
+        "Featherlite said, What if we take turns?", "Featherlite"
+    ) == "What if we take turns?"
+
+
+def test_strip_attribution_no_tag_unchanged():
+    assert sg._strip_attribution("No way!", "Redcomb") == "No way!"
+
+
+def test_validator_scrubs_attribution_on_all_shots():
+    out = sg._validate_and_default(_script([
+        {"shot_number": 1, "speaker": "Terry", "narration": "I can do it, he said."},
+        # leaked-dialogue narrator shot: tail scrubbed too
+        {"shot_number": 2, "speaker": "narrator", "narration": "Wait for me, she whispered softly."},
+    ]))
+    assert out["shots"][0]["narration"] == "I can do it."
+    assert out["shots"][1]["narration"] == "Wait for me."
+
+
+def test_strip_attribution_keeps_said_as_content():
+    # "said" used as description, not attribution → not stripped.
+    assert sg._strip_attribution("He said nothing and walked away.", "narrator") \
+        == "He said nothing and walked away."

@@ -416,6 +416,77 @@ def _extract_json(raw: str) -> dict:
         )
 
 
+_SPEECH_VERBS = (
+    r"(?:said|says|replied|reply|asked|answered|called|cried|shouted|whispered|"
+    r"murmured|added|offered|admitted|agreed|suggested|announced|declared|"
+    r"mumbled|sighed|laughed|grinned|crowed|clucked|chirped|barked|squeaked|"
+    r"roared|exclaimed|continued|insisted|promised|warned|begged|wondered|"
+    r"thought|spoke|yelled|giggled|hummed|snapped|gasped|moaned|boasted)"
+)
+
+
+def _strip_attribution(text: str, speaker: str) -> str:
+    """Remove `he said` / `, she replied` / `X asked,` attribution tags from a
+    character's spoken line so TTS voices ONLY the dialogue. Deterministic —
+    works even when the LLM used comma-attribution instead of quotes."""
+    if not text:
+        return text
+    t = text.strip()
+    # Build a subject alternation: pronouns + each token of the speaker name.
+    name_tokens = [re.escape(tok) for tok in speaker.split() if tok]
+    subj = "|".join(["he", "she", "they", "it"] + name_tokens) or "he|she|they|it"
+
+    # Trailing: from the attribution tag to the END of the line — this also
+    # drops any stage-action the author appended after it ("..., said Fox
+    # nervously, tugging his tail." -> "..."). Handles both subject-verb
+    # ("he said") and inverted ("said Fox") order.
+    t = re.sub(rf"[,\s]+(?:{subj})\s+{_SPEECH_VERBS}\b.*$", "", t,
+               flags=re.IGNORECASE)
+    t = re.sub(rf"[,\s]+{_SPEECH_VERBS}\s+(?:{subj})\b.*$", "", t,
+               flags=re.IGNORECASE)
+    # Leading: "Featherlite said, " / "He replied: " — the comma/colon is
+    # REQUIRED so a real description ("He said nothing and left.") is not eaten.
+    t = re.sub(rf"^(?:{subj})\s+{_SPEECH_VERBS}\b[,:]\s*", "", t,
+               flags=re.IGNORECASE)
+    t = t.strip().strip(",").strip()
+    if not t:
+        return text.strip()  # scrub ate everything — keep original
+    # Re-capitalize + ensure terminal punctuation.
+    t = t[0].upper() + t[1:]
+    if t[-1] not in ".!?":
+        t += "."
+    return t
+
+
+_FIRST_SECOND_PERSON = re.compile(
+    r"\b(I|I'm|I'll|I've|I'd|my|mine|me|we|we're|we'll|us|our|ours|"
+    r"you|you're|you'll|your|yours|let's)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_narration(text: str, speaker: str) -> bool:
+    """True when a CHARACTER-tagged line is really third-person narration about
+    that character (e.g. 'Little Fox watched...', 'He started hopping...').
+    Conservative: only fires on clear third-person description so we can safely
+    retag it to narrator (never the reverse — that would risk a wrong-face
+    lip-sync). Questions/exclamations and any first/second-person line are kept
+    as dialogue."""
+    if not text:
+        return False
+    t = text.strip()
+    if t[-1:] in "?!":
+        return False
+    if _FIRST_SECOND_PERSON.search(t):
+        return False
+    first = t.split()[0].strip(",.:;").lower() if t.split() else ""
+    name_tokens = {tok.lower() for tok in speaker.split()}
+    third_person_subjects = {"he", "she", "it", "they", "his", "her", "their", "the"}
+    if first in name_tokens or first in third_person_subjects:
+        return True
+    return False
+
+
 def _validate_and_default(script: dict) -> dict:
     """Apply sensible defaults for missing fields. Does NOT cap shot count."""
     available_styles = get_available_style_ids()
@@ -530,6 +601,16 @@ def _validate_and_default(script: dict) -> dict:
             )
             s["speaker"] = "narrator"
 
+    # Inverse-leak guard: a character shot whose line is plainly third-person
+    # narration about that character → retag to narrator (safe: VO, no lip-sync
+    # to a wrong/absent face). Only the safe direction is ever auto-applied.
+    for s in script["shots"]:
+        spk = s.get("speaker")
+        if spk and spk != "narrator" and _looks_like_narration(s.get("narration", ""), spk):
+            log.info(f"Shot {s.get('shot_number')} looks like narration, not "
+                     f"{spk}'s dialogue; retagging speaker -> narrator.")
+            s["speaker"] = "narrator"
+
     # Deterministic narration scrub: strip quote marks so TTS never speaks them.
     # When `speaker` is a character the narration IS their dialogue, but the
     # quote characters themselves should not be voiced (apostrophes/contractions
@@ -540,6 +621,20 @@ def _validate_and_default(script: dict) -> dict:
             cleaned = narr.replace('"', "").replace("“", "").replace("”", "")
             cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
             s["narration"] = cleaned
+
+    # Strip dialogue attribution ("he said", ", she whispered to herself") from
+    # EVERY shot so TTS voices only the words — never the stage tag. Runs on
+    # narrator shots too (the LLM often leaves a spoken line tagged narrator with
+    # its attribution tail attached); a true description has no such tag so it is
+    # left untouched.
+    for s in script["shots"]:
+        narr = s.get("narration")
+        if isinstance(narr, str):
+            stripped = _strip_attribution(narr, s.get("speaker") or "")
+            if stripped != narr:
+                log.info(f"Shot {s.get('shot_number')} attribution scrubbed: "
+                         f"'{narr}' -> '{stripped}'")
+                s["narration"] = stripped
 
     # Cast a distinct speaking voice to each character (idempotent — never
     # overrides a voice the user already picked). Narrator uses the global voice.
@@ -598,6 +693,9 @@ def _expand_script_to_buffer(script: dict) -> dict:
             f"You may: lengthen thin narration lines into full vivid sentences, and/or add 1-3 NEW shots "
             f"(atmosphere, reaction, or struggle beats) where the story can breathe. Keep the SAME characters, "
             f"the SAME locked_visual_token for each (do not change appearance), the same arc and moral. "
+            f"PRESERVE each existing shot's `speaker` field exactly — keep character dialogue as dialogue "
+            f"(do NOT convert a character's spoken line into narrator text, and do NOT invent dialogue for "
+            f"narrator shots). New shots you add are usually `speaker: \"narrator\"` unless a character clearly speaks. "
             f"Renumber shots sequentially starting at 1. Output ONLY the JSON."
         )
         try:
@@ -663,7 +761,16 @@ You are a story structurer. The story has already been WRITTEN by another author
 
 1b. **PRESERVE PUNCTUATION VERBATIM.** Keep the author's commas, periods, and capitalization exactly. Do not drop the period after a name ("Mr. Snail", never "Mr Snail"). Each narration line ends with proper end punctuation.
 
-1c. **DIALOGUE → speaker + spoken words (this is a TALKING film).** Every shot has a `speaker` field. When the prose has a QUOTED line attributed to a character (e.g. 'Mr. Snail said, "Let's race!"'), make that its OWN shot: set `speaker` to that character's EXACT name and put ONLY the spoken words in `narration` (`Let's race!` — strip the quotation marks AND the `Mr. Snail said` attribution). When the prose is plain narrator text (not a quoted line), set `speaker` to `"narrator"` and keep the prose verbatim in `narration`. ONE speaker per shot — never merge two characters' quoted lines into one shot. A quoted exchange becomes consecutive shots that alternate `speaker`.
+1c. **DIALOGUE → speaker + spoken words (this is a TALKING film).** Every shot has a `speaker` field. Classify each sentence of the prose:
+- **Is it something a character SAYS?** (in quotes, OR clearly spoken: a question, command, exclamation, greeting, or first-person "I/we/my" line addressed to another character). → It becomes its OWN shot. Set `speaker` to that character's EXACT name and put ONLY the spoken words in `narration` — strip the quotation marks AND any `X said`/`asked X` attribution. Example: prose `"Let's race!" said Mr. Snail.` → `speaker: "Mr. Snail"`, `narration: "Let's race!"`.
+- **Is it the narrator describing the scene/action in third person?** → `speaker: "narrator"`, keep the prose verbatim.
+Rules: ONE speaker per shot — never merge two characters' lines into one shot; a quoted exchange becomes consecutive shots that alternate `speaker`. **NEVER leave a spoken line tagged `narrator`.** A sentence is SPOKEN if it is a question, a command, an exclamation, a greeting, or uses first/second person ("I", "we", "you", "let's") — these are ALWAYS a character talking, never the narrator. If the prose did not mark who said it, INFER the speaker from the story: in a two-character scene the dialogue alternates between them, and lines often name the person being spoken TO (so the OTHER character is the speaker). Assign your best-guess character. Use `narrator` ONLY for third-person description of the scene or an action ("Twig took a deep breath", "The two friends reached the river").
+
+Worked mapping (prose → shots):
+- `"Shy! We need to cross today!" Twig called.` → speaker: Twig, narration: "Shy! We need to cross today!"
+- `"But what if we can't?" whispered Shy.` → speaker: Shy, narration: "But what if we can't?"
+- `Twig took a deep breath and hopped onto a flat rock.` → speaker: narrator (third-person action).
+- `"Come on, it's safe!"` (unmarked, but Shy was just addressed, so Twig speaks) → speaker: Twig.
 
 2. **Each shot's narration: roughly 8-15 words** of complete sentence(s), depending on where sentence breaks fall. Don't pad. Don't trim hard. Follow the prose.
 

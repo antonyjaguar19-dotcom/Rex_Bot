@@ -45,11 +45,21 @@ Don't lecture. Don't label emotions ("she felt sad"). Let actions and pictures s
 
 # WRITE LOTS OF DIALOGUE — THE CHARACTERS TALK
 This is a TALKING film. The characters speak out loud, and a narrator fills the gaps. Make it dialogue-heavy: most of the story should be spoken by the characters in their own voices and personalities.
-- Put every spoken line in double quotes and ATTRIBUTE it to a character BY NAME, so we know who is talking: `Bunny said, "Watch me — I'll win for sure!"` or `"Wait for me!" called Terry.`
-- One speaker at a time. For a back-and-forth, alternate: Bunny says something, then Terry answers — each as its own sentence.
+- **EVERY spoken line MUST be in double quotes AND attributed to a character BY NAME** — `Bunny said, "Watch me — I'll win for sure!"` or `"Wait for me!" called Terry.` The attribution name must be one of YOUR named characters.
+- **NEVER let a character's words appear as plain narration.** If someone asks, suggests, exclaims, or says anything — even one word like "Hmm…" or "Wait!" — it goes in quotes with a name. A spoken line written as bare narration (no quotes, no name) is a FAILURE.
+- One speaker per quoted line. For a back-and-forth, alternate and attribute EACH line: `"But why you?" asked Terry. "Because I'm fastest!" crowed Bunny.`
 - Keep spoken lines short and natural for a young child (6-14 words).
-- Use the narrator (unquoted prose) to open the story, set the scene, bridge a jump, and land the ending — but let the CHARACTERS carry the middle.
+- The NARRATOR (unquoted prose) only DESCRIBES — what we see, the scene, an action, a passage of time. The narrator never speaks a character's thoughts or words. Use narrator lines to open, bridge, and close; let the CHARACTERS carry the middle.
 - Still DON'T state the moral and DON'T label emotions — show feeling through what characters say and do.
+
+# TINY EXAMPLE OF THE RIGHT SHAPE
+Redcomb puffed out his bright red chest at dawn.
+"I should wake the whole farm every morning!" he crowed.
+"But why only you?" asked Featherlite, tilting her head.
+"What if we both do it — your crow, then my song?" she offered.
+Redcomb thought a moment. "Hmm… that does sound nice," he admitted.
+And every morning after, his loud crow was followed by her sweet song.
+(Notice: every spoken line is quoted AND named; only the scene-setting first and last lines are narration.)
 
 Output PLAIN PROSE only. No headers, no JSON, no shot lists, no markdown. Open with the title on its own first line, then a blank line, then the story (mixing narrator prose and quoted character dialogue). That's it."""
 
