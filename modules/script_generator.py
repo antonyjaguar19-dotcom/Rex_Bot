@@ -847,6 +847,21 @@ Worked mapping (prose → shots):
 Output ONLY the JSON. Start with {{ end with }}. Nothing else."""
 
 
+def _valid_title(t: str) -> bool:
+    """Reject leaked reasoning / tag garbage as a title (qwen3 sometimes dumps
+    a <think> block, so the stage-1 'title' can be '<think>' or a reasoning
+    fragment like 'Here's a thinking process:')."""
+    t = (t or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    if "think" in low or "<" in t or ">" in t or t.endswith(":"):
+        return False
+    if not t[0].isalpha():
+        return False
+    return 1 <= len(t.split()) <= 8
+
+
 def _structure_story(
     title: str,
     prose: str,
@@ -865,6 +880,11 @@ def _structure_story(
     actually adds beats instead of clamping back to the original count.
     """
     system_prompt = _build_structurer_system_prompt(shot_min, shot_max)
+    # Don't feed a leaked-reasoning title to the structurer — let it invent one.
+    if not _valid_title(title):
+        log.warning(f"Stage-1 title invalid ('{title[:40]}'); structurer will "
+                    f"create its own.")
+        title = ""
     user_prompt = (
         f"Original theme: {theme}\n\n"
         f"STORY TO STRUCTURE (author's prose — split this into shots; do NOT rewrite the words):\n\n"
@@ -881,9 +901,12 @@ def _structure_story(
     raw = _call_llm(user_prompt, system_prompt)
     script = _extract_json(raw)
     script = _validate_and_default(script)
-    # Force the author's title in case the structurer paraphrased it
-    if title:
+    # Use the author's title only when it's clean; otherwise keep the
+    # structurer's own title, falling back to a safe default if that's bad too.
+    if _valid_title(title):
         script["title"] = title
+    elif not _valid_title(script.get("title", "")):
+        script["title"] = "Untitled Story"
     return script
 
 

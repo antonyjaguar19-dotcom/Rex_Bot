@@ -26,3 +26,18 @@ def test_plain_text_unchanged():
     raw = "The Moonlit Kitten\n\nMittens crouched in the grass."
     out = sw._strip_meta(raw)
     assert "Mittens crouched in the grass." in out
+
+
+def test_strip_orphan_unclosed_think_tag():
+    # No closing tag — the orphan <think> must not survive as a title line.
+    raw = "<think>\nreasoning with no close\n\nThe Title\n\nStory body here."
+    out = sw._strip_meta(raw)
+    assert "<think>" not in out
+
+
+def test_reasoning_leak_detected():
+    assert sw._looks_like_reasoning_leak("Here's a thinking process: first I will...")
+    assert sw._looks_like_reasoning_leak(" ".join(["word"] * 300))   # way over target
+    assert not sw._looks_like_reasoning_leak(
+        "Mittens crouched low. A spark floated by. She pounced gently into the night."
+    )

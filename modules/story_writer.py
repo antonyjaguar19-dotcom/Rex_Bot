@@ -118,11 +118,35 @@ def _strip_meta(text: str) -> str:
     if "</think>" in cleaned.lower():
         idx = cleaned.lower().rfind("</think>")
         cleaned = cleaned[idx + len("</think>"):]
+    # Kill any orphan/unclosed think tags so a stray "<think>" never becomes the
+    # title. (qwen3 sometimes dumps reasoning with no clean closing tag.)
+    cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"```[a-z]*", "", cleaned, flags=re.IGNORECASE).replace("```", "")
     # Drop leading "Title:", "Story:", etc. that some models add as headers.
     cleaned = re.sub(r"^(?:Title|Story|Narration)\s*[:\-]\s*", "", cleaned.strip(),
                      flags=re.IGNORECASE | re.MULTILINE)
     return cleaned.strip()
+
+
+_REASONING_OPENERS = re.compile(
+    r"^(here'?s|okay|ok\b|let me|let'?s think|i need to|i'?ll|i will|first,|"
+    r"thinking|step \d|to write|the user|alright|so,|my task|i should)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_reasoning_leak(body: str) -> bool:
+    """A thinking model dumped its chain-of-thought instead of clean prose.
+    Heuristic: far over the ~85-word story target, or opens with a reasoning
+    marker. A normal kids' story runs ~70-180 words."""
+    if not body:
+        return True
+    wc = len(body.split())
+    if wc > 220:
+        return True
+    if _REASONING_OPENERS.match(body.strip()):
+        return True
+    return False
 
 
 def _split_title_body(text: str) -> tuple[str, str]:
@@ -180,6 +204,20 @@ def write_story(
     raw = _call_llm(user_prompt, _STORY_SYSTEM_PROMPT, temperature=temperature)
     cleaned = _strip_meta(raw)
     title, body = _split_title_body(cleaned)
+
+    # Think-leak guard: a thinking model (qwen3) occasionally dumps its reasoning
+    # into the response instead of clean prose (hundreds of extra words, opening
+    # with a reasoning marker). Retry ONCE — the model is usually clean on a
+    # second pass. The downstream structurer can still salvage a leak, so we
+    # accept the retry's output regardless.
+    if _looks_like_reasoning_leak(body):
+        log.warning(f"Stage-1 output looks like a reasoning leak "
+                    f"({len(body.split())} words); retrying once.")
+        raw2 = _call_llm(user_prompt, _STORY_SYSTEM_PROMPT, temperature=temperature)
+        cleaned2 = _strip_meta(raw2)
+        title2, body2 = _split_title_body(cleaned2)
+        if not _looks_like_reasoning_leak(body2) or len(body2.split()) < len(body.split()):
+            raw, title, body = raw2, title2, body2
 
     word_count = len(body.split())
     log.info(
