@@ -526,6 +526,7 @@ def run_video(refresh_cb):
                     output_filename=f"clip_{sid}_shot{num}.mp4",
                     seed=seed_arg, beat=beat,
                     voice=vc.resolve_voice(script, shot.get("speaker")),
+                    lipsync=vc.is_character_speaker(shot.get("speaker")),
                 )
                 S.push(f"  Clip shot {num} done → {cg_out.name}")
             S.push("Video render complete")
@@ -802,6 +803,7 @@ def regen_video_shot(shot_num: int, refresh_cb):
                 output_filename=f"clip_{sid}_shot{shot_num}.mp4",
                 seed=seed_arg, beat=beat,
                 voice=vc.resolve_voice(script, shot.get("speaker")),
+                lipsync=vc.is_character_speaker(shot.get("speaker")),
             )
             S.push(f"Shot {shot_num} clip regenerated → {out.name}")
             # Mirror to Discord (bot poller re-posts the updated clip).

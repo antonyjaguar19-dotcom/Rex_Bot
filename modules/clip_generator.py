@@ -73,10 +73,44 @@ class ClipGenerator:
         if not FFPROBE_EXE.exists():
             raise FileNotFoundError(f"ffprobe not found at {FFPROBE_EXE}")
 
+        # Lazy S2V (lip-sync) backend — loaded on first character shot when
+        # lip-sync is enabled. _s2v_failed latches so we don't retry every shot.
+        self._s2v = None
+        self._s2v_failed = False
+
         log.info(
             f"ClipGenerator ready — sync={sync_mode}, fps={self.fps}, "
             f"video={self.video.backend_id} (single video per shot, no splitting)"
         )
+
+    def _get_s2v_backend(self):
+        """Return the Wan-S2V lip-sync backend, or None when disabled/unavailable.
+        Loaded once and cached; failure latches to a graceful I2V fallback."""
+        if not rs.get_lipsync_enabled() or self._s2v_failed:
+            return None
+        if self._s2v is not None:
+            return self._s2v
+        try:
+            from modules import model_registry as _mr
+            cfg = _mr.get_available("video_backend", rs.get_lipsync_backend_id())
+            if not cfg:
+                log.warning("Lip-sync enabled but S2V backend not in registry; "
+                            "using I2V.")
+                self._s2v_failed = True
+                return None
+            backend = vb.build_backend(cfg)
+            ok, msg = backend.health_check()
+            if not ok:
+                log.warning(f"S2V backend health check failed: {msg}; using I2V.")
+                self._s2v_failed = True
+                return None
+            self._s2v = backend
+            log.info(f"S2V lip-sync backend ready: {cfg.get('_id')}")
+            return self._s2v
+        except Exception as e:
+            log.warning(f"S2V backend load failed ({e}); using I2V.")
+            self._s2v_failed = True
+            return None
 
     # ----------------- Public API -----------------
 
@@ -90,6 +124,7 @@ class ClipGenerator:
         seed: Optional[int] = None,
         beat: Optional[str] = None,
         voice: Optional[str] = None,
+        lipsync: bool = False,
     ) -> Path:
         """
         Produce one finished narrated clip for a shot.
@@ -175,14 +210,41 @@ class ClipGenerator:
         video_res = rs.get_effective_video_resolution()
         if video_res:
             gen_kwargs["width"], gen_kwargs["height"] = video_res
-        try:
-            video_path = self.video.generate(**gen_kwargs)
-        except TypeError:
-            # Older adapters may not accept every override kwarg — drop the
-            # optional ones and retry with the core interface.
-            for k in ("cfg_override", "lora_4step_override", "width", "height"):
-                gen_kwargs.pop(k, None)
-            video_path = self.video.generate(**gen_kwargs)
+
+        # ── Lip-sync routing (P4): CHARACTER shots → Wan-S2V (audio-driven mouth).
+        # Narrator shots and any S2V failure fall through to the I2V path below.
+        used_s2v = False
+        s2v = self._get_s2v_backend() if lipsync else None
+        if s2v is not None:
+            try:
+                s2v_kwargs = dict(
+                    prompt=action_prompt,
+                    input_image=storyboard_image,
+                    audio_path=audio_path,
+                    fps=self.fps,
+                    seed=seed,
+                    cfg_override=effective_video_cfg,
+                    output_filename=f"video_{shot_id}.mp4",
+                )
+                if video_res:
+                    s2v_kwargs["width"], s2v_kwargs["height"] = video_res
+                log.info(f"{shot_id}: routing to S2V lip-sync backend")
+                video_path = s2v.generate(**s2v_kwargs)
+                self.last_seed = int(getattr(s2v, "_last_seed", -1) or -1)
+                used_s2v = True
+            except Exception as e:
+                log.warning(f"{shot_id}: S2V lip-sync failed ({e}); "
+                            f"falling back to I2V (no lip-sync).")
+
+        if not used_s2v:
+            try:
+                video_path = self.video.generate(**gen_kwargs)
+            except TypeError:
+                # Older adapters may not accept every override kwarg — drop the
+                # optional ones and retry with the core interface.
+                for k in ("cfg_override", "lora_4step_override", "width", "height"):
+                    gen_kwargs.pop(k, None)
+                video_path = self.video.generate(**gen_kwargs)
 
         # Move video into temp area (uniform location)
         temp_video = temp_dir / f"video_{shot_id}.mp4"
@@ -200,7 +262,8 @@ class ClipGenerator:
             audio_duration=audio_duration,
         )
 
-        self.last_seed = int(getattr(self.video, "_last_seed", -1) or -1)
+        if not used_s2v:
+            self.last_seed = int(getattr(self.video, "_last_seed", -1) or -1)
 
         # Integrity guard: the finished clip must carry the full narration.
         # If it's shorter than the measured narration, the last word(s) were

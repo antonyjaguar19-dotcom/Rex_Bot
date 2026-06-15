@@ -524,6 +524,7 @@ def do_run_video():
                     output_filename=f"clip_{sid}_shot{num}.mp4",
                     seed=seed_arg, beat=beat,
                     voice=_vc.resolve_voice(script, shot.get("speaker")),
+                    lipsync=_vc.is_character_speaker(shot.get("speaker")),
                 )
                 STATE.log(f"  Clip shot {num} done → {cg_out.name}")
             STATE.log("Video render complete")

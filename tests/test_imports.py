@@ -29,6 +29,7 @@ CORE_MODULES = [
     "modules.contact_sheet",
     "modules.card_generator",
     "modules.voice_casting",
+    "modules.video_backends.comfyui_wan_s2v",
     "modules.story_writer",
     "modules.script_generator",
     "modules.prompt_assembler",

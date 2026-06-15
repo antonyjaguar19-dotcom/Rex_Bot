@@ -266,6 +266,7 @@ async def generate_and_post_video(
                     seed=seed_arg,
                     beat=beat,
                     voice=vc.resolve_voice(script, shot.get("speaker")),
+                    lipsync=vc.is_character_speaker(shot.get("speaker")),
                 )
                 break  # success
             except Exception as e:
@@ -527,6 +528,7 @@ async def regenerate_video_shots(
                     seed=seed_arg,
                     beat=beat,
                     voice=vc.resolve_voice(script, shot.get("speaker")),
+                    lipsync=vc.is_character_speaker(shot.get("speaker")),
                 )
                 break
             except Exception as e:

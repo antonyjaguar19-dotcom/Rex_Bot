@@ -277,6 +277,28 @@ def set_reference_mode_enabled(enabled: bool) -> None:
     log.info(f"Reference mode: {enabled}")
 
 
+# --- Lip-sync (Wan S2V for character dialogue shots) ---
+
+def get_lipsync_enabled() -> bool:
+    """Whether CHARACTER dialogue shots render via the Wan-S2V lip-sync backend
+    instead of the silent I2V backend. Default False — opt in once S2V weights +
+    workflow are installed. Narrator shots always use I2V regardless."""
+    val = _load().get("lipsync_enabled")
+    return False if val is None else bool(val)
+
+
+def set_lipsync_enabled(enabled: bool) -> None:
+    data = _load()
+    data["lipsync_enabled"] = bool(enabled)
+    _save(data)
+    log.info(f"Lip-sync (S2V): {enabled}")
+
+
+def get_lipsync_backend_id() -> str:
+    """Registry id of the S2V backend used for character shots."""
+    return _load().get("lipsync_backend_id") or "comfyui_wan22_s2v"
+
+
 # ==============================================================================
 # RESOLVED VALUES — what the pipeline actually uses
 # ==============================================================================

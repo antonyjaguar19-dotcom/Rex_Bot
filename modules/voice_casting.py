@@ -121,6 +121,12 @@ def assign_voices(script: dict, narrator_voice: Optional[str] = None) -> dict:
     return script
 
 
+def is_character_speaker(speaker: Optional[str]) -> bool:
+    """True when this shot is spoken by a named character (lip-sync candidate),
+    False for narrator/empty (voiceover, no lip-sync)."""
+    return bool(speaker) and speaker.strip().lower() != "narrator"
+
+
 def resolve_voice(script: dict, speaker: Optional[str]) -> str:
     """Turn a shot's `speaker` into the Kokoro voice id for TTS.
     narrator/unknown → narrator voice; character → their assigned voice."""

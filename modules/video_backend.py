@@ -83,13 +83,15 @@ class VideoBackend(ABC):
 # FACTORY — loads the active backend from the registry
 # ==============================================================================
 
-def get_active_backend() -> VideoBackend:
-    cfg = model_registry.get_active("video_backend")
+def build_backend(cfg: dict) -> VideoBackend:
+    """Instantiate a video backend from its config dict (must carry
+    'module_path' + '_id'). Shared by the active-loader and per-id loaders
+    (e.g. the S2V lip-sync backend used only for character shots)."""
     module_path = cfg.get("module_path")
     if not module_path:
         raise ValueError(f"Backend {cfg.get('_id')} has no 'module_path' in config")
 
-    log.info(f"Loading video backend: {cfg['_id']} from {module_path}")
+    log.info(f"Loading video backend: {cfg.get('_id')} from {module_path}")
 
     try:
         module = importlib.import_module(module_path)
@@ -109,6 +111,10 @@ def get_active_backend() -> VideoBackend:
         )
 
     return backend_class(cfg)
+
+
+def get_active_backend() -> VideoBackend:
+    return build_backend(model_registry.get_active("video_backend"))
 
 
 # ==============================================================================

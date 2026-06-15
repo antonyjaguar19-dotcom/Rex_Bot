@@ -83,6 +83,21 @@ def get_for_role(role: str) -> dict:
     return cfg
 
 
+def get_available(backend_type: str, backend_id: str) -> Optional[dict]:
+    """Return the config for a SPECIFIC available backend by id (not the active
+    one), with `_id` attached. None if the type/id is missing."""
+    reg = _load()
+    section = reg.get(backend_type)
+    if not section:
+        return None
+    cfg = section.get("available", {}).get(backend_id)
+    if cfg is None:
+        return None
+    cfg = dict(cfg)
+    cfg["_id"] = backend_id
+    return cfg
+
+
 def list_available(backend_type: str) -> dict:
     """Return all available backends of a type as {id: description}."""
     reg = _load()
