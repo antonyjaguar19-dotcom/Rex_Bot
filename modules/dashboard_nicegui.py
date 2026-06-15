@@ -34,6 +34,7 @@ from modules import prompt_approval as pap
 from modules import storyboard_generator as sb_gen
 from modules import clip_generator as cg
 from modules import runtime_settings as rs
+from modules import voice_casting as vc
 from modules import gpu_utils
 from modules import assembly as asm
 from modules import model_registry
@@ -524,6 +525,7 @@ def run_video(refresh_cb):
                     storyboard_image=image_by_shot[num],
                     output_filename=f"clip_{sid}_shot{num}.mp4",
                     seed=seed_arg, beat=beat,
+                    voice=vc.resolve_voice(script, shot.get("speaker")),
                 )
                 S.push(f"  Clip shot {num} done → {cg_out.name}")
             S.push("Video render complete")
@@ -799,6 +801,7 @@ def regen_video_shot(shot_num: int, refresh_cb):
                 storyboard_image=image_by_shot[shot_num],
                 output_filename=f"clip_{sid}_shot{shot_num}.mp4",
                 seed=seed_arg, beat=beat,
+                voice=vc.resolve_voice(script, shot.get("speaker")),
             )
             S.push(f"Shot {shot_num} clip regenerated → {out.name}")
             # Mirror to Discord (bot poller re-posts the updated clip).
@@ -1292,13 +1295,17 @@ def main_page():
         ]
         for c in s.get("characters", []) or []:
             if isinstance(c, dict):
-                md.append(f"- **{c.get('name', '?')}** — "
+                voice = c.get("voice")
+                vtag = f" · 🎙️ `{voice}`" if voice else ""
+                md.append(f"- **{c.get('name', '?')}**{vtag} — "
                           f"{c.get('locked_visual_token', c.get('appearance', ''))[:140]}")
         md.append("")
         md.append("**Shots:**")
         for sh in s.get("shots", []) or []:
             beat = (sh.get("beat") or "").lower()
-            md.append(f"- _Shot {sh.get('shot_number')}_ ({beat}) — "
+            spk = (sh.get("speaker") or "narrator")
+            who = "🎬" if spk.lower() == "narrator" else f"💬 {spk}"
+            md.append(f"- _Shot {sh.get('shot_number')}_ ({beat}, {who}) — "
                       f"{sh.get('narration', '')[:120]}")
         script_view.set_content("\n".join(md))
 

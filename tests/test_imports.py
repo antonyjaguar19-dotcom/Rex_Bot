@@ -28,6 +28,7 @@ CORE_MODULES = [
     "modules.embed_styles",
     "modules.contact_sheet",
     "modules.card_generator",
+    "modules.voice_casting",
     "modules.story_writer",
     "modules.script_generator",
     "modules.prompt_assembler",

@@ -541,6 +541,14 @@ def _validate_and_default(script: dict) -> dict:
             cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
             s["narration"] = cleaned
 
+    # Cast a distinct speaking voice to each character (idempotent — never
+    # overrides a voice the user already picked). Narrator uses the global voice.
+    try:
+        from modules import voice_casting as vc
+        vc.assign_voices(script)
+    except Exception as e:
+        log.warning(f"Voice casting skipped: {e}")
+
     return script
 
 

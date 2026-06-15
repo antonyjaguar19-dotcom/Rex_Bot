@@ -89,6 +89,7 @@ class ClipGenerator:
         output_filename: Optional[str] = None,
         seed: Optional[int] = None,
         beat: Optional[str] = None,
+        voice: Optional[str] = None,
     ) -> Path:
         """
         Produce one finished narrated clip for a shot.
@@ -109,11 +110,16 @@ class ClipGenerator:
 
         log.info(f"=== Generating clip: {shot_id} ===")
         log.info(f"Narration ({len(narration)} chars): {narration[:80]}...")
+        if voice:
+            log.info(f"Speaker voice: {voice}")
 
         # Step 1 — TTS first (Strategy A). One audio file for the whole shot.
+        # `voice` selects the speaker's Kokoro voice (narrator vs character);
+        # None falls back to the engine's configured default.
         audio_path = self.tts.synthesize(
             narration,
             output_path=CLIPS_DIR / "_temp" / f"audio_{shot_id}.wav",
+            voice=voice,
         )
         audio_duration = self._probe_duration(audio_path)
         log.info(f"Audio duration: {audio_duration:.2f}s")

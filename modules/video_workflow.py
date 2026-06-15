@@ -29,6 +29,7 @@ from modules import video_backend as vb
 from modules import model_registry
 from modules import gpu_utils
 from modules import runtime_settings as rs
+from modules import voice_casting as vc
 from modules import generation_meta as gm
 from modules import health_monitor as hm
 from modules import prompt_approval as pap
@@ -264,6 +265,7 @@ async def generate_and_post_video(
                     output_filename=f"clip_{script_id}_shot{shot_num}.mp4",
                     seed=seed_arg,
                     beat=beat,
+                    voice=vc.resolve_voice(script, shot.get("speaker")),
                 )
                 break  # success
             except Exception as e:
@@ -524,6 +526,7 @@ async def regenerate_video_shots(
                     output_filename=f"clip_{script_id}_shot{shot_num}_v2.mp4",
                     seed=seed_arg,
                     beat=beat,
+                    voice=vc.resolve_voice(script, shot.get("speaker")),
                 )
                 break
             except Exception as e:

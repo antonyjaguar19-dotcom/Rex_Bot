@@ -32,6 +32,7 @@ from modules import prompt_approval as pap
 from modules import storyboard_generator as sb_gen
 from modules import clip_generator as cg
 from modules import runtime_settings as rs
+from modules import voice_casting as _vc
 from modules import model_registry
 from modules import gpu_utils
 from modules import beat_policy as bp
@@ -522,6 +523,7 @@ def do_run_video():
                     storyboard_image=image_by_shot[num],
                     output_filename=f"clip_{sid}_shot{num}.mp4",
                     seed=seed_arg, beat=beat,
+                    voice=_vc.resolve_voice(script, shot.get("speaker")),
                 )
                 STATE.log(f"  Clip shot {num} done → {cg_out.name}")
             STATE.log("Video render complete")
