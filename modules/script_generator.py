@@ -167,11 +167,18 @@ Each shot should advance the story AND add texture — a detail of the world, a 
 - `"medium"` — character action, waist-up or full body. The default for plot beats (hook/spark/struggle/choice).
 - `"closeup"` — the face fills the frame. Use for reaction and moment-of-decision beats so the emotion lands.
 - `"insert"` — extreme close-up of HANDS + OBJECT (a paw, a beak, or fingers gripping something counts). REQUIRED whenever a character picks up, holds, drops, places, or manipulates an object — show the action detail, not the whole body. The face may be out of frame entirely.
-Across the story: at least ONE wide establishing shot, at least ONE insert or closeup, and never two consecutive shots with the same shot_type unless a held repeat is deliberately dramatic. Wide → medium → insert → closeup variety is what makes the film feel directed instead of staged.
+Across the story: at least ONE wide establishing shot, at least ONE insert or closeup, and avoid two consecutive shots with the same shot_type — UNLESS it is a back-and-forth dialogue exchange, where alternating `closeup` (or `medium`) shots between the two speakers is correct and expected (shot/reverse-shot). Wide → medium → insert → closeup variety is what makes the film feel directed instead of staged.
 
 6. **First & last frame coherence:** the locked_visual_token guarantees identical character appearance across ALL shots. Your first_frame_prompt and last_frame_prompt must NEVER re-describe the character's hair, clothes, glasses, age, species, or any appearance trait — refer to them by name only. Different pose/expression/position shows the change across the shot. If you describe the character's appearance inside a shot prompt, you are breaking the system.
 
-7. **Motion prompt:** describes only physical motion + camera movement. Forbidden words: says, speaks, talking, mouth, lip, voice. Characters never speak — narration is voiceover.
+7. **Motion prompt:** describes only physical motion + camera movement. Do NOT write dialogue or words spoken inside the motion_prompt. (Lip movement is generated automatically from the shot's audio — you only describe body + camera motion here.)
+
+7b. **DIALOGUE (this is a TALKING film — characters speak):** Every shot has a `speaker` field — either `"narrator"` or the EXACT name of one character. Rules:
+- **One speaker per shot.** Never two characters speaking in the same shot. A back-and-forth conversation MUST be split across consecutive shots, alternating the `speaker` (classic shot/reverse-shot).
+- **Dialogue-heavy.** Most shots should be a CHARACTER speaking, in their own voice and personality. Use `"narrator"` shots mainly to open the story, bridge a time/place jump, or land the closing beat.
+- When `speaker` is a character, the `narration` field holds their ACTUAL SPOKEN WORDS, first person, in character (e.g. `"I can do this if I just take one more step!"`) — NOT a description, NOT "he says".
+- A speaking character MUST be present and visible in that shot, and for a `closeup`/`medium` speaking shot the speaker's FACE must be toward the camera (their mouth must be visible so it can be lip-synced).
+- Keep each spoken line short and natural for a young child to follow (6-14 words).
 
 8. **Style suffix added later** — do NOT include style tags ("anime style", "Pixar-style") in any prompt field.
 
@@ -211,7 +218,8 @@ Across the story: at least ONE wide establishing shot, at least ONE insert or cl
       "shot_number": 1,
       "beat": "atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence",
       "shot_type": "wide | medium | closeup | insert",
-      "narration": "<8-15 words, specific actions, no emotion labels>",
+      "speaker": "narrator | <exact character name from the characters list>",
+      "narration": "<the spoken line for THIS shot. If speaker is a character: their actual spoken words, FIRST PERSON, in-character (no 'he said'), 8-15 words. If speaker is 'narrator': third-person narration, 10-14 words. NEVER empty.>",
       "visual_description": "<one sentence>",
       "first_frame_prompt": "<40-70 words: ONLY pose + setting + camera framing + lighting. DO NOT re-describe the character's hair, clothes, age, species, glasses, or any appearance trait — the locked_visual_token will be injected automatically. Refer to the character by NAME only. Example: 'Rohan stands at the edge of a dusty courtyard, head tilted down, hands clasped behind his back. Wide shot, late afternoon golden light, soft warm shadows.'>",
       "last_frame_prompt": "<40-70 words: SAME rules — pose + setting + framing + lighting only. Show a clearly different pose/expression/position from first_frame to convey the change across this shot. Refer to character by NAME only.>",
@@ -499,10 +507,33 @@ def _validate_and_default(script: dict) -> dict:
             beat = (s.get("beat") or "").strip().lower()
             s["shot_type"] = _beat_to_shot_type.get(beat, "medium")
 
-    # Deterministic narration scrub: narration is voiceover, never on-screen
-    # speech. The LLM keeps slipping quoted dialogue in despite the prompt ban,
-    # so strip quote marks here as a hard guarantee (TTS reads the line fine
-    # without them). Only quote chars are removed — apostrophes/contractions kept.
+    # Default + validate per-shot `speaker`. It selects the TTS voice and the
+    # talking-vs-narrator render route (character → lip-synced backend later).
+    # Missing, "narrator", or a name not in the cast → "narrator" so the
+    # downstream voice lookup can never break. Known names keep canonical casing.
+    canon = {}
+    for c in script.get("characters", []):
+        if isinstance(c, dict):
+            nm = (c.get("name") or "").strip()
+            if nm:
+                canon[nm.lower()] = nm
+    for s in script["shots"]:
+        spk = (s.get("speaker") or "").strip()
+        if not spk or spk.lower() == "narrator":
+            s["speaker"] = "narrator"
+        elif spk.lower() in canon:
+            s["speaker"] = canon[spk.lower()]
+        else:
+            log.warning(
+                f"Shot {s.get('shot_number')} speaker '{spk}' not in cast; "
+                f"defaulting to narrator."
+            )
+            s["speaker"] = "narrator"
+
+    # Deterministic narration scrub: strip quote marks so TTS never speaks them.
+    # When `speaker` is a character the narration IS their dialogue, but the
+    # quote characters themselves should not be voiced (apostrophes/contractions
+    # are kept). Harmless for narrator lines too.
     for s in script["shots"]:
         narr = s.get("narration")
         if isinstance(narr, str) and ('"' in narr or "“" in narr or "”" in narr):
@@ -624,7 +655,7 @@ You are a story structurer. The story has already been WRITTEN by another author
 
 1b. **PRESERVE PUNCTUATION VERBATIM.** Keep the author's commas, periods, and capitalization exactly. Do not drop the period after a name ("Mr. Snail", never "Mr Snail"). Each narration line ends with proper end punctuation.
 
-1c. **NO SPOKEN DIALOGUE IN NARRATION.** Narration is voiceover — characters never speak on screen. If the prose contains a quoted line (e.g. 'Mr. Snail said, "Let's race!"'), rewrite it as reported description ("Mr. Snail suggested a race.") — no quotation marks, no "said".
+1c. **DIALOGUE → speaker + spoken words (this is a TALKING film).** Every shot has a `speaker` field. When the prose has a QUOTED line attributed to a character (e.g. 'Mr. Snail said, "Let's race!"'), make that its OWN shot: set `speaker` to that character's EXACT name and put ONLY the spoken words in `narration` (`Let's race!` — strip the quotation marks AND the `Mr. Snail said` attribution). When the prose is plain narrator text (not a quoted line), set `speaker` to `"narrator"` and keep the prose verbatim in `narration`. ONE speaker per shot — never merge two characters' quoted lines into one shot. A quoted exchange becomes consecutive shots that alternate `speaker`.
 
 2. **Each shot's narration: roughly 8-15 words** of complete sentence(s), depending on where sentence breaks fall. Don't pad. Don't trim hard. Follow the prose.
 
@@ -637,7 +668,7 @@ You are a story structurer. The story has already been WRITTEN by another author
    - `"medium"` — character action, waist-up or full body. The default for plot beats.
    - `"closeup"` — the face fills the frame. Use for reaction and moment-of-decision beats.
    - `"insert"` — extreme close-up of HANDS + OBJECT (paw, beak, fingers count). REQUIRED whenever a character picks up, holds, drops, places, or manipulates an object.
-   Across the story: at least ONE wide, at least ONE insert or closeup, and never two consecutive shots with the same shot_type unless deliberately dramatic.
+   Across the story: at least ONE wide, at least ONE insert or closeup, and avoid two consecutive shots with the same shot_type — EXCEPT a dialogue exchange, where alternating `closeup`/`medium` shots between the two speakers is correct (shot/reverse-shot). For a `closeup`/`medium` shot where a character speaks, frame that speaker facing the camera (mouth visible for lip-sync).
 
 4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only; NO poses, NO emotions, NO setting) that MUST state an explicit AGE first: for humans give a number ("a 7-year-old girl..."), for animals/creatures give a clear life stage ("a young sparrow...", "an old grey-whiskered dog..."). Then species, color, body shape, clothing, distinctive features. Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature` — it must start with the age words.
 
@@ -680,7 +711,8 @@ You are a story structurer. The story has already been WRITTEN by another author
       "shot_number": 1,
       "beat": "atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence",
       "shot_type": "wide | medium | closeup | insert",
-      "narration": "<8-15 words taken from the author's prose>",
+      "speaker": "narrator | <exact character name>",
+      "narration": "<if speaker is a character: their SPOKEN words only (quotes + 'X said' stripped). If speaker is 'narrator': the author's prose verbatim. 6-15 words. NEVER empty.>",
       "visual_description": "<one short sentence>",
       "first_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
       "last_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",

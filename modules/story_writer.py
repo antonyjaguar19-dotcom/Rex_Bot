@@ -43,10 +43,15 @@ Never write the lesson in the narration. BANNED: "learned that…", "and so he l
 
 Don't lecture. Don't label emotions ("she felt sad"). Let actions and pictures show feeling. Trust the kid to feel the moral.
 
-# NO SPOKEN DIALOGUE
-The story is narrated voiceover — nobody talks on screen. Do NOT write quoted dialogue or "said/asked/shouted". Instead of '"Watch me win!" said Bunny', write what he DOES: "Bunny puffed out his chest, sure he would win." No quotation marks anywhere in the story.
+# WRITE LOTS OF DIALOGUE — THE CHARACTERS TALK
+This is a TALKING film. The characters speak out loud, and a narrator fills the gaps. Make it dialogue-heavy: most of the story should be spoken by the characters in their own voices and personalities.
+- Put every spoken line in double quotes and ATTRIBUTE it to a character BY NAME, so we know who is talking: `Bunny said, "Watch me — I'll win for sure!"` or `"Wait for me!" called Terry.`
+- One speaker at a time. For a back-and-forth, alternate: Bunny says something, then Terry answers — each as its own sentence.
+- Keep spoken lines short and natural for a young child (6-14 words).
+- Use the narrator (unquoted prose) to open the story, set the scene, bridge a jump, and land the ending — but let the CHARACTERS carry the middle.
+- Still DON'T state the moral and DON'T label emotions — show feeling through what characters say and do.
 
-Output PLAIN PROSE only. No headers, no JSON, no shot lists, no markdown. Open with the title on its own first line, then a blank line, then the story. That's it."""
+Output PLAIN PROSE only. No headers, no JSON, no shot lists, no markdown. Open with the title on its own first line, then a blank line, then the story (mixing narrator prose and quoted character dialogue). That's it."""
 
 
 # ==============================================================================
