@@ -27,6 +27,7 @@ CORE_MODULES = [
     "modules.progress_bar",
     "modules.embed_styles",
     "modules.contact_sheet",
+    "modules.card_generator",
     "modules.story_writer",
     "modules.script_generator",
     "modules.prompt_assembler",

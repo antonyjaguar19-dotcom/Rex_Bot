@@ -34,6 +34,8 @@ FFMPEG_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
 FFPROBE_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffprobe.exe"
 CLIPS_DIR = PROJECT_ROOT / "04_Outputs" / "clips"
 FINAL_DIR = PROJECT_ROOT / "04_Outputs" / "final"
+SCRIPTS_DIR = PROJECT_ROOT / "04_Outputs" / "scripts"
+CARDS_DIR = CLIPS_DIR / "_cards"
 
 CROSSFADE_SEC = 0.3
 # Hard-cut breath: trailing pad added to each shot (except the last) so the
@@ -406,6 +408,92 @@ def _assemble_one_aspect(
 
 
 # ==============================================================================
+# TITLE / END CARDS (Phase 6C) — best-effort, never break assembly
+# ==============================================================================
+def _prepare_cards(script_id: str, progress_cb: Optional[Callable] = None) -> Optional[dict]:
+    """Read title/moral from the script JSON, TTS them ONCE, locate bookend
+    frames. Returns a prep dict consumed per-aspect, or None to skip cards."""
+    import json
+    from modules import card_generator as cg
+
+    spath = SCRIPTS_DIR / f"script_{script_id}.json"
+    if not spath.exists():
+        log.warning(f"No script JSON for cards: {spath}; skipping cards.")
+        return None
+    script = json.loads(spath.read_text(encoding="utf-8"))
+    title = (script.get("title") or "").strip()
+    moral = (script.get("moral") or "").strip()
+    if not title and not moral:
+        log.info("Script has no title/moral; skipping cards.")
+        return None
+
+    if progress_cb:
+        progress_cb("voicing title + moral cards...")
+
+    title_wav, t_dur = (
+        cg.synth_card_audio(title, CARDS_DIR / f"{script_id}_title.wav")
+        if title else (None, 0.0)
+    )
+    moral_wav, m_dur = (
+        cg.synth_card_audio(moral, CARDS_DIR / f"{script_id}_moral.wav")
+        if moral else (None, 0.0)
+    )
+    return {
+        "cg": cg,
+        "title": title,
+        "moral": moral,
+        "title_wav": title_wav,
+        "moral_wav": moral_wav,
+        "t_dur": t_dur,
+        "m_dur": m_dur,
+        "title_card_dur": cg.effective_card_duration(t_dur) if title else 0.0,
+        "moral_card_dur": cg.effective_card_duration(m_dur) if moral else 0.0,
+        "first_frame": cg.find_frame(script_id, "first"),
+        "last_frame": cg.find_frame(script_id, "last"),
+    }
+
+
+def _wrap_with_cards(
+    cards: dict, script_id: str, aspect_key: str,
+    clips: list, durations: list, audio_flags: list,
+) -> tuple[list, list, list]:
+    """Prepend the title card + append the end card for ONE aspect. Returns
+    extended (clips, durations, audio_flags). On failure, returns inputs
+    unchanged so the shots still assemble."""
+    if not cards:
+        return clips, durations, audio_flags
+    cg = cards["cg"]
+    w, h = ASPECTS[aspect_key]
+    pre_c, pre_d, pre_f = [], [], []
+    post_c, post_d, post_f = [], [], []
+    try:
+        if cards["title"]:
+            tc = cg.build_card(
+                script_id=script_id, kind="title", text=cards["title"],
+                frame_path=cards["first_frame"], target_w=w, target_h=h,
+                aspect_key=aspect_key, audio_path=cards["title_wav"],
+                duration=cards["t_dur"],
+            )
+            pre_c, pre_d, pre_f = [tc], [cards["title_card_dur"]], [True]
+        if cards["moral"]:
+            ec = cg.build_card(
+                script_id=script_id, kind="end", text=cards["moral"],
+                frame_path=cards["last_frame"], target_w=w, target_h=h,
+                aspect_key=aspect_key, audio_path=cards["moral_wav"],
+                duration=cards["m_dur"], label="The moral",
+            )
+            post_c, post_d, post_f = [ec], [cards["moral_card_dur"]], [True]
+    except Exception as e:
+        log.exception(f"Card build failed ({aspect_key}); assembling without: {e}")
+        return clips, durations, audio_flags
+    return (
+        pre_c + clips + post_c,
+        pre_d + durations + post_d,
+        pre_f + audio_flags + post_f,
+    )
+
+
+# ==============================================================================
 # PUBLIC API
 # ==============================================================================
 
@@ -460,14 +548,32 @@ def assemble_final(
         log.info(f"Note: {silent_count}/{len(clips)} clips have no audio — "
                  f"silent track will be injected.")
 
+    # ── Phase 6C: title + end cards (best-effort, never fatal) ──
+    cards = None
+    try:
+        cards = _prepare_cards(script_id, progress_cb)
+    except Exception as e:
+        log.exception(f"Card prep failed (continuing without cards): {e}")
+    if cards:
+        card_extra = cards["title_card_dur"] + cards["moral_card_dur"]
+        n_cards = bool(cards["title"]) + bool(cards["moral"])
+        total_dur += card_extra
+        if transition == "cut":
+            total_dur += n_cards * CUT_GAP_SEC
+        log.info(f"Cards add ~{card_extra:.2f}s (title='{cards['title'][:30]}', "
+                 f"moral='{cards['moral'][:30]}'), total now {total_dur:.2f}s")
+
     if progress_cb:
         progress_cb(f"assembling {len(clips)} shots, ~{total_dur:.1f}s total")
 
     outputs = {}
     for aspect_key in ("9x16", "16x9", "1x1"):
         out_path = FINAL_DIR / f"final_{script_id}_{aspect_key}.mp4"
+        a_clips, a_durs, a_flags = _wrap_with_cards(
+            cards, script_id, aspect_key, clips, durations, audio_flags
+        )
         _assemble_one_aspect(
-            clips, durations, aspect_key, out_path, audio_flags, progress_cb,
+            a_clips, a_durs, aspect_key, out_path, a_flags, progress_cb,
             transition=transition,
         )
         outputs[aspect_key] = out_path
