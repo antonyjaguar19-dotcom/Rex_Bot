@@ -151,7 +151,9 @@ ONE paragraph, plain text, 60-110 words. Start with the style anchor. End with l
 # ==============================================================================
 
 def _call_llm(user_prompt: str, system_prompt: str, *, temperature: float = 0.35) -> str:
-    cfg = model_registry.get_active("llm_backend")
+    # Image + motion prompt craft is a reasoning/creativity task — route it to
+    # the 'prompt' role (a stronger model) when configured; fall back to active.
+    cfg = model_registry.get_for_role("prompt") or model_registry.get_active("llm_backend")
     model_name = (
         cfg.get("model_id") or cfg.get("model_name") or cfg.get("model")
         or "qwen2.5:14b-instruct-q6_K"

@@ -89,7 +89,10 @@ def _call_llm(user_prompt: str, system_prompt: str, *, temperature: float = 0.95
             "temperature": temperature,
             "top_p": 0.95,
             "num_ctx": 8192,
-            "num_predict": 1024,
+            # Headroom: thinking models (qwen3) spend tokens on a <think> block
+            # BEFORE the prose. 1024 could truncate mid-think on longer stories,
+            # leaking an unclosed block. 2560 lets think close + prose follow.
+            "num_predict": 2560,
         },
     }
     log.info(f"Stage 1 (story prose) → {model_name}, temp={temperature}")
@@ -103,8 +106,18 @@ def _call_llm(user_prompt: str, system_prompt: str, *, temperature: float = 0.95
 # ==============================================================================
 
 def _strip_meta(text: str) -> str:
-    """Remove markdown fences, <think> blocks, leading labels the LLM may add."""
+    """Remove markdown fences, <think> blocks, leading labels the LLM may add.
+
+    Thinking models (e.g. qwen3) prefix output with a <think>...</think> block
+    that ollama's think=False does NOT reliably suppress. Strip the closed block;
+    if the answer follows a CLOSED think, keep it. As a fallback, drop a leading
+    block from the start up to the last </think> (handles nested/odd markers)."""
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Fallback: any stray closing tag → keep only what comes AFTER the last one
+    # (the real answer), discarding leaked reasoning before it.
+    if "</think>" in cleaned.lower():
+        idx = cleaned.lower().rfind("</think>")
+        cleaned = cleaned[idx + len("</think>"):]
     cleaned = re.sub(r"```[a-z]*", "", cleaned, flags=re.IGNORECASE).replace("```", "")
     # Drop leading "Title:", "Story:", etc. that some models add as headers.
     cleaned = re.sub(r"^(?:Title|Story|Narration)\s*[:\-]\s*", "", cleaned.strip(),
