@@ -282,6 +282,111 @@ class ClipGenerator:
         )
         return final_path
 
+    # ----------------- Audio-first: silent clip sized to a segment window -----
+
+    def generate_silent_clip(
+        self,
+        shot_id: str,
+        motion_prompt: str,
+        storyboard_image: Path,
+        target_dur: float,
+        output_filename: Optional[str] = None,
+        seed: Optional[int] = None,
+        beat: Optional[str] = None,
+    ) -> Path:
+        """Render ONE silent video clip sized to EXACTLY `target_dur` seconds.
+
+        Audio-first path: there is no per-shot TTS here. The narration lives in a
+        single master track laid over the whole timeline at assembly. This clip
+        owns one segment's window, so its length must match `target_dur` exactly
+        (freeze-pad if the model rendered short, hard-trim if it ran long) — that
+        keeps the silent clips tiling the timeline with no drift. Output has NO
+        audio stream.
+        """
+        if not storyboard_image.exists():
+            raise FileNotFoundError(f"Storyboard missing: {storyboard_image}")
+
+        log.info(f"=== Silent clip: {shot_id} (target {target_dur:.2f}s) ===")
+
+        round_fn = getattr(self.video, "round_frame_count", None)
+        frames = self._frames_for_duration(target_dur)
+        frame_count = round_fn(frames) if callable(round_fn) else self._round_to_ltx2_frames(frames)
+
+        backend_default_cfg = float(getattr(self.video, "cfg", 3.5))
+        effective_video_cfg = bp.video_cfg_for(beat, backend_default_cfg)
+        effective_lora_4step = bp.lora_4step_for(beat)
+
+        temp_dir = CLIPS_DIR / "_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            gpu_utils.free_ollama_vram()
+        except Exception:
+            pass
+
+        gen_kwargs = dict(
+            prompt=motion_prompt,
+            input_image=storyboard_image,
+            frame_count=frame_count,
+            fps=self.fps,
+            output_filename=f"video_{shot_id}.mp4",
+            seed=seed,
+            cfg_override=effective_video_cfg,
+            lora_4step_override=effective_lora_4step,
+        )
+        video_res = rs.get_effective_video_resolution()
+        if video_res:
+            gen_kwargs["width"], gen_kwargs["height"] = video_res
+
+        try:
+            video_path = self.video.generate(**gen_kwargs)
+        except TypeError:
+            for k in ("cfg_override", "lora_4step_override", "width", "height"):
+                gen_kwargs.pop(k, None)
+            video_path = self.video.generate(**gen_kwargs)
+
+        temp_video = temp_dir / f"video_{shot_id}.mp4"
+        if video_path.resolve() != temp_video.resolve():
+            video_path.replace(temp_video)
+            video_path = temp_video
+
+        if output_filename is None:
+            output_filename = f"clip_{shot_id}.mp4"
+        final_path = CLIPS_DIR / output_filename
+        CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+        self._finalize_silent(video_path, final_path, target_dur)
+
+        self.last_seed = int(getattr(self.video, "_last_seed", -1) or -1)
+        final_dur = self._probe_duration(final_path)
+        log.info(
+            f"Silent clip ready: {final_path.name} "
+            f"({final_path.stat().st_size/(1024*1024):.2f} MB), "
+            f"dur={final_dur:.2f}s vs target={target_dur:.2f}s, seed={self.last_seed}"
+        )
+        return final_path
+
+    def _finalize_silent(self, video_path: Path, out_path: Path, target_dur: float):
+        """Force `video_path` to EXACTLY target_dur and strip audio.
+        Short → hold last frame (tpad). Long → hard-trim (-t). Always re-encodes
+        (tpad/trim change the stream) and drops any audio (-an)."""
+        video_dur = self._probe_duration(video_path)
+        pad_seconds = target_dur - video_dur
+        vf = f"fps={self.fps}"
+        if pad_seconds > 0.05:
+            vf = (f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f},fps={self.fps}")
+        cmd = [
+            str(FFMPEG_EXE), "-y", "-loglevel", "error",
+            "-i", str(video_path),
+            "-an",
+            "-vf", vf,
+            "-t", f"{target_dur:.3f}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "veryfast", "-crf", "18",
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg silent-finalize failed:\n{result.stderr.strip()}")
+
     # ----------------- Helpers -----------------
 
     def _probe_duration(self, media_path: Path) -> float:
