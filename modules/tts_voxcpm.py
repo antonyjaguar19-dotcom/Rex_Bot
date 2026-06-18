@@ -31,6 +31,26 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _HF_CACHE = _PROJECT_ROOT / "03_Models" / "hf_cache"
 os.environ.setdefault("HF_HOME", str(_HF_CACHE))
 os.environ.setdefault("HF_HUB_CACHE", str(_HF_CACHE / "hub"))
+
+# VoxCPM loads reference wavs (voice cloning) via torchcodec, which needs the
+# FFmpeg SHARED libraries. Our 00_Tools/ffmpeg is static (exe only), so we ship
+# a contained shared build and put it on the DLL search path here — must run
+# BEFORE torchcodec/voxcpm import. Keeps everything inside E:\Rexjaw_VFX.
+FFMPEG_SHARED_BIN = _PROJECT_ROOT / "00_Tools" / "ffmpeg_shared" / "bin"
+
+
+def add_ffmpeg_dll_dir() -> bool:
+    """Put the contained FFmpeg shared DLLs on the search path (idempotent)."""
+    try:
+        if FFMPEG_SHARED_BIN.is_dir():
+            os.add_dll_directory(str(FFMPEG_SHARED_BIN))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+add_ffmpeg_dll_dir()
 # ----------------------------------------------------------------------------
 
 _AGENT_DIR = Path(__file__).parent.parent.resolve()

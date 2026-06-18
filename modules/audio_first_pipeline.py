@@ -113,6 +113,8 @@ def _voxcpm_clone_supported() -> bool:
     global _CLONE_OK
     if _CLONE_OK is None:
         try:
+            from modules import tts_voxcpm
+            tts_voxcpm.add_ffmpeg_dll_dir()        # FFmpeg shared libs on path
             import torchcodec  # noqa: F401  (triggers the DLL load)
             _CLONE_OK = True
         except Exception as e:
