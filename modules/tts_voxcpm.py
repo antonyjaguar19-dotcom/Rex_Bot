@@ -116,7 +116,10 @@ class VoxCPMTTS:
 
     # -------- Low-level: one group -> numpy waveform --------
 
-    def _gen(self, text: str):
+    def _gen(self, text: str, ref_wav=None, ref_text=None):
+        """Generate one waveform. A per-call reference (ref_wav + ref_text) pins
+        the voice (clone); falls back to the instance reference, then to no
+        reference (VoxCPM's own voice)."""
         import numpy as np
         self._ensure_loaded()
         kwargs = dict(
@@ -124,10 +127,12 @@ class VoxCPMTTS:
             cfg_value=self.cfg_value,
             inference_timesteps=self.inference_timesteps,
         )
-        if self.reference_wav and self.reference_wav.exists():
-            kwargs["prompt_wav_path"] = str(self.reference_wav)
-            if self.voice_text:
-                kwargs["prompt_text"] = self.voice_text
+        rw = ref_wav or self.reference_wav
+        rt = ref_text or self.voice_text
+        if rw and Path(rw).exists():
+            kwargs["prompt_wav_path"] = str(rw)
+            if rt:
+                kwargs["prompt_text"] = rt
         wav = self._model.generate(**kwargs)
         return np.asarray(wav, dtype=np.float32).reshape(-1)
 
@@ -154,21 +159,33 @@ class VoxCPMTTS:
 
     def synthesize_segments(
         self,
-        groups: list[str],
+        groups: list,
         output_path: Optional[Path] = None,
         gap_sec: float = GROUP_GAP_SEC,
     ) -> tuple[Path, list[tuple[str, float, float]]]:
         """Voice each breath-group separately and stitch with a silence gap.
 
-        Returns (master_wav_path, spans) where spans = [(text, t_start, t_end)]
-        in seconds — exact, no detection needed. The inserted gaps are the cut
-        points the segmenter tiles its windows around.
+        `groups` items are either a plain string, or a tuple
+        `(text, ref_wav, ref_text)` to pin THIS group's voice to a reference
+        (per-character / narrator voices). Returns (master_wav_path, spans) with
+        spans = [(text, t_start, t_end)] in seconds — exact, no detection. The
+        inserted gaps are the cut points the segmenter tiles its windows around.
         """
         import numpy as np
         import soundfile as sf
 
-        groups = [g.strip() for g in groups if g and g.strip()]
-        if not groups:
+        # Normalize to (text, ref_wav, ref_text) triples.
+        norm: list[tuple] = []
+        for g in groups:
+            if isinstance(g, (tuple, list)):
+                text = (g[0] or "").strip()
+                ref_wav = g[1] if len(g) > 1 else None
+                ref_text = g[2] if len(g) > 2 else None
+            else:
+                text, ref_wav, ref_text = (g or "").strip(), None, None
+            if text:
+                norm.append((text, ref_wav, ref_text))
+        if not norm:
             raise ValueError("synthesize_segments() got no non-empty groups.")
         self._ensure_loaded()
 
@@ -178,19 +195,19 @@ class VoxCPMTTS:
         pieces: list = []
         spans: list[tuple[str, float, float]] = []
         cursor = 0  # running sample count
-        for k, g in enumerate(groups):
-            wav = self._gen(g)
+        for k, (text, ref_wav, ref_text) in enumerate(norm):
+            wav = self._gen(text, ref_wav=ref_wav, ref_text=ref_text)
             t_start = cursor / self._sr
             pieces.append(wav)
             cursor += len(wav)
             t_end = cursor / self._sr
-            spans.append((g, round(t_start, 3), round(t_end, 3)))
-            if k < len(groups) - 1:          # gap after every group but the last
+            spans.append((text, round(t_start, 3), round(t_end, 3)))
+            if k < len(norm) - 1:            # gap after every group but the last
                 pieces.append(gap)
                 cursor += gap_samples
 
         master = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
-        out = self._resolve_out(output_path, " ".join(groups))
+        out = self._resolve_out(output_path, " ".join(t for t, _, _ in norm))
         sf.write(str(out), master, self._sr)
         log.info(f"Wrote master {out.name} — {len(master)/self._sr:.2f}s, "
                  f"{len(spans)} groups.")

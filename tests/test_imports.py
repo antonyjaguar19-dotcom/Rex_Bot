@@ -45,6 +45,7 @@ CORE_MODULES = [
     "modules.narration_segmenter",
     "modules.tts_elevenlabs",
     "modules.tts_voxcpm",
+    "modules.voice_bank",
     "modules.audio_first_pipeline",
     "modules.upscaler",
     "modules.gpu_utils",

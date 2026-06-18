@@ -124,6 +124,45 @@ def test_llm_failure_falls_back(monkeypatch):
     assert script["shots"][0]["beat"] == "atmosphere"
 
 
+def test_voice_ids_per_speaker_distinct_and_consistent():
+    """Narrator keeps one voice across all its groups; each character gets a
+    distinct voice by gender."""
+    script = {
+        "shots": [
+            {"shot_number": 1, "speaker": "narrator"},
+            {"shot_number": 2, "speaker": "Momo"},
+            {"shot_number": 3, "speaker": "Benny"},
+            {"shot_number": 4, "speaker": "narrator"},
+        ],
+        "characters": [
+            {"name": "Momo", "type": "animal",
+             "appearance": "a cheerful female mouse, she squeaks"},
+            {"name": "Benny", "type": "animal",
+             "appearance": "a shy male bear, he grumbles"},
+        ],
+    }
+    vids = afp._voice_ids_for_groups(script, 4)
+    assert len(vids) == 4
+    assert vids[0] == vids[3]                       # narrator consistent
+    assert vids[1] != vids[2]                       # two chars differ
+    assert vids[0] not in (vids[1], vids[2])        # narrator distinct from chars
+
+
+def test_retime_overwrites_timing_and_duration():
+    script = {"shots": [{"shot_number": i + 1, "narration": "x",
+                         "win_dur": 0.0} for i in range(3)]}
+    segs = [
+        nseg.Segment(0, "One.", 0.0, 2.0, 0.0, 2.2),
+        nseg.Segment(1, "Two.", 2.4, 4.0, 2.2, 4.3),
+        nseg.Segment(2, "Three.", 4.5, 6.0, 4.3, 6.0),
+    ]
+    afp._retime_shots(script, segs)
+    assert script["shots"][0]["win_dur"] == 2.2
+    assert script["shots"][2]["win_end"] == 6.0
+    assert script["shots"][1]["narration"] == "Two."      # verbatim from span
+    assert script["duration_seconds"] == 6
+
+
 def test_split_sentences():
     out = afp._split_sentences("Hello there. How are you? Run!")
     assert out == ["Hello there.", "How are you?", "Run!"]

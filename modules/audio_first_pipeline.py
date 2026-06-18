@@ -46,7 +46,11 @@ from modules import runtime_settings as rs
 from modules import safety_filter as sf
 from modules import generation_meta as gm
 from modules import model_registry
+from modules import voice_casting as vc
+from modules import voice_bank as vb
 from modules.file_utils import atomic_write_json
+
+GROUP_GAP_SEC = 0.34   # silence inserted between breath-groups (the cut points)
 
 log = logging.getLogger("claw_bot.audio_first")
 
@@ -98,6 +102,138 @@ def _breath_groups(prose: str, max_chars: int = _GROUP_MAX_CHARS) -> list[str]:
         if buf:
             groups.append(buf.strip())
     return [g for g in groups if g]
+
+
+_CLONE_OK: Optional[bool] = None
+
+
+def _voxcpm_clone_supported() -> bool:
+    """True if VoxCPM can load reference wavs (torchcodec imports cleanly).
+    Cached — the torchcodec DLL state doesn't change within a run."""
+    global _CLONE_OK
+    if _CLONE_OK is None:
+        try:
+            import torchcodec  # noqa: F401  (triggers the DLL load)
+            _CLONE_OK = True
+        except Exception as e:
+            log.warning(f"VoxCPM voice-clone disabled (torchcodec unavailable: "
+                        f"{type(e).__name__}). Using Kokoro multivoice instead.")
+            _CLONE_OK = False
+    return _CLONE_OK
+
+
+def _voice_ids_for_groups(script: dict, n_groups: int) -> list[str]:
+    """Per-group voice id: narrator gets the narrator voice, each character gets
+    their gender-cast voice. Aligns groups<->shots 1:1 (same count by build)."""
+    vc.assign_voices(script)                       # cast characters to voices
+    shots = script.get("shots", []) or []
+    ids = []
+    for i in range(n_groups):
+        speaker = shots[i].get("speaker") if i < len(shots) else "narrator"
+        ids.append(vc.resolve_voice(script, speaker))
+    return ids
+
+
+def _voice_groups(
+    script: dict,
+    groups: list[str],
+    master_wav: Optional[Path] = None,
+    progress_cb: Optional[Callable] = None,
+) -> tuple[Path, list[tuple[str, float, float]], str]:
+    """Voice each breath-group with ITS speaker's voice. VoxCPM (primary) pins
+    each speaker to a reference wav so the timbre is stable shot-to-shot; Kokoro
+    (fallback) voices each group with its voice id directly. Returns
+    (master_wav, spans, engine)."""
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    if master_wav is None:
+        stub = datetime.now().strftime("%Y%m%d_%H%M%S")
+        master_wav = AUDIO_DIR / f"master_{stub}.wav"
+
+    vids = _voice_ids_for_groups(script, len(groups))
+
+    # --- VoxCPM (preferred): clone a fixed reference per speaker ---
+    # VoxCPM loads the reference wav via torchcodec, which needs FFmpeg shared
+    # libraries. If that can't load, skip straight to Kokoro (also per-character,
+    # also consistent) instead of paying a wasted model load.
+    try:
+        if not _voxcpm_clone_supported():
+            raise RuntimeError("torchcodec/ffmpeg-shared unavailable for VoxCPM clone")
+        from modules.tts_voxcpm import VoxCPMTTS
+        vox = VoxCPMTTS()
+        ok, msg = vox.health_check(load_model=False)
+        if not ok:
+            raise RuntimeError(msg)
+        if progress_cb:
+            progress_cb("voicing narration (VoxCPM, per-character)...")
+        refs = vb.prime(vids)                      # mint/cache references once
+        triples = []
+        for g, vid in zip(groups, vids):
+            rw, rt = refs.get(vid, (None, None))
+            triples.append((g, rw, rt))
+        wav, spans = vox.synthesize_segments(triples, output_path=master_wav,
+                                             gap_sec=GROUP_GAP_SEC)
+        log.info(f"Voiced {len(spans)} groups via VoxCPM "
+                 f"({len(set(vids))} distinct voices).")
+        return wav, spans, "voxcpm-mv"
+    except Exception as e:
+        log.warning(f"VoxCPM multivoice unavailable ({e}); Kokoro fallback.")
+
+    # --- Kokoro fallback: per-voice, deterministic (already consistent) ---
+    if progress_cb:
+        progress_cb("voicing narration (Kokoro, per-character)...")
+    wav, spans = _voice_groups_kokoro(groups, vids, master_wav)
+    log.info(f"Voiced {len(spans)} groups via Kokoro fallback.")
+    return wav, spans, "kokoro-mv"
+
+
+def _voice_groups_kokoro(groups: list[str], voice_ids: list[str],
+                         master_wav: Path) -> tuple[Path, list[tuple[str, float, float]]]:
+    """Kokoro multivoice: synth each group with its voice id, stitch with a
+    silence gap, return (master_wav, spans). Mirrors VoxCPM.synthesize_segments."""
+    import numpy as np
+    import soundfile as sf
+    from modules.tts_engine import TTSEngine
+
+    tts = TTSEngine()
+    sr = TTSEngine.SAMPLE_RATE
+    gap = np.zeros(int(round(GROUP_GAP_SEC * sr)), dtype=np.float32)
+    tmp = AUDIO_DIR / "_voxtmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    pieces, spans, cursor = [], [], 0
+    for k, (g, vid) in enumerate(zip(groups, voice_ids)):
+        part = tts.synthesize(g, output_path=tmp / f"g{k}.wav", voice=vid)
+        audio, _sr = sf.read(str(part), dtype="float32")
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+        t_start = cursor / sr
+        pieces.append(audio)
+        cursor += len(audio)
+        spans.append((g, round(t_start, 3), round(cursor / sr, 3)))
+        if k < len(groups) - 1:
+            pieces.append(gap)
+            cursor += len(gap)
+    master = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
+    sf.write(str(master_wav), master, sr)
+    return master_wav, spans
+
+
+def _retime_shots(script: dict, segs: list[nseg.Segment]) -> None:
+    """Overwrite each shot's timing from the REAL voiced spans (after the
+    text-first structurer ran on placeholder timing). Narration stays verbatim."""
+    shots = script.get("shots", []) or []
+    if len(shots) != len(segs):
+        log.warning(f"retime count mismatch shots={len(shots)} segs={len(segs)}; "
+                    f"zipping to the shorter.")
+    for shot, seg in zip(shots, segs):
+        shot["win_start"] = seg.win_start
+        shot["win_end"] = seg.win_end
+        shot["win_dur"] = round(seg.window_dur, 3)
+        shot["audio_t_start"] = seg.t_start
+        shot["audio_t_end"] = seg.t_end
+        shot["narration"] = seg.text           # == what was voiced
+    if segs:
+        script["duration_seconds"] = round(segs[-1].win_end)
 
 
 def voice_and_segment(
@@ -331,20 +467,29 @@ def generate_script_audio_first(
                            culture_hint=culture_override)
     log.info(f"Audio-first stage 1: '{story['title']}' ({story['word_count']} words)")
 
-    # 2) voice + segment (pauses dictate shot count)
-    wav, segments, engine = voice_and_segment(
-        story["prose"], voice_id=voice_id, progress_cb=progress_cb
-    )
-    log.info(f"Voiced via {engine}; {len(segments)} segments (shots).")
-
-    # 3) annotate segments → script schema (narration stays verbatim)
+    # 2) split into breath-groups, then STRUCTURE ON TEXT FIRST. We need each
+    #    group's speaker BEFORE voicing so we can give it the right voice
+    #    (narrator vs character, by gender). Timing is filled in after voicing.
+    groups = _breath_groups(story["prose"])
+    placeholder = [nseg.Segment(index=i, text=g, t_start=0.0, t_end=0.0,
+                                win_start=0.0, win_end=0.0)
+                   for i, g in enumerate(groups)]
     if progress_cb:
-        progress_cb(f"structuring {len(segments)} shots...")
+        progress_cb(f"structuring {len(groups)} shots...")
     script = _structure_segments(
         title=story["title"], theme=theme, prose=story["prose"],
-        segments=segments, style_override=effective_style,
+        segments=placeholder, style_override=effective_style,
         culture_override=culture_override,
     )
+
+    # 3) voice each group with its speaker's voice (pinned reference = no drift),
+    #    then re-time the shots from the real voiced spans.
+    wav, spans, engine = _voice_groups(script, groups, progress_cb=progress_cb)
+    real_segs = nseg.segment_by_spans(spans, min_seg_sec=0.0)
+    _retime_shots(script, real_segs)
+    log.info(f"Voiced via {engine}; {len(real_segs)} shots, "
+             f"{round(real_segs[-1].win_end, 1) if real_segs else 0}s.")
+
     script["_stage1_prose"] = story["prose"]
     script["_stage1_word_count"] = story["word_count"]
     script["_master_audio"] = str(wav)

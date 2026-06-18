@@ -63,3 +63,6 @@ dist/
 .claude/cache/
 .claude/sessions/
 *_tmp_sig.txt
+
+# Minted Kokoro voice references (regenerable cache)
+05_Config/voice_refs/
