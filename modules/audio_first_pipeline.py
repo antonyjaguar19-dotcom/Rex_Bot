@@ -256,9 +256,22 @@ def _structure_segments(
     }
 
     # Reuse the canonical validator: fills char tokens, normalizes speakers,
-    # shot_type defaults, light direction, voice casting. We pass through it but
-    # the narration is already final (validator's scrub only trims stray tags).
+    # shot_type defaults, light direction, voice casting.
     script = sg._validate_and_default(script)
+
+    # AUDIO-FIRST INVARIANT: the master VO already voiced each segment VERBATIM.
+    # The validator's attribution scrub is for the per-character lip-sync path —
+    # in single-narrator audio-first it would desync the caption text from the
+    # spoken audio. Restore verbatim narration so text == what was voiced.
+    vshots = script.get("shots", [])
+    if len(vshots) == len(segments):
+        for shot, seg in zip(vshots, segments):
+            shot["narration"] = seg.text
+    else:
+        log.warning(
+            f"validator changed shot count {len(segments)}->{len(vshots)}; "
+            f"skipping verbatim narration restore (timing may drift)."
+        )
     return script
 
 

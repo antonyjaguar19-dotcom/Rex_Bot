@@ -72,6 +72,28 @@ def test_structure_matches_segments(monkeypatch):
     assert any(c.get("name") == "Rusty" for c in script["characters"])
 
 
+def test_narration_verbatim_survives_validator_scrub(monkeypatch):
+    """Audio-first invariant: even when a segment carries dialogue-attribution
+    tags (which the classic validator would scrub), the script narration must
+    stay EXACTLY what was voiced — text == audio."""
+    texts = [
+        "Brrr, whispered Squeak to himself, feeling shy. Hey there!",
+        "Why so silent? chirped Bella, the friendly robin.",
+        "The meadow was calm and the sun rose slowly over the hills.",
+    ]
+    segs, t = [], 0.0
+    for i, txt in enumerate(texts):
+        segs.append(nseg.Segment(index=i, text=txt,
+                                 t_start=t, t_end=t + 3.0,
+                                 win_start=t, win_end=t + 3.0))
+        t += 3.0
+    monkeypatch.setattr(sg, "_call_llm", lambda *a, **k: _fake_meta(len(segs)))
+    script = afp._structure_segments(title="T", theme="x", prose="p", segments=segs)
+    assert len(script["shots"]) == len(segs)
+    for shot, seg in zip(script["shots"], segs):
+        assert shot["narration"] == seg.text       # verbatim, NOT scrubbed
+
+
 def test_wrong_shot_count_forced_to_segments(monkeypatch):
     """LLM returns too few shots — output must still be one shot per segment,
     narration verbatim, with deterministic beats filling the gaps."""
