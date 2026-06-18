@@ -124,6 +124,48 @@ def _voxcpm_clone_supported() -> bool:
     return _CLONE_OK
 
 
+_NARRATOR_DESIGN = "a warm, gentle storyteller, calm and clear voice"
+
+
+def _voice_design_for_char(c: dict) -> str:
+    """Natural-language voice description for VoxCPM2 Voice Design, from the
+    cast's gender + life-stage + a lively tone (e.g. 'a young girl, warm and
+    cheerful voice'). Kids stories anthropomorphize animals, so species is
+    omitted — the VOICE is human-like."""
+    g = (c.get("gender") or "").strip().lower()
+    appe = ((c.get("appearance") or "") + " " + (c.get("locked_visual_token") or "")).lower()
+    young = any(w in appe for w in ("baby", "little", "young", "child", "kid", "small"))
+    old = any(w in appe for w in ("old", "elderly", "grand", "ancient", "wise"))
+    if g == "female":
+        who = "young girl" if young else ("old woman" if old else "woman")
+        tone = "warm and cheerful"
+    elif g == "male":
+        who = "young boy" if young else ("old man" if old else "man")
+        tone = "bright and lively"
+    else:
+        who = "young child" if young else "person"
+        tone = "warm and lively"
+    art = "an" if who[0] in "aeiou" else "a"
+    return f"{art} {who}, {tone} voice"
+
+
+def _voice_designs_for_groups(script: dict, n_groups: int) -> list[str]:
+    """Per-group voice DESIGN description: narrator gets the storyteller design,
+    each character gets a design derived from their cast fields. Aligns 1:1."""
+    shots = script.get("shots", []) or []
+    by_name = {(c.get("name") or "").strip().lower(): c
+               for c in script.get("characters", []) if isinstance(c, dict)}
+    out = []
+    for i in range(n_groups):
+        spk = (shots[i].get("speaker") if i < len(shots) else "narrator") or "narrator"
+        if spk.strip().lower() in ("", "narrator"):
+            out.append(_NARRATOR_DESIGN)
+        else:
+            c = by_name.get(spk.strip().lower())
+            out.append(_voice_design_for_char(c) if c else _NARRATOR_DESIGN)
+    return out
+
+
 def _voice_ids_for_groups(script: dict, n_groups: int) -> list[str]:
     """Per-group voice id: narrator gets the narrator voice, each character gets
     their gender-cast voice. Aligns groups<->shots 1:1 (same count by build)."""
@@ -154,12 +196,34 @@ def _voice_groups(
         master_wav = AUDIO_DIR / f"master_{stub}.wav"
 
     vids = _voice_ids_for_groups(script, len(groups))
+
+    # --- VoxCPM2 Voice Design (preferred): voice from a text description, so
+    #     it's natural + expressive + gendered + consistent, no reference. ---
+    try:
+        from modules import tts_voxcpm as _tv
+        if "voxcpm2" in _tv.DEFAULT_MODEL_ID.lower():
+            vox = _tv.VoxCPMTTS()
+            ok, msg = vox.health_check(load_model=False)
+            if not ok:
+                raise RuntimeError(msg)
+            if progress_cb:
+                progress_cb("voicing narration (VoxCPM2 voice design)...")
+            designs = _voice_designs_for_groups(script, len(groups))
+            pairs = list(zip(groups, designs))
+            wav, spans = vox.synthesize_designed(pairs, output_path=master_wav,
+                                                 gap_sec=GROUP_GAP_SEC)
+            log.info(f"Voiced {len(spans)} groups via VoxCPM2 design "
+                     f"({len(set(designs))} distinct voices).")
+            return wav, spans, "voxcpm2-design"
+    except Exception as e:
+        log.warning(f"VoxCPM2 voice design unavailable ({e}); trying Chatterbox.")
+
     # Per-speaker reference wavs (Kokoro-minted, gender-controlled) — used as the
     # clone anchor by BOTH Chatterbox and VoxCPM. Minted/cached once.
     refs = vb.prime(vids)
     triples = [(g, *refs.get(vid, (None, None))) for g, vid in zip(groups, vids)]
 
-    # --- Chatterbox (preferred): expressive clone (emotion) ---
+    # --- Chatterbox: expressive clone (emotion) ---
     try:
         from modules import tts_chatterbox as cb
         if not cb.is_available():

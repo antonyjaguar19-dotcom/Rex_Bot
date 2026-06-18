@@ -61,8 +61,10 @@ log = logging.getLogger("claw_bot.tts_voxcpm")
 
 OUTPUT_DIR = _PROJECT_ROOT / "04_Outputs" / "audio"
 
-# Model repo (overridable via env). 0.5B = the one used by the public demo space.
-DEFAULT_MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM-0.5B")
+# Model repo (overridable via env). VoxCPM2 (2B, 48kHz) adds Voice Design — a
+# voice built from a natural-language description, no reference audio (so no
+# torchcodec needed). Falls back gracefully if the weights aren't present.
+DEFAULT_MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 # Generation knobs (fast defaults; quality scales with timesteps).
 DEFAULT_CFG = float(os.environ.get("VOXCPM_CFG", "2.0"))
 DEFAULT_TIMESTEPS = int(os.environ.get("VOXCPM_TIMESTEPS", "10"))
@@ -230,6 +232,55 @@ class VoxCPMTTS:
         out = self._resolve_out(output_path, " ".join(t for t, _, _ in norm))
         sf.write(str(out), master, self._sr)
         log.info(f"Wrote master {out.name} — {len(master)/self._sr:.2f}s, "
+                 f"{len(spans)} groups.")
+        return out, spans
+
+    def synthesize_designed(
+        self,
+        groups: list,
+        output_path: Optional[Path] = None,
+        gap_sec: float = GROUP_GAP_SEC,
+    ) -> tuple[Path, list[tuple[str, float, float]]]:
+        """VoxCPM2 Voice Design: each group is (text, description). The voice is
+        built from the natural-language `description` (gender/age/tone/emotion),
+        prepended to the text in parentheses — no reference audio, so a voice is
+        consistent per description AND expressive. Same return shape as
+        synthesize_segments: (master_wav, spans)."""
+        import numpy as np
+        import soundfile as sf
+
+        norm = []
+        for g in groups:
+            if isinstance(g, (tuple, list)):
+                text = (g[0] or "").strip()
+                desc = (g[1] or "").strip() if len(g) > 1 else ""
+            else:
+                text, desc = (g or "").strip(), ""
+            if text:
+                norm.append((text, desc))
+        if not norm:
+            raise ValueError("synthesize_designed() got no non-empty groups.")
+        self._ensure_loaded()
+
+        gap_samples = int(round(gap_sec * self._sr))
+        gap = np.zeros(gap_samples, dtype=np.float32)
+        pieces, spans, cursor = [], [], 0
+        for k, (text, desc) in enumerate(norm):
+            # description goes in parentheses at the START of the text (VoxCPM2)
+            full = f"({desc}){text}" if desc else text
+            wav = self._gen(full)                  # NO reference → pure design
+            t0 = cursor / self._sr
+            pieces.append(wav)
+            cursor += len(wav)
+            spans.append((text, round(t0, 3), round(cursor / self._sr, 3)))
+            if k < len(norm) - 1:
+                pieces.append(gap)
+                cursor += gap_samples
+
+        master = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
+        out = self._resolve_out(output_path, " ".join(t for t, _ in norm))
+        sf.write(str(out), master, self._sr)
+        log.info(f"Wrote designed master {out.name} — {len(master)/self._sr:.2f}s, "
                  f"{len(spans)} groups.")
         return out, spans
 
