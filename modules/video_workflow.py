@@ -254,20 +254,38 @@ async def generate_and_post_video(
         beat = (shot.get("beat") or "").strip().lower()
         seed_arg = approved_motion_seed if isinstance(approved_motion_seed, int) and approved_motion_seed > 0 else None
         shot_t0 = _t.perf_counter()
+        # Audio-first: no per-shot TTS. The whole narration is one master VO laid
+        # over the timeline at assembly, so each shot is a SILENT clip sized to
+        # exactly its segment window (shot["win_dur"]). Classic path does per-shot
+        # TTS inside generate_clip.
+        _audio_first = bool(script.get("_audio_first"))
+        _win_dur = float(shot.get("win_dur") or 0.0)
         for attempt in range(1, 4):
             try:
-                clip_path = await asyncio.to_thread(
-                    clip_gen.generate_clip,
-                    shot_id=f"{script_id}_shot{shot_num}",
-                    narration=narration,
-                    action_prompt=action,
-                    storyboard_image=image_path,
-                    output_filename=f"clip_{script_id}_shot{shot_num}.mp4",
-                    seed=seed_arg,
-                    beat=beat,
-                    voice=vc.resolve_voice(script, shot.get("speaker")),
-                    lipsync=vc.is_character_speaker(shot.get("speaker")),
-                )
+                if _audio_first and _win_dur > 0:
+                    clip_path = await asyncio.to_thread(
+                        clip_gen.generate_silent_clip,
+                        shot_id=f"{script_id}_shot{shot_num}",
+                        motion_prompt=action,
+                        storyboard_image=image_path,
+                        target_dur=_win_dur,
+                        output_filename=f"clip_{script_id}_shot{shot_num}.mp4",
+                        seed=seed_arg,
+                        beat=beat,
+                    )
+                else:
+                    clip_path = await asyncio.to_thread(
+                        clip_gen.generate_clip,
+                        shot_id=f"{script_id}_shot{shot_num}",
+                        narration=narration,
+                        action_prompt=action,
+                        storyboard_image=image_path,
+                        output_filename=f"clip_{script_id}_shot{shot_num}.mp4",
+                        seed=seed_arg,
+                        beat=beat,
+                        voice=vc.resolve_voice(script, shot.get("speaker")),
+                        lipsync=vc.is_character_speaker(shot.get("speaker")),
+                    )
                 break  # success
             except Exception as e:
                 last_err = e

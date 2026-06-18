@@ -375,7 +375,13 @@ def generate_script_action(theme: str, culture: str, style: str, refresh_cb):
         try:
             culture_arg = None if culture == "(auto)" else culture
             style_arg = None if style == "(auto)" else style
-            script = sg.generate_script(theme, style_override=style_arg, culture_override=culture_arg)
+            # Audio-first: voiceover first, its pauses dictate the cuts. Returns a
+            # standard script JSON so the rest of the dashboard flow is unchanged.
+            from modules.audio_first_pipeline import generate_script_audio_first
+            script = generate_script_audio_first(
+                theme, style_override=style_arg, culture_override=culture_arg,
+                progress_cb=lambda m: S.push(f"· {m}"),
+            )
             S.script = script
             S.script_id = script.get("_id") or script.get("script_id")
             S.push(f"Script {S.script_id} ready — '{script.get('title')}'")
@@ -518,16 +524,28 @@ def run_video(refresh_cb):
                 seed_arg = seed if isinstance(seed, int) and seed > 0 else None
                 beat = (shot.get("beat") or "").lower()
                 S.push(f"  Clip shot {num} (beat={beat}, seed={seed_arg})")
-                cg_out = clip_gen.generate_clip(
-                    shot_id=f"{sid}_shot{num}",
-                    narration=shot.get("narration", "").strip(),
-                    action_prompt=motion,
-                    storyboard_image=image_by_shot[num],
-                    output_filename=f"clip_{sid}_shot{num}.mp4",
-                    seed=seed_arg, beat=beat,
-                    voice=vc.resolve_voice(script, shot.get("speaker")),
-                    lipsync=vc.is_character_speaker(shot.get("speaker")),
-                )
+                # Audio-first: silent clip sized to the segment window; the master
+                # VO is laid over at assembly (no per-shot TTS).
+                if script.get("_audio_first") and float(shot.get("win_dur") or 0) > 0:
+                    cg_out = clip_gen.generate_silent_clip(
+                        shot_id=f"{sid}_shot{num}",
+                        motion_prompt=motion,
+                        storyboard_image=image_by_shot[num],
+                        target_dur=float(shot["win_dur"]),
+                        output_filename=f"clip_{sid}_shot{num}.mp4",
+                        seed=seed_arg, beat=beat,
+                    )
+                else:
+                    cg_out = clip_gen.generate_clip(
+                        shot_id=f"{sid}_shot{num}",
+                        narration=shot.get("narration", "").strip(),
+                        action_prompt=motion,
+                        storyboard_image=image_by_shot[num],
+                        output_filename=f"clip_{sid}_shot{num}.mp4",
+                        seed=seed_arg, beat=beat,
+                        voice=vc.resolve_voice(script, shot.get("speaker")),
+                        lipsync=vc.is_character_speaker(shot.get("speaker")),
+                    )
                 S.push(f"  Clip shot {num} done → {cg_out.name}")
             S.push("Video render complete")
             sbr.emit("video_done", script_id=sid)
@@ -795,16 +813,28 @@ def regen_video_shot(shot_num: int, refresh_cb):
             seed = approved.get("motion_seed", -1)
             seed_arg = seed if isinstance(seed, int) and seed > 0 else None
             beat = (shot.get("beat") or "").lower()
-            out = clip_gen.generate_clip(
-                shot_id=f"{sid}_shot{shot_num}",
-                narration=shot.get("narration", "").strip(),
-                action_prompt=motion,
-                storyboard_image=image_by_shot[shot_num],
-                output_filename=f"clip_{sid}_shot{shot_num}.mp4",
-                seed=seed_arg, beat=beat,
-                voice=vc.resolve_voice(script, shot.get("speaker")),
-                lipsync=vc.is_character_speaker(shot.get("speaker")),
-            )
+            # Audio-first: silent clip sized to the segment window (master VO laid
+            # over at assembly); classic path does per-shot TTS.
+            if script.get("_audio_first") and float(shot.get("win_dur") or 0) > 0:
+                out = clip_gen.generate_silent_clip(
+                    shot_id=f"{sid}_shot{shot_num}",
+                    motion_prompt=motion,
+                    storyboard_image=image_by_shot[shot_num],
+                    target_dur=float(shot["win_dur"]),
+                    output_filename=f"clip_{sid}_shot{shot_num}.mp4",
+                    seed=seed_arg, beat=beat,
+                )
+            else:
+                out = clip_gen.generate_clip(
+                    shot_id=f"{sid}_shot{shot_num}",
+                    narration=shot.get("narration", "").strip(),
+                    action_prompt=motion,
+                    storyboard_image=image_by_shot[shot_num],
+                    output_filename=f"clip_{sid}_shot{shot_num}.mp4",
+                    seed=seed_arg, beat=beat,
+                    voice=vc.resolve_voice(script, shot.get("speaker")),
+                    lipsync=vc.is_character_speaker(shot.get("speaker")),
+                )
             S.push(f"Shot {shot_num} clip regenerated → {out.name}")
             # Mirror to Discord (bot poller re-posts the updated clip).
             sbr.emit("video_regen", script_id=sid, shot=shot_num,

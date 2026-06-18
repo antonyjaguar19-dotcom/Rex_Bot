@@ -520,6 +520,21 @@ def assemble_final(
         }
     """
     _asm_start = time.time()
+    # Audio-first scripts carry a single master VO + silent per-shot clips; route
+    # them to the audio-first assembler (one master track over hard cuts). The
+    # classic crossfade/cut path below stays as the safety net for old scripts.
+    try:
+        import json as _json
+        _sp = SCRIPTS_DIR / f"script_{script_id}.json"
+        if _sp.exists():
+            _s = _json.loads(_sp.read_text(encoding="utf-8"))
+            if _s.get("_audio_first"):
+                log.info(f"{script_id} is audio-first → assemble_audio_first.")
+                return assemble_audio_first(script_id, progress_cb)
+    except Exception as e:
+        log.warning(f"audio-first detection failed for {script_id} ({e}); "
+                    f"using classic assembly.")
+
     if not FFMPEG_EXE.exists():
         raise FileNotFoundError(f"ffmpeg not found at {FFMPEG_EXE}")
     if not FFPROBE_EXE.exists():

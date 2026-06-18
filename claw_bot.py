@@ -26,6 +26,7 @@ from modules.script_generator import (
     generate_script, revise_script, format_for_discord, OUTPUTS_DIR,
     rewrite_narration,
 )
+from modules.audio_first_pipeline import generate_script_audio_first
 from modules.theme_bank import get_theme_of_the_day, get_random_theme, get_theme_count
 from modules.safety_filter import check_safety, safety_summary_for_discord
 from modules import pending_feedback as pf
@@ -1030,7 +1031,14 @@ async def _generate_and_post(channel, theme: str, requested_by_id: int,
 
     try:
         _script_t0 = time.perf_counter()
-        script = await asyncio.to_thread(generate_script, theme)
+        # Audio-first: voiceover is rendered first, its pauses dictate the cuts.
+        # Returns a standard script JSON (+ _audio_first/_master_audio fields), so
+        # the rest of the pipeline (storyboard, prompts, approval) is unchanged.
+        def _progress(msg):
+            log.info(f"[audio-first] {msg}")
+        script = await asyncio.to_thread(
+            generate_script_audio_first, theme, None, None, None, _progress
+        )
         _script_secs = time.perf_counter() - _script_t0
         STATS["generated"] += 1
         save_stats(STATS)
