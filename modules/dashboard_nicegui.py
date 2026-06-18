@@ -697,13 +697,11 @@ def regen_storyboard_shot(shot_num: int, refresh_cb):
 
     def worker():
         try:
-            sb_dir = STORYBOARDS_DIR / sid
-            for f in sb_dir.glob(f"shot{shot_num}_*.png"):
-                f.unlink(missing_ok=True)
             aspect = rs.get_effective_aspect_ratio() or "16:9"
-            sb_gen.generate_storyboard(
-                script_id=sid, aspect_ratio=aspect,
-                progress_callback=lambda t, c, tot: S.push(f"  {c}/{tot} — {t}"),
+            # Render ONLY this shot (regenerate_shot), not the whole storyboard.
+            sb_gen.regenerate_shot(
+                script_id=sid, shot_number=shot_num,
+                which_frame="first", aspect_ratio=aspect,
             )
             S.push(f"Shot {shot_num} storyboard regenerated")
             # Mirror to Discord (bot poller re-posts the updated frame).
