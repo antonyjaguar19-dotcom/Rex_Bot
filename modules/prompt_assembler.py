@@ -392,14 +392,23 @@ def assemble_image_prompt(
     # Strip leading prepositions from setting so the LLM doesn't double them
     setting_clean = re.sub(r"^(in|at|on|inside|within)\s+", "", setting, flags=re.IGNORECASE).strip().rstrip(".")
 
-    # Only the characters that belong in this shot (or none for breathing beats)
+    # Only the characters that belong in this shot (or none for breathing beats).
+    # Bake the style medium INTO each character's appearance so the LLM can't
+    # skip it (a separate "render in medium" instruction gets ignored). Medium
+    # leads the appearance: "a simple stick figure, <locked identity>".
+    med = (character_medium or "").strip().rstrip(".")
     relevant_chars = [] if no_chars else _resolve_shot_characters(script, shot)
     char_lines = []
     for c in relevant_chars:
         name = (c.get("name") or "").strip()
         lock = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
         if name and lock:
-            char_lines.append(_char_block(c))
+            if med:
+                cc = dict(c)
+                cc["locked_visual_token"] = f"{med}, {lock}"
+                char_lines.append(_char_block(cc))
+            else:
+                char_lines.append(_char_block(c))
 
     user_payload = {
         "beat": beat,
