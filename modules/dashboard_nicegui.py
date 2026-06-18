@@ -1534,6 +1534,10 @@ def main_page():
                         ui.button("🎲", on_click=_reseed_mot).props("flat dense").tooltip("Reseed motion")
                         ui.button("✅ Approve Shot", on_click=_approve_shot) \
                             .props("color=teal dense")
+                        ui.button("🖼️ Gen This Shot",
+                                  on_click=lambda s=shot_n: regen_storyboard_shot(s, full_refresh)) \
+                            .props("color=indigo dense") \
+                            .tooltip("Render ONLY this shot's storyboard image (not the whole board)")
 
     def render_storyboard():
         imgs = storyboard_images(S.script_id)
