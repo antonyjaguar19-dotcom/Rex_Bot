@@ -2632,6 +2632,14 @@ async def cmd_rewrite_narration(ctx, script_id: str = None, shot_num=None,
     except Exception as e:
         await ctx.send(f"❌ Parse error: `{e}`")
         return
+    if script.get("_audio_first"):
+        await ctx.send(
+            "🎙️ This is an **audio-first** script — the voiceover is already "
+            "rendered and the narration is locked to it. Editing the text would "
+            "desync the captions from the audio. Regenerate the script to change "
+            "the wording."
+        )
+        return
     shot = next((s for s in script.get("shots", [])
                  if s.get("shot_number") == shot_n), None)
     if not shot:

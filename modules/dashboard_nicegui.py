@@ -614,6 +614,13 @@ def update_shot_narration(shot_num: int, new_text: str) -> bool:
     except Exception as e:
         S.push(f"Narration save failed (read): {e}")
         return False
+    # Audio-first: the master voiceover is already rendered. Editing the text
+    # here would only change the caption, desyncing it from the spoken audio.
+    # Block it — regenerate the script to change the wording.
+    if script.get("_audio_first"):
+        S.push("🎙️ Audio-first: narration is locked to the voiced track. "
+               "Regenerate the script to change wording.")
+        return False
     found = False
     for sh in script.get("shots", []):
         if sh.get("shot_number") == shot_num:
@@ -637,6 +644,10 @@ def ai_rewrite_narration(shot_num: int, instruction: str, refresh_cb):
     sid = S.script_id
     if not sid:
         ui.notify("❌ No script.", type="negative"); return
+    if (S.script or {}).get("_audio_first"):
+        ui.notify("🎙️ Audio-first: narration is locked to the voiced track. "
+                  "Regenerate the script to change wording.", type="warning")
+        return
     if not _try_begin("narration rewrite"):
         return
     S.push(f"AI rewriting narration — shot {shot_num}…")
@@ -1359,12 +1370,16 @@ def main_page():
         # from the image/motion prompts. Load it from disk so a Discord-side edit
         # shows here too and the textarea seeds with the current line.
         narr_by_shot: dict[int, str] = {}
+        windur_by_shot: dict[int, float] = {}
         if sid:
             sp = SCRIPTS_DIR / f"script_{sid}.json"
             try:
                 sd = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
                 for sh in sd.get("shots", []) or []:
-                    narr_by_shot[int(sh.get("shot_number", 0))] = sh.get("narration", "")
+                    _n = int(sh.get("shot_number", 0))
+                    narr_by_shot[_n] = sh.get("narration", "")
+                    if sh.get("win_dur"):
+                        windur_by_shot[_n] = float(sh["win_dur"])
             except Exception:
                 pass
         # Signature: rebuild when prompts OR narration change. Guards against
@@ -1403,16 +1418,35 @@ def main_page():
                             .classes("rex-badge rex-badge-mint") \
                             .style("margin-left: 8px;") \
                             ._props["innerHTML"] = p.get("beat", "?").upper()
+                        if shot_n in windur_by_shot:
+                            # audio-first: each shot's locked window length (s)
+                            ui.label(f"⏱ {windur_by_shot[shot_n]:.1f}s") \
+                                .classes("text-xs opacity-70").style("margin-left: 8px;")
                         if approved:
                             ui.label("✅ approved").classes("text-xs opacity-80") \
                                 .style("margin-left: auto;")
 
-                    # --- Narration (the spoken line) — edit or rewrite freely ---
-                    ui.label("🎙️ Narration (spoken line)").classes("text-xs opacity-75")
-                    narr_box = ui.textarea(value=narr_by_shot.get(shot_n, "")) \
+                    # --- Narration (the spoken line) ---
+                    _af = bool((S.script or {}).get("_audio_first"))
+                    if _af:
+                        # Audio-first: the master voiceover is already rendered, so
+                        # the text is locked to it (editing would desync captions
+                        # from audio). Show it read-only with a hint.
+                        ui.label("🎙️ Narration · 🔒 voiced (audio-first)") \
+                            .classes("text-xs opacity-75")
+                        ui.textarea(value=narr_by_shot.get(shot_n, "")) \
+                            .props("outlined dark dense autogrow readonly") \
+                            .classes("w-full opacity-70")
+                        ui.label("Locked to the voiced master track — regenerate "
+                                 "the script to change the wording.") \
+                            .classes("text-xs opacity-50")
+                    else:
+                      # edit or rewrite freely (classic path)
+                      ui.label("🎙️ Narration (spoken line)").classes("text-xs opacity-75")
+                      narr_box = ui.textarea(value=narr_by_shot.get(shot_n, "")) \
                         .props("outlined dark dense autogrow") \
                         .classes("w-full")
-                    with ui.row().classes("gap-2"):
+                      with ui.row().classes("gap-2"):
                         def _save_narr(s=shot_n, box=narr_box):
                             if update_shot_narration(s, box.value):
                                 ui.notify(f"✏️ Shot {s} narration saved", type="positive")
