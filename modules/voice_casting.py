@@ -65,6 +65,11 @@ def guess_gender(character: dict, context: str = "") -> str:
     """'male' | 'female' | 'neutral' from the character fields PLUS optional
     story context (narration pronouns like 'his'/'her' are the strongest signal,
     since appearance text rarely states gender)."""
+    # An explicit gender field (set by the structurer / audio-first stamp) is
+    # authoritative — trust it over heuristics so voice + visual never disagree.
+    explicit = str(character.get("gender", "")).strip().lower()
+    if explicit in ("male", "female"):
+        return explicit
     blob = " ".join(str(character.get(k, "")) for k in ("name", "appearance",
                                                         "locked_visual_token", "type"))
     blob = f"{blob} {context}"

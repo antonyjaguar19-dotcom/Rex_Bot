@@ -225,30 +225,77 @@ _GENDER_WORD = re.compile(
     r"father|mother|king|queen|prince|princess|brother|sister)\b", re.IGNORECASE)
 
 
+_HE = re.compile(r"\b(he|him|his|himself)\b", re.IGNORECASE)
+_SHE = re.compile(r"\b(she|her|hers|herself)\b", re.IGNORECASE)
+
+_NAME_STOP = {"The", "A", "An", "And", "But", "He", "She", "It", "They", "We",
+              "You", "I", "In", "On", "At", "When", "Then", "So", "Now", "Why",
+              "Let", "Look", "Maybe", "Suddenly", "Together", "Side", "Everyone"}
+
+
+def _cast_from_prose(prose: str) -> list[dict]:
+    """Last-ditch cast extraction when the structurer LLM fails entirely: take
+    recurring capitalized proper names from the prose. Minimal, but keeps the
+    cast non-empty so voicing + naming still work."""
+    import collections
+    words = re.findall(r"\b([A-Z][a-z]{2,})\b", prose or "")
+    counts = collections.Counter(w for w in words if w not in _NAME_STOP)
+    names = [w for w, c in counts.items() if c >= 2][:4]
+    return [{"name": n, "type": "animal", "gender": "",
+             "appearance": "", "locked_visual_token": ""} for n in names]
+
+
+def _resolve_gender(script: dict, c: dict) -> str:
+    """Authoritative gender for a character: the structurer's explicit `gender`
+    field if valid, else the strongest pronoun signal across the WHOLE prose
+    (his/he vs her/she), else voice_casting's hint. Returns male|female|neutral."""
+    g = str(c.get("gender", "")).strip().lower()
+    if g in ("male", "female"):
+        return g
+    name = c.get("name", "")
+    # Count pronouns in the full voiced narration (prose) — the author's own
+    # pronoun use is the truth, even when the name isn't adjacent.
+    prose = " ".join(str(sh.get("narration", "")) for sh in script.get("shots", []))
+    prose = f"{prose} {script.get('_stage1_prose', '')}"
+    he, she = len(_HE.findall(prose)), len(_SHE.findall(prose))
+    ctx = vc._gender_context(script, name)
+    try:
+        guess = vc.guess_gender(c, ctx)
+    except Exception:
+        guess = "neutral"
+    if guess in ("male", "female"):
+        return guess
+    if he > she:
+        return "male"
+    if she > he:
+        return "female"
+    return "neutral"
+
+
+def _gendered_phrase(text: str, gender: str) -> str:
+    """Insert the gender word into a noun phrase, fixing the article so it reads
+    naturally ('an older owl' + female -> 'a female older owl')."""
+    v = text.strip()
+    m = re.match(r"^(an?|An?)\s+", v)
+    rest = v[m.end():] if m else v
+    return f"a {gender} {rest}"
+
+
 def _stamp_gender(script: dict) -> None:
-    """Write the cast's gender into appearance + locked_visual_token when it's
-    missing, so image prompts use the SAME gender the voice casting picked (from
-    narration pronouns). Fixes 'male turtle, voiced male, but drawn as her'."""
+    """Pin each character's gender into the cast fields so the VOICE, the visual
+    token, and the image prompt all agree. Source of truth: structurer `gender`
+    field, else whole-prose pronouns. Writes back `gender` for voice casting."""
     for c in script.get("characters", []):
         if not isinstance(c, dict):
             continue
-        name = c.get("name", "")
-        try:
-            g = vc.guess_gender(c, vc._gender_context(script, name))
-        except Exception:
-            continue
+        g = _resolve_gender(script, c)
         if g not in ("male", "female"):
             continue
+        c["gender"] = g                            # authoritative for voice casting
         for key in ("locked_visual_token", "appearance"):
             v = (c.get(key) or "").strip()
             if v and not _GENDER_WORD.search(v):
-                # insert after a leading article ("a tiny turtle" -> "a male tiny
-                # turtle") so the noun phrase still reads naturally.
-                m = re.match(r"^(a |an |A |An )", v)
-                if m:
-                    c[key] = f"{m.group(1)}{g} {v[m.end():]}"
-                else:
-                    c[key] = f"{g} {v}"
+                c[key] = _gendered_phrase(v, g)
 
 
 def _retime_shots(script: dict, segs: list[nseg.Segment]) -> None:
@@ -343,7 +390,7 @@ The story's narration has ALREADY been written, voiced, and split into {n} numbe
    - `visual_description`: one short sentence — what we SEE this segment.
    - `first_frame_prompt` / `last_frame_prompt`: ~25-45 words, pose + setting + camera framing + lighting ONLY. Refer to characters by NAME — never re-describe their appearance (a locked token is injected later).
    - `motion_prompt`: ~25-45 words, physical motion + ONE camera move. No speech.
-4. Extract every named character into `characters` with `name` (short proper name, no species), `type` (human|animal|creature), `appearance` (one sentence, MUST start with explicit age — number for humans, life stage for animals — then species/colors/clothing/feature; NO poses/actions), and `locked_visual_token` (tight 15-30 words starting with the age, pasteable verbatim into every shot).
+4. Extract every named character into `characters` with `name` (short proper name, no species), `type` (EXACTLY ONE of: human|animal|creature — never combine), `gender` (male|female — MUST match the pronouns you use for them in the story; if you wrote "he/his" they are male, if "she/her" they are female), `appearance` (one sentence, MUST start with gender + explicit age — e.g. "a male 7-year-old boy" / "a female young fox" — then species/colors/clothing/feature; NO poses/actions), and `locked_visual_token` (tight 15-30 words starting with gender + age, pasteable verbatim into every shot).
 5. Pick `style` from: {styles}. Pick `culture` from indian|western|japanese|mixed|animal-kingdom|fantasy. Pick `music_mood` from cheerful|calm|adventurous|tender|magical|energetic. Write a one-line `moral` (for parents, never spoken).
 
 # OUTPUT FORMAT
@@ -351,7 +398,7 @@ The story's narration has ALREADY been written, voiced, and split into {n} numbe
   "title": "<keep the given title>",
   "culture": "...",
   "style": "...",
-  "characters": [{{"name":"...","type":"...","appearance":"...","locked_visual_token":"..."}}],
+  "characters": [{{"name":"...","type":"...","gender":"male|female","appearance":"...","locked_visual_token":"..."}}],
   "setting": "<one sentence>",
   "shots": [
     {{"segment": 1, "beat":"...", "shot_type":"...", "speaker":"...", "visual_description":"...", "first_frame_prompt":"...", "last_frame_prompt":"...", "motion_prompt":"..."}}
@@ -391,15 +438,26 @@ def _structure_segments(
     if culture_override:
         user_prompt += f"\n\nUse culture: {culture_override}"
 
+    # Retry the structurer: a transient Ollama hiccup or one bad parse must not
+    # collapse the whole script to "no characters / all narrator". A result is
+    # only accepted when it actually parsed shots; otherwise we try again.
     meta = None
-    try:
-        raw = sg._call_llm(user_prompt, system_prompt, role="structurer")
-        meta = sg._extract_json(raw)
-    except Exception as e:
-        log.warning(f"Segment structurer LLM failed ({e}); using deterministic fallback.")
+    for attempt in range(1, 4):
+        try:
+            raw = sg._call_llm(user_prompt, system_prompt, role="structurer")
+            cand = sg._extract_json(raw)
+            if isinstance(cand, dict) and isinstance(cand.get("shots"), list) and cand["shots"]:
+                meta = cand
+                if not cand.get("characters"):
+                    log.warning(f"Structurer attempt {attempt}: parsed but no characters.")
+                break
+            log.warning(f"Structurer attempt {attempt}: no usable shots in output; retrying.")
+        except Exception as e:
+            log.warning(f"Structurer attempt {attempt} failed ({type(e).__name__}: {e}); retrying.")
 
     if not isinstance(meta, dict):
-        meta = {}
+        log.error("Structurer failed after retries; extracting cast from prose (fallback).")
+        meta = {"characters": _cast_from_prose(prose)}
     shots_meta = meta.get("shots") if isinstance(meta.get("shots"), list) else []
 
     # Build the final shots: narration VERBATIM from segments, metadata from LLM
