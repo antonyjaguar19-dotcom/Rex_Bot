@@ -1,19 +1,58 @@
 # Claw Bot Agent (Rex VFX Bot)
 
-A locally-run AI animation pipeline that generates **30-second educational YouTube shorts for kids under 10**, controlled entirely through Discord.
+A locally-run AI animation pipeline that turns a theme into a narrated, multi-aspect
+video for YouTube — driven by an **audio-first** workflow where the voiceover is
+rendered first and its natural pauses decide where every scene cuts.
 
-Built by a VFX artist for daily content creation, with strict containment: every model, dependency, and output stays inside the project folder. No cloud APIs, no SaaS lock-in, no data leaving your machine without permission.
+Controlled through a **Discord bot** *and* a **NiceGUI web dashboard** (shared on-disk
+state, synced both ways). Strict containment: every model, dependency, and output stays
+inside the project folder. The only optional cloud touch is gone — TTS now runs locally.
 
 ---
 
-## What it does
+## The audio-first idea
 
-1. **Generates a daily script** about a good habit (sharing, honesty, hygiene, etc.)
-2. **Storyboards each shot** as a single starting keyframe
-3. **(Coming) Animates each frame** into a video clip
-4. **(Coming) Assembles the shots, adds audio, uploads to YouTube**
+Old pipeline: write script → storyboard → animate → bolt narration on at the end.
 
-Every stage pauses for **human approval via Discord** before moving on.
+New pipeline: **render the voiceover first.** The pauses in the speech *are* the edit.
+Shot count floats with the spoken rhythm, so cuts always land in natural breaths — the
+thing that actually holds viewer attention.
+
+```
+!generate_script <theme>
+   → story_writer (Qwen) writes the prose
+   → VoxCPM voices it per breath-group → one master VO wav + exact pause timestamps
+   → segmenter tiles cut-windows on the pauses → shot count FLOATS with the rhythm
+   → structurer (Qwen) annotates each segment: beat / shot_type / camera / cast
+   → standard script JSON  (+ _audio_first, _master_audio, per-shot win_dur)
+
+🎭 casting gate            → confirm / edit the cast
+approve prompts            → image + motion prompt per shot (edit / reseed / approve-all)
+!generate_storyboard       → one keyframe per shot (Z-Image)
+!generate_video            → one SILENT clip per shot, sized to its window (Wan I2V)
+!assemble                  → hard-cut silent clips + lay the master VO over the timeline
+                             → cuts land in pauses → 9x16 + 16x9 + 1x1 MP4, music under
+```
+
+Every stage pauses for **human approval** (Discord buttons or dashboard). Narration is
+**locked** to the voiced track — editing the text would desync the captions from the
+audio, so to change wording you regenerate the script.
+
+---
+
+## What's local / offline
+
+| Stage | Engine | Notes |
+|-------|--------|-------|
+| Story + structuring | **Ollama** (Qwen 2.5 14B, creative routes to a stronger model) | local LLM |
+| Voiceover | **VoxCPM** (0.5B, Apache-2.0) | local, free, monetizable; **no cloud, no API key, no quota** |
+| Pause timestamps | per-breath-group synthesis | exact spans, no external transcription service |
+| Storyboard image | **ComfyUI + Z-Image Base/Turbo** (Flux.2 optional) | one keyframe per shot |
+| Video per shot | **ComfyUI + Wan 2.2 14B I2V** @16fps | silent clips; master VO added at assembly |
+| Assembly | **ffmpeg** | 9x16 / 16x9 / 1x1, crossfade or cut, music mix |
+
+VoxCPM falls back to local **Kokoro + ffmpeg silencedetect** if it's unavailable, so the
+pipeline never hard-stops. Weights auto-download into the contained `03_Models/hf_cache`.
 
 ---
 
@@ -22,43 +61,45 @@ Every stage pauses for **human approval via Discord** before moving on.
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Contained Python environment + ComfyUI install | ✅ Done |
-| 2 | Discord bot communication layer | ✅ Done |
-| 3 | Daily script generation (Ollama / Llama) | ✅ Done |
+| 2 | Discord bot + NiceGUI dashboard (shared state) | ✅ Done |
+| 3 | Script generation (Ollama / Qwen, 2-stage) | ✅ Done |
 | 4 | Storyboard generation (Z-Image, single frame per shot) | ✅ Done |
-| Session 1A | Creative expansion (6 culture modes, 5 visual styles) | ✅ Done |
-| 5 | Video generation per shot | 🚧 Next |
-| 6 | Video assembly + YouTube upload automation | ⏳ Planned |
+| 5 | Video generation per shot (Wan 2.2 14B I2V) | ✅ Done |
+| 6 | Assembly (multi-aspect MP4, TTS, music) | ✅ Done |
+| **Audio-first** | Voiceover-driven cuts (VoxCPM) — primary pipeline | ✅ Wired, validated |
+| 7 | YouTube upload automation | ⏳ Planned |
 
 ---
 
 ## Architecture
 
 ```
-Discord (control surface)
-    │
-    └──► Discord Bot (discord_bot.py)
-            │
-            ├──► Script Generator ──► Ollama / Llama
-            │
-            ├──► Storyboard Generator ──► ComfyUI ──► Z-Image Base/Turbo
-            │
-            ├──► (Phase 5) Video Generator ──► ComfyUI ──► Video model TBD
-            │
-            ├──► (Phase 6) Assembler ──► ffmpeg ──► YouTube Data API
-            │
-            └──► Health Monitor ──► #status channel (auto-refresh 30s)
+Discord bot  ─┐                            ┌─►  Ollama / Qwen        (story + structure)
+              ├─► shared on-disk JSON ◄─────┤
+NiceGUI web  ─┘   (synced both ways)        ├─►  VoxCPM               (voiceover, local)
+                                            ├─►  ComfyUI ─► Z-Image   (storyboard frames)
+                                            ├─►  ComfyUI ─► Wan 2.2   (silent shot clips)
+                                            └─►  ffmpeg               (assemble + music)
 ```
 
-**Pluggable model registry:** All models declared in `05_Config/models.json`. Adding a new image or video backend means writing one adapter file, no core rewrites.
+**Pluggable model registry:** all models declared in `05_Config/models.json`. A new image
+or video backend is one adapter file in `modules/image_backends/` or
+`modules/video_backends/` — no core rewrites. The audio-first router reads the
+`_audio_first` flag on a script and routes assembly + per-shot video automatically;
+classic (per-shot TTS) functions stay on disk as a fallback.
 
 ---
 
 ## Hardware requirements
 
-- **GPU:** NVIDIA RTX 3070 or better (8 GB VRAM minimum)
+- **GPU:** NVIDIA RTX 5080 (16 GB VRAM) is the reference card; 8 GB works for image-only
 - **RAM:** 32 GB minimum, 64 GB recommended
 - **Storage:** ~50 GB for models + outputs
 - **OS:** Windows 10 / 11
+
+> **VRAM note:** Ollama keeps its model resident (~12 GB for Qwen 14B). Free it before
+> Wan video jobs (`gpu_utils.free_ollama_vram`) or ComfyUI can OOM — the pipeline does this
+> per shot, but a long batch run should unload Ollama up front.
 
 ---
 
@@ -66,73 +107,82 @@ Discord (control surface)
 
 ```
 E:\Rexjaw_VFX\
-├── 01_Tools\          # ComfyUI, Python venv, Ollama (gitignored)
-├── 02_Agent\          # All Python source code (this repo)
-├── 03_Models\         # Image/video/LLM model weights (gitignored)
-├── 05_Config\         # models.json, styles.json
-├── 06_Logs\           # ComfyUI + bot logs (gitignored)
-├── 07_Outputs\        # Generated scripts, frames, videos (gitignored)
-└── .env               # Discord token, API keys (NEVER commit)
+├── 00_Tools\        # ffmpeg, ollama.exe, python311
+├── 01_ComfyUI\      # ComfyUI portable install
+├── 02_Agent\        # Python source (this repo) — modules\, venv\
+├── 03_Models\       # weights + Ollama models + hf_cache (gitignored)
+├── 04_Outputs\      # scripts/ storyboards/ clips/ audio/ final/ approved_prompts/
+├── 05_Config\       # models.json, styles.json, runtime_settings.json, secrets.env
+└── 06_Logs\         # gitignored
 ```
 
 ---
 
-## Discord commands
+## Discord commands (core)
 
 | Command | Action |
 |---------|--------|
-| `!commands` | List every available command |
-| `!current_settings` | Show active model, style, culture mode |
-| `!list_styles` | Show all available visual styles |
-| `!switch_model <name>` | Swap active image backend |
-| `!generate_storyboard` | Generate a fresh storyboard from approved script |
-| `!list_storyboards` | Browse past storyboards |
-| `!regen_shot <shot_number>` | Surgically regenerate one shot |
+| `!generate_script <theme>` | Audio-first: voice the narration, pauses set the shots |
+| `!generate_storyboard <id>` | One keyframe per shot (after prompt approval) |
+| `!generate_video <id>` | One silent clip per shot, sized to its window |
+| `!assemble <id>` | Stitch clips + master VO → 9x16 / 16x9 / 1x1 |
+| `!add_shot <id> <before\|after> <shot#> [brief]` | Insert a new shot, renumber artifacts |
+| `!regen_shot <shot#>` / `!regen_video_shot <shot#>` | Surgically regenerate one shot |
+| `!switch_model <name>` | Swap active image/video backend |
+| `!set_transition <crossfade\|cut>` | Final-cut transition mode |
+| `!current_settings` / `!list_styles` / `!commands` | Inspect state |
 
-Approval flow uses Discord reactions (✅ / ❌) on bot messages.
+Approval uses Discord **buttons** (Approve / Edit / Reject) plus a pinned control panel.
+The full set is available on the web dashboard too (`http://127.0.0.1:7860`).
 
 ---
 
 ## Setup (high level)
 
-> Detailed install steps live in `/docs/SETUP.md` (coming soon). This is the overview.
-
-1. Clone this repo into `E:\Rexjaw_VFX\02_Agent`
-2. Create a Python virtual environment inside `E:\Rexjaw_VFX\01_Tools\venv`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Install ComfyUI into `E:\Rexjaw_VFX\01_Tools\ComfyUI`
-5. Download Z-Image Base/Turbo weights into `E:\Rexjaw_VFX\03_Models\`
-6. Install Ollama, pull a Llama model
-7. Create a Discord application + bot, copy token into `.env`
-8. Run: `python 02_Agent/discord_bot.py`
+1. Clone into `E:\Rexjaw_VFX\02_Agent`
+2. Create a venv at `02_Agent\venv`, then `pip install -r requirements.txt`
+3. `pip install voxcpm` (audio-first voice; weights auto-download on first use)
+4. Install ComfyUI into `01_ComfyUI`, add Z-Image + Wan 2.2 weights to `03_Models`
+5. Install Ollama, pull a Qwen model
+6. Create a Discord app + bot, put the token in `05_Config/secrets.env` (BOM-free)
+7. Start Ollama + ComfyUI, then run `python 02_Agent/claw_bot.py` (dashboard auto-launches)
 
 ---
 
 ## Configuration
 
-**`05_Config/models.json`** — registry of available image/video/LLM backends with per-model settings.
-
-**`05_Config/styles.json`** — visual style presets (storybook, cartoon, anime, watercolor, pixelart). Each style maps to a prompt prefix and ComfyUI workflow tweaks.
-
-**`.env`** — secrets only. Discord token, future YouTube OAuth credentials. **Never commit this file.**
+- **`05_Config/models.json`** — image/video/LLM backends with per-model settings
+  (`max_clip_seconds`, `default_fps`, recommended cfg/steps).
+- **`05_Config/styles.json`** — visual style presets (storybook, cartoon, anime,
+  watercolor, pixelart) → prompt prefix + workflow tweaks.
+- **`05_Config/runtime_settings.json`** — style / voice / aspect / transition / music
+  overrides, editable from either front-end.
+- **`05_Config/secrets.env`** — Discord token, dashboard password. **Never commit.**
 
 ---
 
 ## Design decisions worth knowing
 
-- **Single frame per shot** is deliberate. Phase 5 video models animate from one starting frame, so generating two keyframes per shot would create throwaway work.
-- **Z-Image over SDXL** because it accepts paragraph-style natural language prompts (Qwen 3 4B text encoder). Better fit than comma-tag prompt engineering for a non-coder workflow.
-- **Pluggable adapters** mean future video models drop in without touching the bot or generator core.
-- **VRAM management** via ComfyUI's `/free` endpoint and optional Ollama unload between jobs — critical for 8 GB cards juggling LLM + image + video models in one pipeline.
-- **Containment** keeps the project portable. Move the `E:\Rexjaw_VFX` folder to another machine, reinstall venv, and you're back up.
+- **Audio-first** — the voiceover is the source of truth. Video freeze-pads if a shot
+  renders short; narration is never trimmed (no `-shortest` in any mux).
+- **Shot count floats** — pauses decide the cut count, not a fixed N. The structurer only
+  *annotates* the voiced segments; narration text is injected verbatim, never rewritten.
+- **VoxCPM over cloud TTS** — local, free, Apache-2.0 (monetizable output), and per-group
+  synthesis gives exact pause timestamps without any external transcription service.
+- **fps must match** across gen → upscale → assemble (Wan = 16fps). Relabeling fps is not
+  resampling and silently shrinks duration — a bug class we explicitly guard.
+- **Pluggable adapters** — new models drop in via `models.json` + one adapter file.
+- **Containment** — move the `E:\Rexjaw_VFX` folder, rebuild the venv, and you're back up.
 
 ---
 
 ## Roadmap
 
-- **Phase 5:** Choose video model (AnimateDiff, LTX-Video, Wan2.1, or CogVideoX), build adapter, add Discord approval
-- **Phase 6:** ffmpeg-based shot assembly, TTS narration, background music, YouTube Data API upload
-- **Future:** Character consistency (LoRA / IP-Adapter), multi-language Indian regional support, voice cloning for consistent narrator
+- **YouTube upload automation** (Data API, OAuth).
+- **Long-form faceless mode (proposed):** 5–15 min stickman/doodle storytelling videos on
+  the same audio-first engine — static doodle frames + ffmpeg Ken Burns pan instead of Wan
+  video (≈100× faster for 100+ scenes), plus auto title/description/tags/thumbnail prompts.
+- **Per-character consistency** (LoRA / reference anchoring).
 
 ---
 
@@ -144,9 +194,12 @@ Personal project. Not for redistribution while in active development.
 
 ## Acknowledgements
 
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — image generation backend
+- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — image/video generation backend
 - [Z-Image](https://github.com/Tongyi-MAI) — Alibaba Tongyi-MAI text-to-image
+- [VoxCPM](https://github.com/OpenBMB/VoxCPM) — OpenBMB local tokenizer-free TTS
+- [Wan 2.2](https://github.com/Wan-Video) — image-to-video model
 - [Ollama](https://ollama.com) — local LLM runtime
 - [discord.py](https://discordpy.readthedocs.io) — Discord bot framework
+- [NiceGUI](https://nicegui.io) — web dashboard
 
 Built with help from Claude (Anthropic) as a coding mentor.
