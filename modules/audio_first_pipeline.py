@@ -142,18 +142,39 @@ def _voice_groups(
     master_wav: Optional[Path] = None,
     progress_cb: Optional[Callable] = None,
 ) -> tuple[Path, list[tuple[str, float, float]], str]:
-    """Voice each breath-group with ITS speaker's voice. VoxCPM (primary) pins
-    each speaker to a reference wav so the timbre is stable shot-to-shot; Kokoro
-    (fallback) voices each group with its voice id directly. Returns
-    (master_wav, spans, engine)."""
+    """Voice each breath-group with ITS speaker's voice, pinned to a per-speaker
+    reference so the timbre is stable shot-to-shot. Engine order:
+      1. Chatterbox — expressive (emotion knob) + clone. Isolated venv.
+      2. VoxCPM — clone, consistent but flatter.
+      3. Kokoro — deterministic per voice id (always available).
+    Returns (master_wav, spans, engine)."""
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     if master_wav is None:
         stub = datetime.now().strftime("%Y%m%d_%H%M%S")
         master_wav = AUDIO_DIR / f"master_{stub}.wav"
 
     vids = _voice_ids_for_groups(script, len(groups))
+    # Per-speaker reference wavs (Kokoro-minted, gender-controlled) — used as the
+    # clone anchor by BOTH Chatterbox and VoxCPM. Minted/cached once.
+    refs = vb.prime(vids)
+    triples = [(g, *refs.get(vid, (None, None))) for g, vid in zip(groups, vids)]
 
-    # --- VoxCPM (preferred): clone a fixed reference per speaker ---
+    # --- Chatterbox (preferred): expressive clone (emotion) ---
+    try:
+        from modules import tts_chatterbox as cb
+        if not cb.is_available():
+            raise RuntimeError("chatterbox isolated venv not installed")
+        if progress_cb:
+            progress_cb("voicing narration (Chatterbox, expressive per-character)...")
+        wav, spans = cb.synthesize_segments(triples, output_path=master_wav,
+                                            gap_sec=GROUP_GAP_SEC)
+        log.info(f"Voiced {len(spans)} groups via Chatterbox "
+                 f"({len(set(vids))} distinct voices).")
+        return wav, spans, "chatterbox-mv"
+    except Exception as e:
+        log.warning(f"Chatterbox unavailable ({e}); trying VoxCPM.")
+
+    # --- VoxCPM: clone a fixed reference per speaker ---
     # VoxCPM loads the reference wav via torchcodec, which needs FFmpeg shared
     # libraries. If that can't load, skip straight to Kokoro (also per-character,
     # also consistent) instead of paying a wasted model load.
@@ -167,11 +188,6 @@ def _voice_groups(
             raise RuntimeError(msg)
         if progress_cb:
             progress_cb("voicing narration (VoxCPM, per-character)...")
-        refs = vb.prime(vids)                      # mint/cache references once
-        triples = []
-        for g, vid in zip(groups, vids):
-            rw, rt = refs.get(vid, (None, None))
-            triples.append((g, rw, rt))
         wav, spans = vox.synthesize_segments(triples, output_path=master_wav,
                                              gap_sec=GROUP_GAP_SEC)
         log.info(f"Voiced {len(spans)} groups via VoxCPM "
