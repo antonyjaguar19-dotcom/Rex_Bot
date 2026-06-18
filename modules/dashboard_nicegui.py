@@ -81,7 +81,7 @@ DASHBOARD_PASSWORD = (os.environ.get("DASHBOARD_PASSWORD") or "").strip()
 
 # Paths that must load without a session (NiceGUI's own JS/CSS + the login page),
 # otherwise the login screen itself can't render.
-_AUTH_OPEN_PREFIXES = ("/_nicegui", "/login")
+_AUTH_OPEN_PREFIXES = ("/_nicegui", "/login", "/sb_static")
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -100,6 +100,15 @@ class _AuthMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_AuthMiddleware)
+
+# Serve storyboards as static files so the browser can fetch each frame by URL.
+# ui.image(local_path) gives a path-based URL that the browser caches across
+# regenerations (same filename) — showing stale frames. Referencing the static
+# URL with a ?v=<mtime> cache-buster forces a refetch when a frame changes.
+try:
+    app.add_static_files("/sb_static", str(STORYBOARDS_DIR))
+except Exception as _e:
+    logging.getLogger("claw_bot.dashboard").warning(f"sb_static mount failed: {_e}")
 if not DASHBOARD_PASSWORD:
     log.warning("DASHBOARD_PASSWORD not set — dashboard has NO login gate. "
                 "Do NOT expose it on a public tunnel until you set one.")
@@ -1544,9 +1553,16 @@ def main_page():
                     shot_n = int(''.join(c for c in p.stem.split("shot")[-1] if c.isdigit()))
                 except Exception:
                     shot_n = 0
+                # Cache-busted static URL (?v=mtime) so a regenerated frame with
+                # the same filename actually refreshes in the browser.
+                try:
+                    rel = p.relative_to(STORYBOARDS_DIR).as_posix()
+                    src = f"/sb_static/{rel}?v={p.stat().st_mtime_ns}"
+                except Exception:
+                    src = str(p)
                 with ui.element("div").classes("rex-shot-card") \
                         .style("width: 220px;"):
-                    ui.image(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.image(src).style("border-radius: 8px; width: 100%;")
                     ui.label(p.stem).classes("text-xs opacity-75")
                     ui.button("🔁 Regen shot",
                               on_click=lambda s=shot_n: regen_storyboard_shot(s, full_refresh)) \
