@@ -206,15 +206,29 @@ def _voice_groups(
             ok, msg = vox.health_check(load_model=False)
             if not ok:
                 raise RuntimeError(msg)
-            if progress_cb:
-                progress_cb("voicing narration (VoxCPM2 voice design)...")
             designs = _voice_designs_for_groups(script, len(groups))
-            pairs = list(zip(groups, designs))
-            wav, spans = vox.synthesize_designed(pairs, output_path=master_wav,
-                                                 gap_sec=GROUP_GAP_SEC)
-            log.info(f"Voiced {len(spans)} groups via VoxCPM2 design "
-                     f"({len(set(designs))} distinct voices).")
-            return wav, spans, "voxcpm2-design"
+            shots = script.get("shots", []) or []
+            spk_keys = [((shots[i].get("speaker") if i < len(shots) else "narrator")
+                         or "narrator").strip().lower() for i in range(len(groups))]
+            # Anchored: one designed voice per speaker, cloned across their lines
+            # (consistent). Needs reference cloning; if unavailable, plain design.
+            if _voxcpm_clone_supported():
+                if progress_cb:
+                    progress_cb("voicing narration (VoxCPM2 design + per-speaker anchor)...")
+                triples = list(zip(groups, designs, spk_keys))
+                wav, spans = vox.synthesize_designed_anchored(
+                    triples, output_path=master_wav, gap_sec=GROUP_GAP_SEC)
+                engine = "voxcpm2-anchored"
+            else:
+                if progress_cb:
+                    progress_cb("voicing narration (VoxCPM2 voice design)...")
+                wav, spans = vox.synthesize_designed(
+                    list(zip(groups, designs)), output_path=master_wav,
+                    gap_sec=GROUP_GAP_SEC)
+                engine = "voxcpm2-design"
+            log.info(f"Voiced {len(spans)} groups via {engine} "
+                     f"({len(set(spk_keys))} speakers).")
+            return wav, spans, engine
     except Exception as e:
         log.warning(f"VoxCPM2 voice design unavailable ({e}); trying Chatterbox.")
 

@@ -152,9 +152,13 @@ class VoxCPMTTS:
         rw = ref_wav or self.reference_wav
         rt = ref_text or self.voice_text
         if rw and Path(rw).exists():
-            kwargs["prompt_wav_path"] = str(rw)
             if rt:
+                # continuation/clone WITH transcript — both must be provided
+                kwargs["prompt_wav_path"] = str(rw)
                 kwargs["prompt_text"] = rt
+            else:
+                # pure voice clone from a reference (works standalone on VoxCPM2)
+                kwargs["reference_wav_path"] = str(rw)
         wav = self._model.generate(**kwargs)
         return np.asarray(wav, dtype=np.float32).reshape(-1)
 
@@ -282,6 +286,67 @@ class VoxCPMTTS:
         sf.write(str(out), master, self._sr)
         log.info(f"Wrote designed master {out.name} — {len(master)/self._sr:.2f}s, "
                  f"{len(spans)} groups.")
+        return out, spans
+
+    def synthesize_designed_anchored(
+        self,
+        groups: list,
+        output_path: Optional[Path] = None,
+        gap_sec: float = GROUP_GAP_SEC,
+        anchor_text: str = "Hello, let me tell you a little story today.",
+    ) -> tuple[Path, list[tuple[str, float, float]]]:
+        """Consistent per-speaker voices. `groups` items are
+        (text, description, speaker_key). Step 1: mint ONE anchor voice per
+        speaker_key via Voice Design (the description). Step 2: voice every line
+        of that speaker by CLONING its anchor (reference) so the voice is
+        identical across all their lines. Distinct speakers get distinct anchors.
+        Sequential dialogue → concatenated in order. Returns (master_wav, spans).
+        Needs reference cloning (torchcodec/ffmpeg-shared)."""
+        import numpy as np
+        import soundfile as sf
+
+        norm = []
+        for g in groups:
+            text = (g[0] or "").strip()
+            desc = (g[1] or "").strip() if len(g) > 1 else ""
+            spk = ((g[2] or "narrator").strip().lower()) if len(g) > 2 else "narrator"
+            if text:
+                norm.append((text, desc, spk))
+        if not norm:
+            raise ValueError("synthesize_designed_anchored() got no groups.")
+        self._ensure_loaded()
+
+        anchors_dir = OUTPUT_DIR / "_anchors"
+        anchors_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) one designed anchor per speaker (cached on disk per run/voice)
+        anchors: dict[str, Path] = {}
+        for text, desc, spk in norm:
+            if spk in anchors:
+                continue
+            a = self._gen(f"({desc}){anchor_text}" if desc else anchor_text)
+            ap = anchors_dir / f"anchor_{spk}.wav"
+            sf.write(str(ap), a, self._sr)
+            anchors[spk] = ap
+        log.info(f"Designed {len(anchors)} speaker anchors: {list(anchors)}")
+
+        # 2) voice each line by cloning its speaker's anchor (consistent voice)
+        gap = np.zeros(int(round(gap_sec * self._sr)), dtype=np.float32)
+        pieces, spans, cursor = [], [], 0
+        for k, (text, desc, spk) in enumerate(norm):
+            wav = self._gen(text, ref_wav=anchors.get(spk))
+            t0 = cursor / self._sr
+            pieces.append(wav)
+            cursor += len(wav)
+            spans.append((text, round(t0, 3), round(cursor / self._sr, 3)))
+            if k < len(norm) - 1:
+                pieces.append(gap)
+                cursor += len(gap)
+        master = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
+        out = self._resolve_out(output_path, " ".join(t for t, _, _ in norm))
+        sf.write(str(out), master, self._sr)
+        log.info(f"Wrote anchored master {out.name} — {len(master)/self._sr:.2f}s, "
+                 f"{len(spans)} lines, {len(anchors)} voices.")
         return out, spans
 
     # -------- helpers --------
