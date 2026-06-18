@@ -242,15 +242,24 @@ def generate_all_prompts(script: dict, progress: Optional[Callable[[str, int, in
             except Exception:
                 pass
 
-        # Image prompt
-        try:
-            img_p = pa.assemble_image_prompt(
-                script=script, shot=shot,
-                style_suffix=style_suffix, frame_type="first",
+        # Image prompt — retry the LLM, then fall back to the MECHANICAL
+        # assembler (style + character locked tokens + framing + light). Never
+        # drop to a bare body, which loses the style and character consistency.
+        img_p = None
+        for _att in range(2):
+            try:
+                img_p = pa.assemble_image_prompt(
+                    script=script, shot=shot,
+                    style_suffix=style_suffix, frame_type="first",
+                )
+                break
+            except Exception as e:
+                log.warning(f"Shot {shot_num} image prompt LLM attempt {_att+1} failed: {e}")
+        if not img_p:
+            log.warning(f"Shot {shot_num} image prompt → mechanical fallback (style+chars)")
+            img_p = pa.assemble_image_prompt_mechanical(
+                script=script, shot=shot, style_suffix=style_suffix, frame_type="first",
             )
-        except Exception as e:
-            log.warning(f"Shot {shot_num} image prompt LLM failed: {e}; using raw")
-            img_p = (shot.get("first_frame_prompt") or shot.get("visual_description") or "").strip()
 
         # Motion prompt (uses approved image as ground truth)
         if progress:

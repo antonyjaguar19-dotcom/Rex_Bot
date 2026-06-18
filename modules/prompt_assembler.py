@@ -75,7 +75,28 @@ def _build_system_prompt(beat: str, no_chars: bool, shot_type: str = "") -> str:
         "token says 'white fur', never also write 'snowy-white fur gleaming'). "
         "After that one sentence, refer to the character by NAME only. "
         "Do not mention any character whose locked_visual_token was NOT "
-        "provided to you."
+        "provided to you. "
+        "Each character below is listed as '- Name: appearance  [Name is he/him]'. "
+        "BIND that name to that exact appearance (which states the species) and "
+        "pronoun. NEVER call one character by the other's name or species, and "
+        "NEVER give a character a body part or feature that belongs to the other "
+        "(e.g. do not give a rabbit a shell, or a tortoise long ears). The text in "
+        "[square brackets] is an INSTRUCTION — obey it but NEVER copy the brackets, "
+        "the word 'pronoun', or the 'he/him'/'she/her' label into your prose; weave "
+        "the pronoun in naturally. Use ONLY each character's given "
+        "pronoun (he/him or she/her), every time — never switch it. If two "
+        "characters are present, keep them clearly separated in space with explicit "
+        "depth (who is in front, who is behind, who is left/right) so neither "
+        "floats or overlaps the other. "
+        "Describe ONLY what is visibly inside this frame. NEVER write that a "
+        "character is absent, implied, off-screen, 'not present', 'unseen', or "
+        "'implied by context'. If a character is not in this shot, do not mention "
+        "them at all. "
+        "If the inputs name a `speaking_character`, THAT character is the main "
+        "subject of this shot: place them in the foreground with their face "
+        "turned toward the camera (for a closeup their face fills most of the "
+        "frame) so the viewer can see who is talking and their mouth is visible. "
+        "Any other character is secondary — smaller and/or further back."
     )
 
     framing = SHOT_TYPE_FRAMING.get((shot_type or "").strip().lower(), "")
@@ -119,7 +140,7 @@ BAD: "A serene moment of curiosity unfolds as the brave little snail experiences
 2. **Front-load the main subject** in the first sentence.
 3. **Concrete, present-tense, visual verbs.** Yes: rests, stands, leans, glides, faces. No: experiences, feels, embodies, radiates.
 4. **Camera framing as spatial info, not film-school jargon.** "the snail fills most of the frame, viewed from slightly above" — not "cinematic close-up".
-5. **Lighting = direction + color.** "warm yellow light from the upper right" — not "soft golden glow".
+5. **Lighting = direction + color.** "warm yellow light from the upper right" — not "soft golden glow". The inputs give a `light_direction`; use THAT direction verbatim in EVERY shot so lighting never flips between shots (continuity).
 6. **Length: 60-110 words.** Tight. Every word does visual work.
 7. **No abstract mood words.** Banned: serene, joyful, wonder, vibrant, lush, magical, whimsical, cinematic, expressive, captures, evokes, dreamlike, ethereal.
 8. **No background activity without a physical anchor.** Don't write "kids playing"; write "two kids sit on a picnic blanket on the grass". Every character or background actor needs a surface or object they touch.
@@ -196,6 +217,10 @@ def _strip_meta(text: str) -> str:
         cleaned.strip(),
         flags=re.IGNORECASE | re.MULTILINE,
     )
+    # Defensive: strip any character-label syntax the LLM copied verbatim from
+    # the reference block ("[Pip is she/her]", "she/her: ...").
+    cleaned = re.sub(r"\[[^\]]*\b(?:he/him|she/her)\b[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:he/him|she/her)\s*[:,]\s*", "", cleaned, flags=re.IGNORECASE)
     # Collapse to one paragraph
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
@@ -243,13 +268,90 @@ def _shot_relevant_characters(script: dict, shot: dict) -> list[dict]:
         return []
 
     relevant = []
+    spk = (shot.get("speaker") or "").strip().lower()
     for c in chars:
         if not isinstance(c, dict):
             continue
         name = (c.get("name") or "").strip()
-        if name and name.lower() in haystack:
+        if not name:
+            continue
+        # A character belongs if named in the shot text OR is the speaker of the
+        # line (dialogue narration rarely names the speaker, so name-match alone
+        # silently drops the talker — the very face we may need to lip-sync).
+        if name.lower() in haystack or name.lower() == spk:
             relevant.append(c)
     return relevant
+
+
+def _resolve_shot_characters(script: dict, shot: dict) -> list[dict]:
+    """Like _shot_relevant_characters but never leaves a CHARACTER beat empty.
+
+    Empty/half-populated character shots are a top defect (the storyboard seeds
+    the video, so a missing character there is missing for the whole shot, and
+    any character the LLM then invents drifts off-model). Fallback:
+      - closeup/insert with nobody named → the single speaking subject (or first
+        cast member) so the frame is not crowded;
+      - medium/wide with nobody named → the full cast so the scene is populated.
+    """
+    relevant = _shot_relevant_characters(script, shot)
+    if relevant:
+        return relevant
+    cast = [c for c in script.get("characters", [])
+            if isinstance(c, dict) and (c.get("name") or "").strip()
+            and (c.get("locked_visual_token") or c.get("appearance"))]
+    if not cast:
+        return []
+    stype = (shot.get("shot_type") or "").strip().lower()
+    if stype in ("closeup", "insert"):
+        spk = (shot.get("speaker") or "").strip().lower()
+        for c in cast:
+            if (c.get("name") or "").strip().lower() == spk:
+                return [c]
+        return cast[:1]
+    return cast
+
+
+def _light_direction(script: dict) -> str:
+    """One fixed light direction for the whole film so lighting never flips
+    between shots. Persisted on the script when available; defaults otherwise."""
+    return (script.get("_light_direction") or "the upper right").strip()
+
+
+def _speaking_character(shot: dict) -> str:
+    """The character who SPEAKS this shot's line (empty for narrator voiceover).
+    The image/motion LLM frames and animates this character so the viewer sees
+    who is talking and the right mouth is available for lip-sync."""
+    spk = (shot.get("speaker") or "").strip()
+    return "" if (not spk or spk.lower() == "narrator") else spk
+
+
+def _pronoun(c: dict) -> str:
+    """Stable he/him or she/her for a character. Prefers an explicit `gender`
+    field; falls back to the assigned Kokoro voice prefix (af_/bf_ = female,
+    am_/bm_ = male) so the spoken voice and the written pronoun always agree."""
+    g = (c.get("gender") or "").strip().lower()
+    if g not in ("male", "female"):
+        v = (c.get("voice") or "").strip().lower()[:2]
+        if v in ("af", "bf"):
+            g = "female"
+        elif v in ("am", "bm"):
+            g = "male"
+    return {"male": "he/him", "female": "she/her"}.get(g, "")
+
+
+def _char_block(c: dict) -> str:
+    """One reference line per character for BOTH the image and motion LLM:
+    'Name: <locked appearance> [Name is he/him]'. The appearance carries the
+    species (so the model can never swap a rabbit's ears for a tortoise's shell),
+    and the bracketed pronoun is an instruction the model must obey but never
+    copy verbatim into the prose."""
+    name = (c.get("name") or "").strip()
+    lock = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
+    pron = _pronoun(c)
+    line = f"- {name}: {lock}"
+    if pron:
+        line += f"  [{name} is {pron}]"
+    return line
 
 
 # ==============================================================================
@@ -290,24 +392,26 @@ def assemble_image_prompt(
     setting_clean = re.sub(r"^(in|at|on|inside|within)\s+", "", setting, flags=re.IGNORECASE).strip().rstrip(".")
 
     # Only the characters that belong in this shot (or none for breathing beats)
-    relevant_chars = [] if no_chars else _shot_relevant_characters(script, shot)
+    relevant_chars = [] if no_chars else _resolve_shot_characters(script, shot)
     char_lines = []
     for c in relevant_chars:
         name = (c.get("name") or "").strip()
         lock = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
         if name and lock:
-            char_lines.append(f"- {name}: {lock}")
+            char_lines.append(_char_block(c))
 
     user_payload = {
         "beat": beat,
         "shot_type": (shot.get("shot_type") or "").strip().lower(),
         "frame_type": frame_type,
         "style_suffix": style_suffix or "",
+        "light_direction": _light_direction(script),
         "setting": setting_clean,
         "tailored_frame_body": body,
         "character_pose": (shot.get("character_pose") or "").strip(),
         "camera_angle": (shot.get("camera_angle") or "").strip(),
         "narration": (shot.get("narration") or "").strip(),
+        "speaking_character": _speaking_character(shot),
     }
     if char_lines:
         user_payload["characters_for_this_shot"] = "\n".join(char_lines)
@@ -327,7 +431,9 @@ def assemble_image_prompt(
         f"style anchor sentence (from `style_suffix`). For breathing beats, "
         f"include ZERO characters. For character beats, inject every character "
         f"from `characters_for_this_shot` with their full locked appearance "
-        f"verbatim. End with camera framing + lighting. 60-110 words."
+        f"verbatim, binding each name to its listed species. End with camera "
+        f"framing + lighting that comes from `light_direction` verbatim. "
+        f"60-110 words."
     )
 
     raw = _call_llm(user_prompt, _build_system_prompt(
@@ -363,6 +469,42 @@ def assemble_image_prompt(
     return final
 
 
+def assemble_image_prompt_mechanical(
+    script: dict,
+    shot: dict,
+    style_suffix: str = "",
+    frame_type: str = "first",
+) -> str:
+    """Deterministic Z-Image prompt — NO LLM. Used when the LLM assembler fails
+    (Ollama hiccup / VRAM), so a prompt ALWAYS carries the style anchor + every
+    relevant character's locked appearance + shot framing + lighting. Keeps the
+    look on-style and characters consistent even on the fallback path."""
+    beat = (shot.get("beat") or "").strip().lower() or "hook"
+    no_chars = beat in NO_CHARACTER_BEATS
+    body = (shot.get(f"{frame_type}_frame_prompt")
+            or shot.get("first_frame_prompt")
+            or shot.get("visual_description") or "").strip()
+
+    parts: list[str] = []
+    if style_suffix:
+        parts.append(style_suffix.strip().rstrip("."))
+    if body:
+        parts.append(body.rstrip("."))
+    if not no_chars:
+        for c in _resolve_shot_characters(script, shot):
+            name = (c.get("name") or "").strip()
+            lock = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
+            if name and lock:
+                parts.append(f"{name} is {lock}")
+    st = (shot.get("shot_type") or "").strip().lower()
+    if st in SHOT_TYPE_FRAMING:
+        parts.append(SHOT_TYPE_FRAMING[st])
+    light = _light_direction(script)
+    if light:
+        parts.append(light.rstrip("."))
+    return ". ".join(p for p in parts if p) + "."
+
+
 # ==============================================================================
 # MOTION PROMPT (Wan 2.2 14B I2V)
 # ==============================================================================
@@ -376,7 +518,21 @@ def _build_motion_system_prompt(beat: str, no_chars: bool) -> str:
         if no_chars else
         "Characters in the starting frame perform ONE clear, simple action. "
         "Use present-tense action verbs. No dialog. No mouth movement. No lip sync. "
-        "Never write speech."
+        "Never write speech. "
+        "Each character is listed below as '- Name: appearance  [Name is he/him]'. "
+        "Bind each name to its appearance (which states the species) and pronoun "
+        "EXACTLY — NEVER call one character by the other's name or species, use ONLY "
+        "each character's given pronoun and never switch it, and never give a "
+        "character a body part that belongs to the other (no shell on a rabbit, no "
+        "long ears on a tortoise). The [square-bracket] note is an instruction — "
+        "never copy it into your prose. Only animate "
+        "characters listed below; do not add or reference a character who is not in "
+        "the starting frame, and never write that a character is implied, off-screen, "
+        "unseen or 'not present'. "
+        "If the inputs name a `speaking_character`, the ONE main action belongs to "
+        "THAT character (a look toward the listener, a lean, a small gesture as they "
+        "speak); do not make another character the main mover. Keep 'No mouth "
+        "movement' — the talking mouth is added later by lip-sync."
     )
 
     return f"""You output ONE paragraph of plain text — the motion prompt for Wan 2.2 14B image-to-video. No JSON. No markdown. No labels. No preamble. Just the motion paragraph.
@@ -409,6 +565,7 @@ hallucinates when given several competing actions — keep it minimal.
 5. **No abstract mood words.** Banned: gracefully, beautifully, magically, dreamlike, ethereal, captures, evokes. (A concrete lighting CHANGE is fine — "light warms" is allowed; "a magical glow" is not.)
 6. **No speech, no mouth movement, no lip sync.** Add: "No speech. No mouth movement." at end.
 7. **No mode change.** Don't introduce new characters, new locations, or scene cuts. Wan animates the existing frame.
+8. **The action comes from the frame + narration, NOT from the beat name.** Animate only what the starting-frame description and the shot's narration actually show. NEVER invent an action the narration doesn't state — no lifting, pulling, fighting, pushing rocks, or helping just because the beat is called "struggle"/"choice"/etc. A "struggle" beat is often only tired or steady effort (trudging on, panting, slowing down). If the narration says a character walks steadily, the motion is steady walking — nothing more.
 
 # OUTPUT
 
@@ -446,8 +603,11 @@ def assemble_motion_prompt(
         or (shot.get("narration") or "").strip()
     )
 
-    relevant_chars = [] if no_chars else _shot_relevant_characters(script, shot)
-    char_names = [c.get("name", "").strip() for c in relevant_chars if c.get("name")]
+    relevant_chars = [] if no_chars else _resolve_shot_characters(script, shot)
+    # Full reference blocks (name + species-bearing appearance + pronoun) so the
+    # motion LLM can bind each name to its species and never swap a rabbit's ears
+    # for a tortoise's shell. `type` alone ("animal") is not enough.
+    char_labels = [_char_block(c) for c in relevant_chars if (c.get("name") or "").strip()]
 
     user_payload = {
         "beat": beat,
@@ -456,7 +616,8 @@ def assemble_motion_prompt(
         "intended_motion_seed": motion_seed,
         "camera_angle": (shot.get("camera_angle") or "").strip(),
         "character_pose": (shot.get("character_pose") or "").strip(),
-        "characters_in_frame": char_names if char_names else (
+        "speaking_character": _speaking_character(shot),
+        "characters_in_frame": char_labels if char_labels else (
             "NONE — breathing shot, environment motion only." if no_chars
             else "NONE — no character named in this shot."
         ),
