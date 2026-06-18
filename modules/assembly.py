@@ -668,6 +668,31 @@ def _build_audio_first_vfilter(clip_count: int, target_w: int, target_h: int) ->
     return ";".join(parts)
 
 
+def _concat_av(parts: list[Path], out_path: Path, target_w: int, target_h: int) -> Path:
+    """Concatenate mp4s that each have video+audio (title card / body / end card)
+    into one, normalizing scale + re-encoding so codecs/timebases agree."""
+    cmd = [str(FFMPEG_EXE), "-y", "-loglevel", "error"]
+    for p in parts:
+        cmd += ["-i", str(p)]
+    n = len(parts)
+    chains = []
+    labels = ""
+    for i in range(n):
+        chains.append(
+            f"[{i}:v:0]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24[v{i}]"
+        )
+        labels += f"[v{i}][{i}:a:0]"
+    fc = ";".join(chains) + ";" + labels + f"concat=n={n}:v=1:a=1[v][a]"
+    cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out_path)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError(f"card concat failed:\n{r.stderr.strip()}")
+    return out_path
+
+
 def _assemble_audio_first_aspect(
     clips: list[Path], master_audio: Path, aspect_key: str, output_path: Path,
     progress_cb: Optional[Callable] = None,
@@ -761,6 +786,40 @@ def assemble_audio_first(script_id: str, progress_cb: Optional[Callable] = None)
                     tmp_mixed.unlink(missing_ok=True)
     except Exception as e:
         log.exception(f"Music generation failed (continuing without): {e}")
+
+    # Title intro card (start) + moral end card — bookend each aspect. Cards
+    # carry their OWN spoken audio; the body already has the master VO + music,
+    # so we just concat [title, body, end].
+    try:
+        cards = _prepare_cards(script_id, progress_cb)
+        if cards:
+            for aspect_key in ("9x16", "16x9", "1x1"):
+                w, h = ASPECTS[aspect_key]
+                body = outputs[aspect_key]
+                parts = []
+                try:
+                    if cards["title"]:
+                        parts.append(cards["cg"].build_card(
+                            script_id=script_id, kind="title", text=cards["title"],
+                            frame_path=cards["first_frame"], target_w=w, target_h=h,
+                            aspect_key=aspect_key, audio_path=cards["title_wav"],
+                            duration=cards["t_dur"]))
+                    parts.append(body)
+                    if cards["moral"]:
+                        parts.append(cards["cg"].build_card(
+                            script_id=script_id, kind="end", text=cards["moral"],
+                            frame_path=cards["last_frame"], target_w=w, target_h=h,
+                            aspect_key=aspect_key, audio_path=cards["moral_wav"],
+                            duration=cards["m_dur"], label="The moral"))
+                    if len(parts) > 1:
+                        tmp = body.with_suffix(".carded.mp4")
+                        _concat_av(parts, tmp, w, h)
+                        body.unlink(missing_ok=True)
+                        tmp.rename(body)
+                except Exception as e:
+                    log.exception(f"Card wrap failed ({aspect_key}); leaving body: {e}")
+    except Exception as e:
+        log.exception(f"Card prep failed (continuing without cards): {e}")
 
     return {
         "script_id": script_id,
