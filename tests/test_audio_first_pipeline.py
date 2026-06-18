@@ -105,3 +105,19 @@ def test_llm_failure_falls_back(monkeypatch):
 def test_split_sentences():
     out = afp._split_sentences("Hello there. How are you? Run!")
     assert out == ["Hello there.", "How are you?", "Run!"]
+
+
+def test_breath_groups_short_sentences_pass_through():
+    out = afp._breath_groups("Hi there. Run fast.")
+    assert out == ["Hi there.", "Run fast."]
+
+
+def test_breath_groups_split_long_sentence_at_clauses():
+    long = ("The tiny fox crept through the tall grass, past the old oak tree, "
+            "over the cold stream, and into the dark woods beyond the hills.")
+    out = afp._breath_groups(long, max_chars=40)
+    assert len(out) >= 2                          # the long sentence was split
+    assert all(len(g) <= 80 for g in out)         # no runaway groups
+    # reassembled text preserves the words (split only added boundaries)
+    joined = " ".join(out).replace(" ,", ",")
+    assert "tiny fox" in joined and "dark woods" in joined

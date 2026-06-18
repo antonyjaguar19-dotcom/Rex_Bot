@@ -44,6 +44,7 @@ CORE_MODULES = [
     "modules.assembly",
     "modules.narration_segmenter",
     "modules.tts_elevenlabs",
+    "modules.tts_voxcpm",
     "modules.audio_first_pipeline",
     "modules.upscaler",
     "modules.gpu_utils",

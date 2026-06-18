@@ -89,6 +89,40 @@ def test_tiny_segment_merges():
     assert any("Hi." in s.text for s in segs)
 
 
+def test_spans_tile_total_duration():
+    """segment_by_spans windows tile [0, total_dur] exactly (VoxCPM path)."""
+    spans = [("First.", 0.0, 2.0), ("Second.", 2.4, 4.5), ("Third.", 4.9, 7.0)]
+    total = 7.3
+    segs = ns.segment_by_spans(spans, total_dur=total)
+    assert len(segs) == 3
+    assert segs[0].win_start == 0.0
+    assert abs(segs[-1].win_end - total) < 1e-6
+    assert abs(sum(s.window_dur for s in segs) - total) < 1e-6
+    for a, b in zip(segs, segs[1:]):
+        assert abs(a.win_end - b.win_start) < 1e-6
+    # cut between groups sits in the inter-group silence
+    assert spans[0][2] < segs[0].win_end < spans[1][1]
+    assert [s.text for s in segs] == ["First.", "Second.", "Third."]
+
+
+def test_spans_tiny_group_merges():
+    spans = [("Hi.", 0.0, 0.4), ("A longer line follows here now.", 0.8, 3.5)]
+    segs = ns.segment_by_spans(spans, total_dur=3.5, min_seg_sec=1.0)
+    assert len(segs) == 1
+    assert segs[0].text == "Hi. A longer line follows here now."
+
+
+def test_spans_empty_raises():
+    with pytest.raises(ValueError):
+        ns.segment_by_spans([])
+
+
+def test_spans_default_total_dur():
+    spans = [("One.", 0.0, 2.0), ("Two.", 2.3, 4.1)]
+    segs = ns.segment_by_spans(spans)         # total_dur inferred from last end
+    assert abs(segs[-1].win_end - 4.1) < 1e-6
+
+
 def test_mismatched_arrays_raise():
     with pytest.raises(ValueError):
         ns.segment_by_alignment(["a", "b"], [0.0], [0.1, 0.2])

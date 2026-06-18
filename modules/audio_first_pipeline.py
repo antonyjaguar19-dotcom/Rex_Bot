@@ -15,9 +15,9 @@ Flow:
 MVP = single narrator voice (honours "pauses dictate count"). Per-character
 voices + S2V lip-sync are a later layer — they fight a single master track.
 
-TTS: ElevenLabs primary (char timestamps → exact pause cuts). Falls back to the
-local engine (Kokoro now, Chatterbox later) + ffmpeg silencedetect when the key
-is missing or quota is gone. Either way the pipeline keeps running.
+TTS: VoxCPM primary (local, offline, Apache-2.0 — voiced per breath-group for
+exact spans, no cloud/key). Falls back to local Kokoro + ffmpeg silencedetect if
+VoxCPM is unavailable. Either way the pipeline keeps running, fully contained.
 
 The script JSON gains:
   script["_audio_first"] = True
@@ -65,6 +65,41 @@ def _split_sentences(prose: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+# Chars per breath-group ceiling. VoxCPM voices ≈ 0.075s/char, so ~70 chars
+# ≈ 5s — Wan's native clip length. Longer groups get freeze-padded at assembly
+# (visible frozen tail), so keep groups at/under the video ceiling.
+_GROUP_MAX_CHARS = 70
+
+
+def _breath_groups(prose: str, max_chars: int = _GROUP_MAX_CHARS) -> list[str]:
+    """Split prose into breath-groups for per-group voicing (VoxCPM path).
+
+    Each group becomes one shot. Sentences are the unit; a sentence longer than
+    max_chars is split at its commas/clause breaks so no single voiced group
+    exceeds the video model's ~5s clip ceiling. Never splits mid-clause.
+    """
+    groups: list[str] = []
+    for sent in _split_sentences(prose):
+        if len(sent) <= max_chars:
+            groups.append(sent)
+            continue
+        # split long sentence at clause punctuation, greedily packing to max_chars
+        clauses = re.split(r"(?<=[,;:])\s+", sent)
+        buf = ""
+        for cl in clauses:
+            cl = cl.strip()
+            if not cl:
+                continue
+            if buf and len(buf) + 1 + len(cl) > max_chars:
+                groups.append(buf.strip())
+                buf = cl
+            else:
+                buf = (buf + " " + cl).strip()
+        if buf:
+            groups.append(buf.strip())
+    return [g for g in groups if g]
+
+
 def voice_and_segment(
     prose: str,
     master_wav: Optional[Path] = None,
@@ -73,32 +108,32 @@ def voice_and_segment(
 ) -> tuple[Path, list[nseg.Segment], str]:
     """Render the whole narration to one wav and split it at its pauses.
 
-    Returns (master_wav_path, segments, engine_name). Tries ElevenLabs first
-    (exact char timestamps); on any failure falls back to the local Kokoro
-    engine + ffmpeg silencedetect so the pipeline never hard-stops.
+    Returns (master_wav_path, segments, engine_name). Primary path is VoxCPM
+    (local, offline, Apache-2.0): each breath-group is voiced separately and
+    stitched, giving EXACT spans (no detection). On any failure falls back to
+    the local Kokoro engine + ffmpeg silencedetect so the pipeline never stops.
     """
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     if master_wav is None:
         stub = datetime.now().strftime("%Y%m%d_%H%M%S")
         master_wav = AUDIO_DIR / f"master_{stub}.wav"
 
-    # --- ElevenLabs (preferred) ---
+    # --- VoxCPM (preferred): per-group voicing → exact spans ---
     try:
-        from modules.tts_elevenlabs import ElevenLabsTTS
-        el = ElevenLabsTTS(voice_id=voice_id)
-        ok, msg = el.health_check()
+        from modules.tts_voxcpm import VoxCPMTTS
+        vox = VoxCPMTTS()
+        ok, msg = vox.health_check(load_model=False)
         if not ok:
             raise RuntimeError(msg)
         if progress_cb:
-            progress_cb("voicing narration (ElevenLabs)...")
-        wav, alignment = el.synthesize_with_timestamps(prose, output_path=master_wav)
-        segs = nseg.segment_by_alignment(
-            alignment.characters, alignment.starts, alignment.ends
-        )
-        log.info(f"Audio-first VO via ElevenLabs — {len(segs)} segments.")
-        return wav, segs, "elevenlabs"
+            progress_cb("voicing narration (VoxCPM)...")
+        groups = _breath_groups(prose)
+        wav, spans = vox.synthesize_segments(groups, output_path=master_wav)
+        segs = nseg.segment_by_spans(spans)
+        log.info(f"Audio-first VO via VoxCPM — {len(segs)} segments.")
+        return wav, segs, "voxcpm"
     except Exception as e:
-        log.warning(f"ElevenLabs path unavailable ({e}); falling back to local TTS.")
+        log.warning(f"VoxCPM path unavailable ({e}); falling back to local Kokoro.")
 
     # --- Local fallback: Kokoro + silencedetect ---
     if progress_cb:

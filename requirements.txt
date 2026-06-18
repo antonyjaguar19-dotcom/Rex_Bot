@@ -18,6 +18,9 @@
 #    the `ollama` pip package is NOT used)
 #  - Kokoro TTS + audiocraft (MusicGen): optional audio extras,
 #    see requirements.lock.txt for the working versions
+#  - VoxCPM (audio-first primary voice): `pip install voxcpm`
+#    (heavy — pulls torchcodec/funasr/modelscope; weights auto-
+#    download to 03_Models/hf_cache on first use)
 # ============================================================
 
 # --- Discord bot framework ---------------------------------

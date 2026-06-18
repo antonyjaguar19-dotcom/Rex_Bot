@@ -239,6 +239,61 @@ def segment_by_alignment(
 
 
 # ==============================================================================
+# SPAN PATH — exact (text, t_start, t_end) spans from per-group synthesis
+# ==============================================================================
+
+def segment_by_spans(
+    spans: list[tuple[str, float, float]],
+    total_dur: Optional[float] = None,
+    min_seg_sec: float = MIN_SEG_SEC,
+) -> list[Segment]:
+    """Build segments from EXACT per-group spans (text, t_start, t_end).
+
+    Used by local engines voiced breath-group-by-breath-group (VoxCPM): every
+    group's speech times are known precisely, so no detection/guessing. Tiny
+    groups merge into the previous one. Windows tile [0, total_dur] with each cut
+    at the midpoint of the silence between groups.
+    """
+    if not spans:
+        raise ValueError("segment_by_spans needs at least one span.")
+    # normalize + validate ordering
+    items = [(str(t), float(a), float(b)) for (t, a, b) in spans]
+    for t, a, b in items:
+        if b < a:
+            raise ValueError(f"span end before start: {t!r} {a}->{b}")
+    if total_dur is None:
+        total_dur = items[-1][2]
+    total_dur = float(total_dur)
+
+    # merge groups shorter than min_seg_sec into the previous (or the next if first)
+    # each entry: [t_start, t_end, _unused, text]
+    merged: list[list] = []
+    for t, a, b in items:
+        too_short = (b - a) < min_seg_sec
+        prev_short = merged and (merged[-1][1] - merged[-1][0]) < min_seg_sec
+        if merged and (too_short or prev_short):
+            p = merged[-1]
+            p[1] = b                                  # extend window end
+            p[3] = (p[3] + " " + t).strip()           # append text, keep prev start
+        else:
+            merged.append([a, b, None, t])
+
+    n = len(merged)
+    segs: list[Segment] = []
+    for k, (ts, te, _, text) in enumerate(merged):
+        win_start = 0.0 if k == 0 else (merged[k - 1][1] + ts) / 2.0
+        win_end = total_dur if k == n - 1 else (te + merged[k + 1][0]) / 2.0
+        segs.append(Segment(
+            index=k, text=text,
+            t_start=round(ts, 3), t_end=round(te, 3),
+            win_start=round(win_start, 3), win_end=round(win_end, 3),
+        ))
+    log.info(f"Span-segmented {total_dur:.2f}s into {len(segs)} shots "
+             f"(windows: {[round(s.window_dur, 2) for s in segs]})")
+    return segs
+
+
+# ==============================================================================
 # FALLBACK PATH — ffmpeg silencedetect (engines with no native timestamps)
 # ==============================================================================
 
