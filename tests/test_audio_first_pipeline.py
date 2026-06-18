@@ -163,6 +163,40 @@ def test_retime_overwrites_timing_and_duration():
     assert script["duration_seconds"] == 6
 
 
+def test_stamp_gender_into_cast_tokens():
+    """A character voiced/written as male but whose visual token lacks a gender
+    word gets 'male' stamped in, so image prompts won't draw 'her'."""
+    script = {
+        "characters": [
+            {"name": "Timmy", "type": "animal",
+             "appearance": "a little turtle with a big shell",
+             "locked_visual_token": "a little turtle with a big shell"},
+        ],
+        "shots": [
+            {"shot_number": 1, "speaker": "narrator",
+             "narration": "Timmy was shy. He hid in his shell all day."},
+        ],
+    }
+    afp._stamp_gender(script)
+    tok = script["characters"][0]["locked_visual_token"]
+    assert "male" in tok.lower()
+    assert tok.startswith("a male")        # inserted after the article
+
+
+def test_stamp_gender_skips_when_already_present():
+    script = {
+        "characters": [
+            {"name": "Bella", "type": "animal",
+             "appearance": "a female robin", "locked_visual_token": "a female robin"},
+        ],
+        "shots": [{"shot_number": 1, "speaker": "narrator",
+                   "narration": "She sang."}],
+    }
+    afp._stamp_gender(script)
+    # unchanged — gender already there, no double-stamp
+    assert script["characters"][0]["locked_visual_token"] == "a female robin"
+
+
 def test_split_sentences():
     out = afp._split_sentences("Hello there. How are you? Run!")
     assert out == ["Hello there.", "How are you?", "Run!"]

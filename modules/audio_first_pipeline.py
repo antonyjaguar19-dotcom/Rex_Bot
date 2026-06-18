@@ -218,6 +218,37 @@ def _voice_groups_kokoro(groups: list[str], voice_ids: list[str],
     return master_wav, spans
 
 
+_GENDER_WORD = re.compile(
+    r"\b(male|female|boy|girl|man|woman|he|she|his|her|hers|"
+    r"father|mother|king|queen|prince|princess|brother|sister)\b", re.IGNORECASE)
+
+
+def _stamp_gender(script: dict) -> None:
+    """Write the cast's gender into appearance + locked_visual_token when it's
+    missing, so image prompts use the SAME gender the voice casting picked (from
+    narration pronouns). Fixes 'male turtle, voiced male, but drawn as her'."""
+    for c in script.get("characters", []):
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name", "")
+        try:
+            g = vc.guess_gender(c, vc._gender_context(script, name))
+        except Exception:
+            continue
+        if g not in ("male", "female"):
+            continue
+        for key in ("locked_visual_token", "appearance"):
+            v = (c.get(key) or "").strip()
+            if v and not _GENDER_WORD.search(v):
+                # insert after a leading article ("a tiny turtle" -> "a male tiny
+                # turtle") so the noun phrase still reads naturally.
+                m = re.match(r"^(a |an |A |An )", v)
+                if m:
+                    c[key] = f"{m.group(1)}{g} {v[m.end():]}"
+                else:
+                    c[key] = f"{g} {v}"
+
+
 def _retime_shots(script: dict, segs: list[nseg.Segment]) -> None:
     """Overwrite each shot's timing from the REAL voiced spans (after the
     text-first structurer ran on placeholder timing). Narration stays verbatim."""
@@ -481,6 +512,10 @@ def generate_script_audio_first(
         segments=placeholder, style_override=effective_style,
         culture_override=culture_override,
     )
+
+    # 2b) stamp gender into the cast tokens so image prompts match the voiced
+    #     gender (image LLM otherwise guesses pronouns and can contradict the voice).
+    _stamp_gender(script)
 
     # 3) voice each group with its speaker's voice (pinned reference = no drift),
     #    then re-time the shots from the real voiced spans.
