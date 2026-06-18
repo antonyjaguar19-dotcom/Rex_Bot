@@ -139,6 +139,12 @@ def _style_suffix(script: dict) -> str:
     return style_info.get("prompt_suffix", "")
 
 
+def _char_medium(script: dict) -> str:
+    """How characters are rendered in the active style's medium."""
+    style_id = script.get("style") or sg.get_default_style()
+    return sg.get_style_description(style_id).get("character_medium", "")
+
+
 def _rewrite_as_paragraph(raw_prompt: str, script: dict, shot: dict) -> str:
     """
     Build the final prompt sent to the image backend.
@@ -537,6 +543,7 @@ def regenerate_shot(
                     shot=shot,
                     style_suffix=_style_suffix(script),
                     frame_type=frame_type,
+                    character_medium=_char_medium(script),
                 )
             except Exception as _e:
                 log.warning(

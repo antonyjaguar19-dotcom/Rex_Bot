@@ -198,6 +198,14 @@ def _style_suffix_for(script: dict) -> str:
     return style_info.get("prompt_suffix", "")
 
 
+def _char_medium_for(script: dict) -> str:
+    """How characters should be RENDERED in the active style's medium (e.g.
+    'as a simple stick figure'). Keeps the look on-style for stylized mediums
+    while the locked token still carries identity for cross-shot consistency."""
+    style_id = script.get("style") or sg.get_default_style()
+    return sg.get_style_description(style_id).get("character_medium", "")
+
+
 def generate_all_prompts(script: dict, progress: Optional[Callable[[str, int, int], None]] = None) -> dict:
     """
     Run prompt_assembler for every shot. Returns the state dict that gets
@@ -225,6 +233,7 @@ def generate_all_prompts(script: dict, progress: Optional[Callable[[str, int, in
     script_id = script.get("_id") or script.get("script_id") or "unknown"
     shots = script.get("shots", []) or []
     style_suffix = _style_suffix_for(script)
+    char_medium = _char_medium_for(script)
 
     out = {
         "script_id": script_id,
@@ -251,6 +260,7 @@ def generate_all_prompts(script: dict, progress: Optional[Callable[[str, int, in
                 img_p = pa.assemble_image_prompt(
                     script=script, shot=shot,
                     style_suffix=style_suffix, frame_type="first",
+                    character_medium=char_medium,
                 )
                 break
             except Exception as e:
@@ -259,6 +269,7 @@ def generate_all_prompts(script: dict, progress: Optional[Callable[[str, int, in
             log.warning(f"Shot {shot_num} image prompt → mechanical fallback (style+chars)")
             img_p = pa.assemble_image_prompt_mechanical(
                 script=script, shot=shot, style_suffix=style_suffix, frame_type="first",
+                character_medium=char_medium,
             )
 
         # Motion prompt (uses approved image as ground truth)

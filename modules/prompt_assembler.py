@@ -363,6 +363,7 @@ def assemble_image_prompt(
     shot: dict,
     style_suffix: str = "",
     frame_type: str = "first",
+    character_medium: str = "",
 ) -> str:
     """
     Build the final Z-Image prompt for a single shot/frame via the LLM.
@@ -412,6 +413,7 @@ def assemble_image_prompt(
         "camera_angle": (shot.get("camera_angle") or "").strip(),
         "narration": (shot.get("narration") or "").strip(),
         "speaking_character": _speaking_character(shot),
+        "character_medium": (character_medium or "").strip(),
     }
     if char_lines:
         user_payload["characters_for_this_shot"] = "\n".join(char_lines)
@@ -431,7 +433,10 @@ def assemble_image_prompt(
         f"style anchor sentence (from `style_suffix`). For breathing beats, "
         f"include ZERO characters. For character beats, inject every character "
         f"from `characters_for_this_shot` with their full locked appearance "
-        f"verbatim, binding each name to its listed species. End with camera "
+        f"verbatim, binding each name to its listed species. If `character_medium` "
+        f"is non-empty, render EVERY character in that medium (e.g. a stick figure / "
+        f"clay model / felt puppet) — keep their identity colors and key features "
+        f"for consistency, but recast the form into the medium. End with camera "
         f"framing + lighting that comes from `light_direction` verbatim. "
         f"60-110 words."
     )
@@ -474,6 +479,7 @@ def assemble_image_prompt_mechanical(
     shot: dict,
     style_suffix: str = "",
     frame_type: str = "first",
+    character_medium: str = "",
 ) -> str:
     """Deterministic Z-Image prompt — NO LLM. Used when the LLM assembler fails
     (Ollama hiccup / VRAM), so a prompt ALWAYS carries the style anchor + every
@@ -491,11 +497,15 @@ def assemble_image_prompt_mechanical(
     if body:
         parts.append(body.rstrip("."))
     if not no_chars:
+        med = (character_medium or "").strip().rstrip(".")
         for c in _resolve_shot_characters(script, shot):
             name = (c.get("name") or "").strip()
             lock = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
             if name and lock:
-                parts.append(f"{name} is {lock}")
+                # medium FIRST so the diffusion model leads with the style
+                # (e.g. "drawn as a simple stick figure, Whiskers is a cat ...")
+                line = f"{name} is {lock}"
+                parts.append(f"drawn {med}, {line}" if med else line)
     st = (shot.get("shot_type") or "").strip().lower()
     if st in SHOT_TYPE_FRAMING:
         parts.append(SHOT_TYPE_FRAMING[st])
