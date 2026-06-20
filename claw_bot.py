@@ -3787,6 +3787,72 @@ async def cmd_regen_shot(ctx, script_id: str = None, shot_num: int = None):
         }
 
 
+@bot.command(name="train_char", aliases=["train_character", "lora_train"])
+async def cmd_train_char(ctx, name: str = None, *, look: str = ""):
+    """Train a character LoRA from images in 07_Training/datasets/<name>/.
+
+    Usage: !train_char <Name> <look description>
+      e.g. !train_char Pip 7yo boy, orange hair, brass goggles, blue scarf
+
+    Drop 15-30 images of the character in 07_Training/datasets/<name>/ first
+    (or let the dashboard/dataset builder generate them). Runs Flux.1-dev LoRA
+    training in the background (~30-60 min) on the dedicated trainer venv, then
+    registers the LoRA so the `comfyui_flux_lora` backend auto-applies it on any
+    shot whose prompt names the character.
+    """
+    if not name:
+        await ctx.send(
+            "⚠️ Usage: `!train_char <Name> <look description>`\n"
+            "Drop 15-30 images in `07_Training/datasets/<name>/` first."
+        )
+        return
+    import asyncio
+    from modules.lora import store as _ls, captioner as _cap, trainer as _tr
+    try:
+        from modules import gpu_utils as _g
+    except Exception:
+        _g = None
+
+    ds = _ls.dataset_dir(name)
+    nimg = _cap.count_images(ds)
+    if nimg == 0:
+        await ctx.send(f"❌ No images in `{ds}`. Drop 15-30 photos of **{name}** there, then retry.")
+        return
+    if nimg < 10:
+        await ctx.send(f"⚠️ Only {nimg} images — LoRA may undertrain (want 15-30). Training anyway.")
+
+    loop = asyncio.get_running_loop()
+    await ctx.send(
+        f"🏋️ Training LoRA **{name}** — {nimg} imgs. Runs ~30-60 min in background; "
+        f"I'll post when it's done."
+    )
+
+    def _cb(m, c, t):
+        if c and c % 200 == 0:
+            try:
+                asyncio.run_coroutine_threadsafe(ctx.send(f"… **{name}** {c}/{t} steps"), loop)
+            except Exception:
+                pass
+
+    def _work():
+        if _g is not None:
+            try:
+                _g.free_comfyui_vram()
+            except Exception:
+                pass
+        return _tr.train_character(name, look, steps=1000, progress_callback=_cb, register=True)
+
+    try:
+        entry = await asyncio.to_thread(_work)
+        await ctx.send(
+            f"✅ **{name}** LoRA v{entry['version']} trained → `{entry['lora_file']}`.\n"
+            f"Switch image model to `comfyui_flux_lora` (`!switch_model image comfyui_flux_lora`); "
+            f"any shot naming **{name}** now locks to this face + accessories."
+        )
+    except Exception as e:
+        await ctx.send(f"❌ Training failed: `{e}`")
+
+
 @bot.command(name="edit_prompts", aliases=["edit_prompt", "editprompts", "reprompt", "fix_prompt"])
 async def cmd_edit_prompts(ctx, script_id: str = None, *shot_nums: int):
     """Re-open prompt editing for an existing script, then regen those shots.
