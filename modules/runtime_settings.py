@@ -261,6 +261,108 @@ def clear_music_mood_override() -> None:
     _save(data)
 
 
+# --- Pipeline mode (story | music_video) ---
+# Selects which production pipeline the "Generate" entrypoints drive.
+#   story        — theme → kids story → storyboard → Wan video → TTS → assemble.
+#   music_video  — theme → song lyrics (Qwen) → ACE-Step song → Ken Burns stills.
+# Default story so existing behavior is unchanged until the user opts in.
+
+VALID_PIPELINE_MODES = ("story", "music_video")
+
+
+def get_pipeline_mode() -> str:
+    """Active pipeline mode. Default 'story'."""
+    val = _load().get("pipeline_mode")
+    return val if val in VALID_PIPELINE_MODES else "story"
+
+
+def set_pipeline_mode(mode: str) -> None:
+    mode = (mode or "").strip().lower()
+    if mode not in VALID_PIPELINE_MODES:
+        raise ValueError(
+            f"Invalid pipeline_mode: {mode!r}. Must be one of {VALID_PIPELINE_MODES}."
+        )
+    data = _load()
+    data["pipeline_mode"] = mode
+    _save(data)
+    log.info(f"Pipeline mode set: {mode}")
+
+
+# --- Music-video overrides (None = let the LLM choose) ---
+# song_style   — musical genre fed to ACE-Step tags.
+# vocal_type   — singer voice fed to ACE-Step tags.
+# visual_style — look of the Ken Burns stills (maps to a styles.json entry).
+
+VALID_SONG_STYLES = (
+    "soft", "hard", "rap", "pop", "jazz", "metal", "romantic",
+    "lofi", "edm", "acoustic", "cinematic", "folk",
+)
+VALID_VOCAL_TYPES = (
+    "auto", "female", "male", "duet", "choir", "rap", "instrumental",
+)
+VALID_VISUAL_STYLES = ("cartoon", "doodle", "spectrum", "photoreal")
+
+
+def get_song_style_override() -> Optional[str]:
+    return _load().get("song_style")
+
+
+def set_song_style_override(style: str) -> None:
+    style = (style or "").strip().lower()
+    if style not in VALID_SONG_STYLES:
+        raise ValueError(f"Invalid song_style: {style!r}. Must be one of {VALID_SONG_STYLES}.")
+    data = _load()
+    data["song_style"] = style
+    _save(data)
+    log.info(f"Song style override set: {style}")
+
+
+def clear_song_style_override() -> None:
+    data = _load()
+    data.pop("song_style", None)
+    _save(data)
+
+
+def get_vocal_type_override() -> Optional[str]:
+    return _load().get("vocal_type")
+
+
+def set_vocal_type_override(vocal: str) -> None:
+    vocal = (vocal or "").strip().lower()
+    if vocal not in VALID_VOCAL_TYPES:
+        raise ValueError(f"Invalid vocal_type: {vocal!r}. Must be one of {VALID_VOCAL_TYPES}.")
+    data = _load()
+    data["vocal_type"] = vocal
+    _save(data)
+    log.info(f"Vocal type override set: {vocal}")
+
+
+def clear_vocal_type_override() -> None:
+    data = _load()
+    data.pop("vocal_type", None)
+    _save(data)
+
+
+def get_visual_style_override() -> Optional[str]:
+    return _load().get("visual_style")
+
+
+def set_visual_style_override(style: str) -> None:
+    style = (style or "").strip().lower()
+    if style not in VALID_VISUAL_STYLES:
+        raise ValueError(f"Invalid visual_style: {style!r}. Must be one of {VALID_VISUAL_STYLES}.")
+    data = _load()
+    data["visual_style"] = style
+    _save(data)
+    log.info(f"Visual style override set: {style}")
+
+
+def clear_visual_style_override() -> None:
+    data = _load()
+    data.pop("visual_style", None)
+    _save(data)
+
+
 # --- Character reference mode (cast-sheet anchoring) ---
 
 def get_reference_mode_enabled() -> bool:

@@ -15,6 +15,7 @@ import discord
 from discord import ui
 
 from modules.file_utils import atomic_write_json
+from modules import runtime_settings as rs
 
 log = logging.getLogger("claw_bot.control_panel")
 
@@ -222,24 +223,30 @@ class NarrationRewriteModal(ui.Modal, title="🪄 AI Rewrite Narration"):
 # EMBEDS
 # ============================================================
 
+def _current_mode() -> str:
+    try:
+        return rs.get_pipeline_mode()
+    except Exception:
+        return "story"
+
+
 def _home_embed() -> discord.Embed:
+    mode = _current_mode()
+    mode_label = "📖 Story" if mode == "story" else "🎵 Music Video"
     e = discord.Embed(
         title="🤖 Claw Bot — Control Panel",
         description=(
-            "**Tap a category to expand.** Buttons replace typing.\n"
-            "_Pinned at the top — always here when you need it._"
+            f"**Active mode: {mode_label}**\n\n"
+            "Pick what the bot is making. Each mode has its own workflow:\n"
+            "• **📖 Story Mode** — kids story → storyboard → video → narration\n"
+            "• **🎵 Music Mode** — song lyrics → ACE-Step song → music video\n\n"
+            "_Choosing a mode switches the whole pipeline._"
         ),
         color=discord.Color.blurple(),
     )
-    e.add_field(name="📝 Scripts",      value="Generate · list · revise", inline=True)
-    e.add_field(name="🎨 Storyboards",  value="Frames · regen", inline=True)
-    e.add_field(name="🎥 Videos",       value="Render · regen · upscale", inline=True)
-    e.add_field(name="⚙️ Settings",     value="Style · aspect · steps · cfg", inline=True)
-    e.add_field(name="🔊 Voice & Music", value="TTS voice · BG music", inline=True)
-    e.add_field(name="🔄 Models",       value="Switch backends", inline=True)
-    e.add_field(name="📊 Stats",        value="Counters · status", inline=True)
-    e.add_field(name="⏸️ Queue",        value="Pending · resume · drop", inline=True)
-    e.add_field(name="🎬 Final",        value="Assemble · publish", inline=True)
+    e.add_field(name="📖 Story Mode", value="Scripts · storyboards · videos", inline=True)
+    e.add_field(name="🎵 Music Mode", value="Songs · lyrics · music videos", inline=True)
+    e.add_field(name="⚙️ Shared", value="Settings · Models · Stats · System", inline=True)
     e.set_footer(text="Persistent panel · Claw Bot")
     return e
 
@@ -267,20 +274,22 @@ class HomeView(ui.View):
         except Exception as e:
             log.warning(f"Could not add dashboard link button: {e}")
 
-    @ui.button(label="📝 Scripts", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:scripts")
-    async def b1(self, i, b): await _switch(i, ScriptsView, "📝 Scripts", "Generate new scripts and manage existing ones.")
+    # --- Two clear modes (top row) ---
+    @ui.button(label="📖 Story Mode", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:story")
+    async def b1(self, i, b):
+        rs.set_pipeline_mode("story")
+        await _switch(i, StoryHubView, "📖 Story Mode",
+                      "Make a kids story: script → storyboard → video → narration.")
 
-    @ui.button(label="🎨 Storyboards", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:stb")
-    async def b2(self, i, b): await _switch(i, StoryboardsView, "🎨 Storyboards", "Generate storyboard frames per shot.")
+    @ui.button(label="🎵 Music Mode", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:music")
+    async def b2(self, i, b):
+        rs.set_pipeline_mode("music_video")
+        await _switch(i, MusicHubView, "🎵 Music Mode",
+                      "Make a music video: lyrics → ACE-Step song → Ken Burns visuals.")
 
-    @ui.button(label="🎥 Videos", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:vid")
-    async def b3(self, i, b): await _switch(i, VideosView, "🎥 Videos", "Render, regen, upscale clips.")
-
+    # --- Shared utilities (apply to both modes) ---
     @ui.button(label="⚙️ Settings", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:home:set")
     async def b4(self, i, b): await _switch(i, SettingsView, "⚙️ Settings", "Override style, aspect ratio, steps, CFG.")
-
-    @ui.button(label="🔊 Voice & Music", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:home:vm")
-    async def b5(self, i, b): await _switch(i, VoiceMusicView, "🔊 Voice & Music", "TTS voice and background music mood.")
 
     @ui.button(label="🔄 Models", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:home:mdl")
     async def b6(self, i, b): await _switch(i, ModelsView, "🔄 Models", "Swap image / video backends.")
@@ -288,13 +297,7 @@ class HomeView(ui.View):
     @ui.button(label="📊 Stats", style=discord.ButtonStyle.success, row=2, custom_id="cp:home:stats")
     async def b7(self, i, b): await _run_cmd(i, "stats")
 
-    @ui.button(label="⏸️ Queue", style=discord.ButtonStyle.success, row=2, custom_id="cp:home:q")
-    async def b8(self, i, b): await _switch(i, QueueView, "⏸️ Queue", "Paused scripts awaiting your feedback.")
-
-    @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=2, custom_id="cp:home:final")
-    async def b9(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Assemble all clips into the final video.")
-
-    @ui.button(label="🛠️ System", style=discord.ButtonStyle.danger, row=3, custom_id="cp:home:sys")
+    @ui.button(label="🛠️ System", style=discord.ButtonStyle.danger, row=2, custom_id="cp:home:sys")
     async def b10(self, i, b): await _switch(i, SystemView, "🛠️ System", "Restart (load code edits) or shut the bot down.")
 
 
@@ -310,6 +313,28 @@ class _SubView(ui.View):
     @ui.button(label="🏠 Home", style=discord.ButtonStyle.danger, row=4, custom_id="cp:sub:home")
     async def home(self, interaction, button):
         await interaction.response.edit_message(embed=_home_embed(), view=HomeView())
+
+
+class StoryHubView(_SubView):
+    """📖 Story Mode hub — only story-pipeline actions."""
+
+    @ui.button(label="📝 Scripts", style=discord.ButtonStyle.primary, row=0, custom_id="cp:storyhub:scr")
+    async def b1(self, i, b): await _switch(i, ScriptsView, "📝 Scripts", "Generate new scripts and manage existing ones.")
+
+    @ui.button(label="🎨 Storyboards", style=discord.ButtonStyle.primary, row=0, custom_id="cp:storyhub:stb")
+    async def b2(self, i, b): await _switch(i, StoryboardsView, "🎨 Storyboards", "Generate storyboard frames per shot.")
+
+    @ui.button(label="🎥 Videos", style=discord.ButtonStyle.primary, row=0, custom_id="cp:storyhub:vid")
+    async def b3(self, i, b): await _switch(i, VideosView, "🎥 Videos", "Render, regen, upscale clips.")
+
+    @ui.button(label="🔊 Voice & Music", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:storyhub:vm")
+    async def b4(self, i, b): await _switch(i, VoiceMusicView, "🔊 Voice & Music", "TTS voice and background music mood.")
+
+    @ui.button(label="⏸️ Queue", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:storyhub:q")
+    async def b5(self, i, b): await _switch(i, QueueView, "⏸️ Queue", "Paused scripts awaiting your feedback.")
+
+    @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=1, custom_id="cp:storyhub:final")
+    async def b6(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Assemble all clips into the final video.")
 
 
 class ScriptsView(_SubView):
@@ -446,6 +471,41 @@ class SettingsView(_SubView):
     async def b7(self, i, b): await _run_cmd(i, "reset_settings")
 
 
+class MusicHubView(_SubView):
+    """🎵 Music Mode hub — only music-video pipeline actions."""
+
+    @ui.button(label="🎶 Make Song", style=discord.ButtonStyle.success, row=0, custom_id="cp:mus:make")
+    async def b2(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Make Song", "Theme (what's the song about?)", "e.g. a rainy night drive",
+            "make_song", "theme",
+        ))
+
+    @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=0, custom_id="cp:mus:final")
+    async def b6(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Assembled music videos appear in 04_Outputs/final.")
+
+    @ui.button(label="🎸 Song Style", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:style")
+    async def b3(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Song Style", "Style", "pop / rap / metal / jazz / romantic ... or auto",
+            "set_song_style", "style",
+        ))
+
+    @ui.button(label="🎤 Vocal Type", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:vocal")
+    async def b4(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Vocal Type", "Vocal", "female / male / duet / choir / rap / instrumental / auto",
+            "set_vocal_type", "vocal",
+        ))
+
+    @ui.button(label="🎨 Visual Style", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:visual")
+    async def b5(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Visual Style", "Visual", "cartoon / doodle / spectrum / photoreal / auto",
+            "set_visual_style", "style",
+        ))
+
+
 class VoiceMusicView(_SubView):
     @ui.button(label="🎙️ Set Voice", style=discord.ButtonStyle.primary, row=0, custom_id="cp:vm:voice")
     async def b1(self, i, b):
@@ -566,6 +626,7 @@ def register_views(bot: discord.Client, cmds: dict):
     global _CMDS
     _CMDS = cmds
     bot.add_view(HomeView())
+    bot.add_view(StoryHubView())
     bot.add_view(ScriptsView())
     bot.add_view(StoryboardsView())
     bot.add_view(VideosView())
@@ -575,6 +636,7 @@ def register_views(bot: discord.Client, cmds: dict):
     bot.add_view(QueueView())
     bot.add_view(FinalView())
     bot.add_view(SystemView())
+    bot.add_view(MusicHubView())
     log.info("Persistent views registered.")
 
 

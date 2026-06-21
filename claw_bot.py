@@ -1475,6 +1475,11 @@ async def on_ready():
                     "set_music_mood":      cmd_set_music_mood,
                     "regenerate_music":    cmd_regenerate_music,
                     "switch_model":        cmd_switch_model,
+                    "make_song":           cmd_make_song,
+                    "set_mode":            cmd_set_mode,
+                    "set_song_style":      cmd_set_song_style,
+                    "set_vocal_type":      cmd_set_vocal_type,
+                    "set_visual_style":    cmd_set_visual_style,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -2528,6 +2533,11 @@ async def cmd_shutdown_bot(ctx):
 
 @bot.command(name="generate_script", aliases=["gs", "script"])
 async def cmd_generate_script(ctx, *, theme: str = None):
+    # Pipeline-mode router: in music-video mode the same entrypoint makes a song.
+    if rs.get_pipeline_mode() == "music_video":
+        await cmd_make_song(ctx, theme=theme)
+        return
+
     if theme is None:
         theme = get_random_theme()
         await ctx.send(f"🎲 Using random theme: **{theme}**")
@@ -4199,6 +4209,236 @@ async def cmd_switch_model(ctx, backend_id: str = None, backend_type: str = None
         await ctx.send(f"❌ Invalid backend: `{e}`. Run `!switch_model` with no args to see available.")
     except Exception as e:
         await ctx.send(f"❌ Switch failed: `{e}`")
+
+# ==============================================================================
+# MUSIC VIDEO MODE — parallel pipeline (song lyrics → ACE-Step song → Ken Burns)
+# Does not touch the story pipeline. Switched via !set_mode / control panel.
+# ==============================================================================
+
+def _song_lyrics_embed(song: dict) -> discord.Embed:
+    e = discord.Embed(
+        title=f"🎶 {song.get('title','Untitled Song')}",
+        description=(song.get("lyrics", "") or "(no lyrics)")[:4000],
+        color=0x9B59B6,
+    )
+    e.add_field(name="Style", value=song.get("song_style", "?"), inline=True)
+    e.add_field(name="Vocal", value=song.get("vocal_type", "?"), inline=True)
+    e.add_field(name="Visual", value=song.get("visual_style", "?"), inline=True)
+    e.add_field(name="BPM / Key", value=f"{song.get('bpm','?')} · {song.get('keyscale','?')}", inline=True)
+    e.add_field(name="Length", value=f"{song.get('duration_sec','?')}s · {len(song.get('scenes',[]))} scenes", inline=True)
+    e.set_footer(text=f"song_id {song.get('song_id','?')} · Approve to render (~30 min)")
+    return e
+
+
+class _LyricsEditModal(discord.ui.Modal, title="Edit song lyrics"):
+    def __init__(self, view: "_SongApprovalView"):
+        super().__init__()
+        self._view = view
+        self.instruction = discord.ui.TextInput(
+            label="How to change the lyrics",
+            placeholder="e.g. make the chorus catchier, less sad",
+            style=discord.TextStyle.paragraph, required=True, max_length=300,
+        )
+        self.add_item(self.instruction)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules import song_generator as sgn
+        await interaction.response.defer()
+        song = await asyncio.to_thread(sgn.rewrite_lyrics, self._view.song, str(self.instruction.value))
+        self._view.song = song
+        await interaction.message.edit(embed=_song_lyrics_embed(song), view=self._view)
+        await interaction.followup.send("✍️ Lyrics rewritten.", ephemeral=True)
+
+
+class _SongApprovalView(discord.ui.View):
+    """Lyrics/style approval gate for the music-video pipeline. Timeout-based
+    (not crash-persistent) — re-run !make_song if the bot restarts."""
+
+    def __init__(self, song: dict, owner_id: int):
+        super().__init__(timeout=3600)
+        self.song = song
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
+
+    @discord.ui.button(label="Approve & Render", style=discord.ButtonStyle.success, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _render_musicvideo_and_post(interaction.channel, self.song)
+        self.stop()
+
+    @discord.ui.button(label="Edit lyrics", style=discord.ButtonStyle.primary, emoji="✍️")
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_LyricsEditModal(self))
+
+    @discord.ui.button(label="Regenerate", style=discord.ButtonStyle.secondary, emoji="🔁")
+    async def regen(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from modules import song_generator as sgn
+        await interaction.response.defer()
+        theme = self.song.get("theme", "")
+        dur = self.song.get("duration_sec", 120)
+        song = await asyncio.to_thread(sgn.generate_song, theme, dur)
+        self.song = song
+        await interaction.message.edit(embed=_song_lyrics_embed(song), view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(content="❌ Music video cancelled.", view=self)
+        self.stop()
+
+
+@_gpu_job("musicvideo")
+async def _render_musicvideo_and_post(channel, song: dict):
+    from modules import musicvideo_pipeline as mvp
+    status = await channel.send(
+        f"🎬 Rendering music video **{song.get('title','')}** — song + "
+        f"{len(song.get('scenes',[]))} scenes. This takes a while..."
+    )
+
+    async def _progress(msg):
+        try:
+            await status.edit(content=f"🎬 {song.get('title','')} — {msg}")
+        except Exception:
+            pass
+
+    loop = asyncio.get_running_loop()
+
+    def _cb(msg):
+        asyncio.run_coroutine_threadsafe(_progress(msg), loop)
+
+    try:
+        outputs = await asyncio.to_thread(mvp.render_musicvideo, song, _cb)
+    except Exception as e:
+        log.exception("Music video render failed")
+        await status.edit(content=f"❌ Music video failed: `{e}`")
+        return
+
+    await status.edit(content=f"✅ Music video ready: **{song.get('title','')}**")
+    videos = get_channel_by_name(channel.guild, "videos") or channel
+    for aspect_key in ("9x16", "16x9", "1x1"):
+        path = outputs.get(aspect_key)
+        if path and Path(path).exists():
+            try:
+                await videos.send(
+                    content=f"🎵 {song.get('title','')} — {aspect_key}",
+                    file=discord.File(str(path), filename=Path(path).name),
+                )
+            except Exception as e:
+                log.warning(f"Could not post {aspect_key}: {e}")
+
+
+@bot.command(name="make_song", aliases=["song", "music_video", "mv"])
+async def cmd_make_song(ctx, *, theme: str = None):
+    """Music-video pipeline: write a song from a theme, approve, then render."""
+    from modules import song_generator as sgn
+    if theme is None:
+        theme = get_random_theme()
+        await ctx.send(f"🎲 Using random theme: **{theme}**")
+
+    theme_blob = {"theme": theme, "lyrics": "", "scenes": []}
+    is_safe, blocked, _ = check_safety(theme_blob)
+    if not is_safe:
+        await ctx.send(f"🚨 Theme blocked. Unsafe words: `{', '.join(blocked)}`.")
+        return
+
+    status = await ctx.send(f"🎼 Writing song for **{theme}**... (20-40 sec)")
+    try:
+        song = await asyncio.to_thread(sgn.generate_song, theme, None)
+    except Exception as e:
+        log.exception("Song generation failed")
+        await status.edit(content=f"❌ Song writing failed: `{e}`")
+        return
+    await status.delete()
+    await ctx.send(embed=_song_lyrics_embed(song), view=_SongApprovalView(song, ctx.author.id))
+
+
+@bot.command(name="set_mode", aliases=["mode", "pipeline_mode"])
+async def cmd_set_mode(ctx, mode: str = None):
+    """Switch the production pipeline: `story` or `music_video`."""
+    if mode is None:
+        await ctx.send(
+            f"🎬 Current mode: `{rs.get_pipeline_mode()}`\n"
+            f"• `story` — kids story → storyboard → video → narration\n"
+            f"• `music_video` — song lyrics → ACE-Step song → Ken Burns visuals"
+        )
+        return
+    mode = mode.strip().lower()
+    if mode in ("music", "mv", "musicvideo"):
+        mode = "music_video"
+    if mode not in rs.VALID_PIPELINE_MODES:
+        await ctx.send("⚠️ Mode must be `story` or `music_video`.")
+        return
+    rs.set_pipeline_mode(mode)
+    await ctx.send(f"✅ Pipeline mode → `{mode}`.")
+
+
+@bot.command(name="set_song_style", aliases=["song_style"])
+async def cmd_set_song_style(ctx, style: str = None):
+    """Set music genre for songs (or `auto` to let the LLM pick)."""
+    if style is None:
+        await ctx.send(
+            f"🎸 Song style: `{rs.get_song_style_override() or 'auto'}`\n"
+            f"Options: {', '.join(rs.VALID_SONG_STYLES)} (or `auto`)."
+        )
+        return
+    style = style.strip().lower()
+    if style == "auto":
+        rs.clear_song_style_override()
+        await ctx.send("🔄 Song style → auto (LLM picks).")
+        return
+    try:
+        rs.set_song_style_override(style)
+        await ctx.send(f"✅ Song style → `{style}`.")
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}")
+
+
+@bot.command(name="set_vocal_type", aliases=["vocal_type", "vocals"])
+async def cmd_set_vocal_type(ctx, vocal: str = None):
+    """Set singer voice type (or `auto`)."""
+    if vocal is None:
+        await ctx.send(
+            f"🎤 Vocal type: `{rs.get_vocal_type_override() or 'auto'}`\n"
+            f"Options: {', '.join(rs.VALID_VOCAL_TYPES)}."
+        )
+        return
+    vocal = vocal.strip().lower()
+    if vocal == "auto":
+        rs.clear_vocal_type_override()
+        await ctx.send("🔄 Vocal type → auto.")
+        return
+    try:
+        rs.set_vocal_type_override(vocal)
+        await ctx.send(f"✅ Vocal type → `{vocal}`.")
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}")
+
+
+@bot.command(name="set_visual_style", aliases=["visual_style"])
+async def cmd_set_visual_style(ctx, style: str = None):
+    """Set music-video visual look (or `auto`)."""
+    if style is None:
+        await ctx.send(
+            f"🎨 Visual style: `{rs.get_visual_style_override() or 'auto'}`\n"
+            f"Options: {', '.join(rs.VALID_VISUAL_STYLES)} (or `auto`)."
+        )
+        return
+    style = style.strip().lower()
+    if style == "auto":
+        rs.clear_visual_style_override()
+        await ctx.send("🔄 Visual style → auto (LLM picks per mood).")
+        return
+    try:
+        rs.set_visual_style_override(style)
+        await ctx.send(f"✅ Visual style → `{style}`.")
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}")
+
 
 if __name__ == "__main__":
     log.info(f"Starting Claw Bot v{BOT_VERSION}...")

@@ -129,6 +129,7 @@ class State:
         self.stage: str = "idle"  # idle | script | prompts | storyboard | video | final
         self.busy: bool = False
         self.log_lines: list[str] = []
+        self.song: Optional[dict] = None       # music-video pipeline: current song
 
     def push(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -419,6 +420,78 @@ def revise_script_action(feedback: str, refresh_cb):
             S.push(f"Revision {S.script_id} ready")
         except Exception as e:
             S.push(f"Revision failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+# ----------------------------------------------------------------------------
+# MUSIC VIDEO PIPELINE (web parity)
+# ----------------------------------------------------------------------------
+
+def generate_song_action(theme: str, refresh_cb):
+    """Write a song from a theme (music-video pipeline). Stores S.song."""
+    if not theme.strip():
+        ui.notify("❌ Theme required.", type="negative")
+        return
+    if not _try_begin("song generation"):
+        return
+    S.stage = "script"
+    S.push(f"Writing song — theme='{theme}'")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import song_generator as sgn
+            song = sgn.generate_song(theme, None)
+            S.song = song
+            S.push(f"Song ready — '{song.get('title')}' "
+                   f"({song.get('song_style')}/{song.get('vocal_type')}, "
+                   f"{len(song.get('scenes', []))} scenes). Review lyrics, then Render.")
+        except Exception as e:
+            S.push(f"Song gen failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def rewrite_song_lyrics_action(instruction: str, refresh_cb):
+    if not S.song:
+        ui.notify("❌ No song loaded.", type="negative")
+        return
+    def worker():
+        try:
+            from modules import song_generator as sgn
+            S.song = sgn.rewrite_lyrics(S.song, instruction or "")
+            S.push("Lyrics rewritten.")
+        except Exception as e:
+            S.push(f"Lyrics rewrite failed: {e}")
+        finally:
+            refresh_cb()
+    _bg(worker)
+
+
+def render_musicvideo_action(refresh_cb):
+    """Render the approved song into music videos (audio + Ken Burns + assemble)."""
+    if not S.song:
+        ui.notify("❌ Generate a song first.", type="negative")
+        return
+    if not _try_begin("music video render"):
+        return
+    S.stage = "final"
+    S.push("Rendering music video...")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import musicvideo_pipeline as mvp
+            outputs = mvp.render_musicvideo(S.song, progress_cb=lambda m: S.push(f"· {m}"))
+            done = [k for k in ("9x16", "16x9", "1x1") if outputs.get(k)]
+            S.push(f"✅ Music video ready: {', '.join(done)} in 04_Outputs/final")
+        except Exception as e:
+            S.push(f"Music video render failed: {e}")
         finally:
             _end()
             refresh_cb()
@@ -1023,6 +1096,18 @@ def main_page():
             else:
                 line.classes(replace="rex-step-line")
 
+    # ============== MODE SWITCH (story vs music) ==============
+    mode_row = ui.row().classes("w-full items-center gap-3") \
+        .style("margin: 0 0 12px 0; padding: 0 8px;")
+    with mode_row:
+        ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
+        mode_toggle = ui.toggle(
+            {"story": "📖 Story", "music_video": "🎵 Music"},
+            value=rs.get_pipeline_mode(),
+        ).props("dense")
+        ui.label("Story = kids story pipeline · Music = song + music video") \
+            .classes("text-xs opacity-60")
+
     # ============== STAGE 1 — SCRIPT ==============
     with ui.card().classes("rex-card w-full") as card_script:
         with ui.row().classes("items-center w-full"):
@@ -1084,6 +1169,48 @@ def main_page():
 
         ui.button("✅ Approve Script → Generate Prompts",
                   on_click=lambda: approve_script_gen_prompts(full_refresh)) \
+            .classes("rex-btn-primary").style("margin-top: 12px;")
+
+    # ============== MUSIC VIDEO (mode: music_video) ==============
+    with ui.card().classes("rex-card w-full") as card_musicvideo:
+        with ui.row().classes("items-center"):
+            ui.label("🎵 Music Video").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-purple") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "SONG"
+        ui.label("Set pipeline mode to music_video in Settings. Song style / vocal / "
+                 "visual are picked there (or auto).").classes("text-xs opacity-70")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
+            song_theme = ui.input(label="Song theme",
+                                  placeholder="e.g. a rainy night drive through the city") \
+                .classes("flex-1").props("outlined dark dense")
+            ui.button("🎲", on_click=lambda: song_theme.set_value(get_random_theme())) \
+                .props("flat color=accent").tooltip("Random theme")
+
+        with ui.row().classes("gap-2"):
+            ui.button("🎼 Generate Song",
+                      on_click=lambda: generate_song_action(song_theme.value, full_refresh)) \
+                .classes("rex-btn-primary")
+
+            def _show_lyrics():
+                if not S.song:
+                    ui.notify("No song yet — Generate Song first.", type="warning")
+                    return
+                ui.notify(S.song.get("lyrics", "(empty)"), multiline=True,
+                          close_button="OK", timeout=0)
+            ui.button("📋 Show Lyrics", on_click=_show_lyrics).props("flat color=accent")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
+            lyric_fb = ui.input(label="Edit lyrics (instruction)",
+                                placeholder="e.g. make the chorus catchier") \
+                .classes("flex-1").props("outlined dark dense")
+            def _rewrite():
+                rewrite_song_lyrics_action(lyric_fb.value, full_refresh)
+                lyric_fb.value = ""
+            ui.button("🪄 Rewrite Lyrics", on_click=_rewrite).props("flat color=accent")
+
+        ui.button("✅ Approve Song → Render Music Video",
+                  on_click=lambda: render_musicvideo_action(full_refresh)) \
             .classes("rex-btn-primary").style("margin-top: 12px;")
 
     # ============== STAGE 2 — PROMPTS ==============
@@ -1221,6 +1348,36 @@ def main_page():
                       lambda e: (rs.set_reference_mode_enabled(bool(ref_sw.value)),
                                  _notify_set("Reference", ref_sw.value)))
 
+        # --- Music-video tuning (mode itself lives on the Pipeline tab) ---
+        with ui.row().classes("w-full gap-3 flex-wrap items-end").style("margin-top: 6px;"):
+            ui.label("🎵 Music").classes("text-sm font-bold opacity-80")
+            song_style_set = ui.select(
+                ["(auto)"] + list(rs.VALID_SONG_STYLES),
+                value=(rs.get_song_style_override() or "(auto)"), label="Song style",
+            ).props("outlined dark dense").style("min-width: 140px;")
+            song_style_set.on("update:model-value", lambda e: (
+                rs.clear_song_style_override() if song_style_set.value == "(auto)"
+                else rs.set_song_style_override(song_style_set.value),
+                _notify_set("Song style", song_style_set.value)))
+
+            vocal_set = ui.select(
+                ["(auto)"] + [v for v in rs.VALID_VOCAL_TYPES if v != "auto"],
+                value=(rs.get_vocal_type_override() or "(auto)"), label="Vocal type",
+            ).props("outlined dark dense").style("min-width: 140px;")
+            vocal_set.on("update:model-value", lambda e: (
+                rs.clear_vocal_type_override() if vocal_set.value == "(auto)"
+                else rs.set_vocal_type_override(vocal_set.value),
+                _notify_set("Vocal", vocal_set.value)))
+
+            visual_set = ui.select(
+                ["(auto)"] + list(rs.VALID_VISUAL_STYLES),
+                value=(rs.get_visual_style_override() or "(auto)"), label="Visual style",
+            ).props("outlined dark dense").style("min-width: 140px;")
+            visual_set.on("update:model-value", lambda e: (
+                rs.clear_visual_style_override() if visual_set.value == "(auto)"
+                else rs.set_visual_style_override(visual_set.value),
+                _notify_set("Visual", visual_set.value)))
+
             def _show_current():
                 ui.notify(json.dumps(rs.get_all_overrides(), indent=2) or "(none)",
                           multiline=True, close_button="OK", timeout=0)
@@ -1302,8 +1459,10 @@ def main_page():
     # (Cards were built at page level above; move them now so the long single
     #  scroll becomes a left-nav tabbed layout. Child widget handles created
     #  inside each card stay valid after the parent moves.)
+    mode_row.move(pipeline_panel)
     stepper_row.move(pipeline_panel)
     card_script.move(pipeline_panel)
+    card_musicvideo.move(pipeline_panel)
     card_prompts.move(pipeline_panel)
     card_storyboard.move(pipeline_panel)
     card_video.move(pipeline_panel)
@@ -1312,6 +1471,24 @@ def main_page():
     card_models.move(models_panel)
     card_queue.move(queue_panel)
     card_tools.move(tools_panel)
+
+    # --- Mode-aware visibility: show ONLY the active mode's cards ---
+    _story_cards = [stepper_row, card_script, card_prompts, card_storyboard,
+                    card_video, card_final]
+
+    def _apply_mode_visibility():
+        story = rs.get_pipeline_mode() == "story"
+        for c in _story_cards:
+            c.set_visibility(story)
+        card_musicvideo.set_visibility(not story)
+
+    def _set_mode(m: str):
+        rs.set_pipeline_mode(m)
+        _apply_mode_visibility()
+        ui.notify(f"Mode → {'Story' if m == 'story' else 'Music video'}", type="positive")
+
+    mode_toggle.on("update:model-value", lambda e: _set_mode(mode_toggle.value))
+    _apply_mode_visibility()
 
     # =================== REFRESHERS ===================
     # Signature cache — skip rebuilding media/prompt containers when their

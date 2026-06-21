@@ -64,6 +64,9 @@ def validate_configs() -> list[str]:
     if models is not None:
         for section in ("llm_backend", "image_backend", "video_backend"):
             _check_backend_section(models, section, errors)
+        # audio_backend is optional (music-video pipeline); validate only if present.
+        if models.get("audio_backend"):
+            _check_backend_section(models, "audio_backend", errors)
 
     styles = _load_json(STYLES_PATH, errors)
     if styles is not None:
