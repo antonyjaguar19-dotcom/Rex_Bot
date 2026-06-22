@@ -28,6 +28,7 @@ def main(job_path: str):
     speaker = job.get("speaker", "eric")
     language = job.get("language", "english")
     gap_sec = float(job.get("gap_sec", 0.4))
+    instruct = job.get("instruct") or None  # style/emotion steering for Custom Voice
 
     import numpy as np, soundfile as sf, torch
 
@@ -52,7 +53,8 @@ def main(job_path: str):
     sr = None
     pieces, spans, cursor = [], [], 0
     for i, text in enumerate(texts):
-        wavs, this_sr = tts.generate_custom_voice(text, speaker=speaker, language=language)
+        wavs, this_sr = tts.generate_custom_voice(
+            text, speaker=speaker, language=language, instruct=instruct)
         wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
         sr = sr or this_sr
         t0 = cursor / sr

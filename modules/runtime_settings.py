@@ -410,6 +410,40 @@ def set_horror_voice_speed(speed: float) -> None:
     log.info(f"Horror voice speed: {speed}")
 
 
+_HORROR_QWEN_INSTRUCT = (
+    "Read this aloud as a serious adult male narrator telling a horror story: "
+    "slow, deep, calm and grave, with an unhurried, measured, steady delivery "
+    "like a documentary voice recounting something truly disturbing. Low pitch, "
+    "no theatrics, no cheerfulness, no exaggeration."
+)
+
+
+def get_horror_qwen_instruct() -> str:
+    """Tone/emotion instruction for Qwen3-TTS horror narration."""
+    return _load().get("horror_qwen_instruct") or _HORROR_QWEN_INSTRUCT
+
+
+def set_horror_qwen_instruct(text: str) -> None:
+    data = _load()
+    data["horror_qwen_instruct"] = text
+    _save(data)
+    log.info(f"Horror qwen instruct set: {text[:60]}")
+
+
+def get_horror_qwen_pitch() -> float:
+    """Post-process pitch/tempo factor for the horror narrator. <1.0 makes the
+    voice DEEPER and SLOWER (ffmpeg asetrate). 1.0 = off. Default 0.90."""
+    val = _load().get("horror_qwen_pitch")
+    return float(val) if val is not None else 0.90
+
+
+def set_horror_qwen_pitch(factor: float) -> None:
+    data = _load()
+    data["horror_qwen_pitch"] = float(factor)
+    _save(data)
+    log.info(f"Horror qwen pitch factor: {factor}")
+
+
 def get_horror_qwen_speaker() -> str:
     """Qwen3-TTS preset speaker for the horror narrator (eric/ryan/dylan/...)."""
     return _load().get("horror_qwen_speaker") or "eric"

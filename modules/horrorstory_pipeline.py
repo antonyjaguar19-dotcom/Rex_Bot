@@ -163,7 +163,10 @@ def _narrate_continuous(narrations: list, out_path: Path, voice_design: str = ""
         try:
             from modules import tts_qwen
             spk = rs.get_horror_qwen_speaker()
-            wav, _ = tts_qwen.synthesize_segments(narrations, output_path=out_path, speaker=spk)
+            wav, _ = tts_qwen.synthesize_segments(
+                narrations, output_path=out_path, speaker=spk,
+                instruct=rs.get_horror_qwen_instruct(),
+                pitch=rs.get_horror_qwen_pitch())
             return Path(wav), f"qwen3-tts:{spk}"
         except Exception as e:
             log.warning(f"Qwen3-TTS failed ({e}); falling back to Chatterbox/Kokoro.")
