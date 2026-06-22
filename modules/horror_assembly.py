@@ -1,0 +1,154 @@
+"""
+Claw Bot — Horror Story Assembly (16x9 only)
+
+Tiles photoreal stills over the narration with Ken Burns motion, mixes a low
+ambient drone under the deep-voice narration, and burns the Rexjaw watermark.
+Single aspect: 16x9.
+
+Reuses the Ken Burns / watermark helpers from musicvideo_assembly. Narration is
+the source of truth for length (no -shortest); the drone is synthesized in pure
+ffmpeg (no model) and mixed quietly under the voice.
+"""
+
+import logging
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable, Optional
+
+_HERE = Path(__file__).parent.parent.resolve()
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+from modules.assembly import FFMPEG_EXE, FINAL_DIR, _probe_duration
+from modules.musicvideo_assembly import (
+    ASPECTS, TEMP_DIR, _ken_burns_segment, _concat_segments, _write_overlay_ass,
+)
+
+log = logging.getLogger("claw_bot.horror_assembly")
+
+ASPECT_KEY = "16x9"
+DRONE_VOLUME = 0.18   # ambient bed level under narration (narration stays front)
+
+
+def _build_drone(duration: float, out_path: Path) -> Path:
+    """Synthesize an eerie ambient drone of `duration` seconds (pure ffmpeg).
+    Two detuned low sines + slow tremolo + long echo + lowpass = ominous bed."""
+    d = max(1.0, duration)
+    cmd = [
+        str(FFMPEG_EXE), "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"sine=frequency=55:duration={d:.2f}",
+        "-f", "lavfi", "-i", f"sine=frequency=58.5:duration={d:.2f}",
+        "-filter_complex",
+        "[0][1]amix=inputs=2,"
+        "tremolo=f=0.18:d=0.7,"
+        "aecho=0.8:0.7:1100:0.4,"
+        "lowpass=f=320,"
+        f"volume={DRONE_VOLUME}[a]",
+        "-map", "[a]", "-c:a", "pcm_s16le",
+        str(out_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"Drone synth failed:\n{result.stderr.strip()}")
+    return out_path
+
+
+def _mux_horror(video_path: Path, narration_path: Path, drone_path: Optional[Path],
+                total_dur: float, subs_path: Path, out_path: Path) -> Path:
+    """Mux narration (+ optional drone) over the visuals, burn watermark .ass.
+    cwd=TEMP_DIR so the subtitles filter can use a relative .ass name."""
+    inputs = [
+        "-i", str(Path(video_path).resolve()),
+        "-i", str(Path(narration_path).resolve()),
+    ]
+    if drone_path is not None:
+        inputs += ["-i", str(Path(drone_path).resolve())]
+        # narration = input 1, drone = input 2; mix, end with narration.
+        audio_fc = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[a]"
+    else:
+        audio_fc = "[1:a]anull[a]"
+
+    fc = (
+        f"[0:v]tpad=stop_mode=clone:stop_duration=3,format=yuv420p,"
+        f"subtitles={subs_path.name}[v];{audio_fc}"
+    )
+    cmd = [
+        str(FFMPEG_EXE), "-y", "-loglevel", "error",
+        *inputs,
+        "-filter_complex", fc,
+        "-map", "[v]", "-map", "[a]",
+        "-t", f"{total_dur:.3f}",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        str(Path(out_path).resolve()),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                            cwd=str(TEMP_DIR))
+    if result.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"Horror mux failed:\n{result.stderr.strip()}")
+    return out_path
+
+
+def assemble_horror(
+    story: dict,
+    narration_audio: Path,
+    scene_durations: list[float],
+    scene_images: list[Path],
+    ambient: bool = True,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """Build the 16x9 horror video.
+
+    scene_durations / scene_images are per-beat and same length as story['beats'].
+    """
+    if not FFMPEG_EXE.exists():
+        raise FileNotFoundError(f"ffmpeg not found at {FFMPEG_EXE}")
+    n = len(scene_images)
+    if not (n == len(scene_durations) == len(story.get("beats", []))):
+        raise ValueError(
+            f"length mismatch: images={n} durations={len(scene_durations)} "
+            f"beats={len(story.get('beats', []))}"
+        )
+
+    horror_id = story.get("horror_id") or story.get("_id")
+    total_dur = _probe_duration(narration_audio)
+    w, h = ASPECTS[ASPECT_KEY]
+    log.info(f"Assembling horror {horror_id}: {n} beats, narration={total_dur:.1f}s")
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _p(m):
+        if progress_cb:
+            progress_cb(m)
+
+    segments = []
+    for i, img in enumerate(scene_images):
+        if i % 10 == 0:
+            _p(f"ken burns {i+1}/{n}...")
+        seg = TEMP_DIR / f"hseg_{horror_id}_{i:04d}.mp4"
+        _ken_burns_segment(img, max(0.5, float(scene_durations[i])), w, h, seg,
+                           zoom_in=(i % 2 == 0))
+        segments.append(seg)
+
+    _p("concatenating...")
+    concat_path = TEMP_DIR / f"hconcat_{horror_id}.mp4"
+    _concat_segments(segments, concat_path, f"horror_{horror_id}")
+
+    drone_path = None
+    if ambient:
+        _p("building ambient drone...")
+        drone_path = TEMP_DIR / f"hdrone_{horror_id}.wav"
+        _build_drone(total_dur, drone_path)
+
+    subs_path = TEMP_DIR / f"overlay_horror_{horror_id}.ass"
+    _write_overlay_ass(total_dur, w, h, subs_path)
+
+    _p("muxing...")
+    out_path = FINAL_DIR / f"horror_{horror_id}_{ASPECT_KEY}.mp4"
+    _mux_horror(concat_path, narration_audio, drone_path, total_dur, subs_path, out_path)
+
+    log.info(f"✅ horror ready: {out_path.name}")
+    return {"horror_id": horror_id, "beat_count": n, "duration": total_dur,
+            ASPECT_KEY: out_path}

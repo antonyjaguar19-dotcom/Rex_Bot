@@ -232,21 +232,23 @@ def _current_mode() -> str:
 
 def _home_embed() -> discord.Embed:
     mode = _current_mode()
-    mode_label = "📖 Story" if mode == "story" else "🎵 Music Video"
+    mode_label = {"story": "📖 Story", "music_video": "🎵 Music Video",
+                  "horror_story": "🎃 Horror Story"}.get(mode, "📖 Story")
     e = discord.Embed(
         title="🤖 Claw Bot — Control Panel",
         description=(
             f"**Active mode: {mode_label}**\n\n"
             "Pick what the bot is making. Each mode has its own workflow:\n"
             "• **📖 Story Mode** — kids story → storyboard → video → narration\n"
-            "• **🎵 Music Mode** — song lyrics → ACE-Step song → music video\n\n"
+            "• **🎵 Music Mode** — song lyrics → ACE-Step song → music video\n"
+            "• **🎃 Horror Mode** — long horror narration (deep voice) → photoreal\n\n"
             "_Choosing a mode switches the whole pipeline._"
         ),
         color=discord.Color.blurple(),
     )
     e.add_field(name="📖 Story Mode", value="Scripts · storyboards · videos", inline=True)
     e.add_field(name="🎵 Music Mode", value="Songs · lyrics · music videos", inline=True)
-    e.add_field(name="⚙️ Shared", value="Settings · Models · Stats · System", inline=True)
+    e.add_field(name="🎃 Horror Mode", value="Long narration · photoreal", inline=True)
     e.set_footer(text="Persistent panel · Claw Bot")
     return e
 
@@ -286,6 +288,12 @@ class HomeView(ui.View):
         rs.set_pipeline_mode("music_video")
         await _switch(i, MusicHubView, "🎵 Music Mode",
                       "Make a music video: lyrics → ACE-Step song → Ken Burns visuals.")
+
+    @ui.button(label="🎃 Horror Mode", style=discord.ButtonStyle.primary, row=0, custom_id="cp:home:horror")
+    async def b3(self, i, b):
+        rs.set_pipeline_mode("horror_story")
+        await _switch(i, HorrorHubView, "🎃 Horror Mode",
+                      "Long horror narration (deep voice) → photoreal Ken Burns (16x9).")
 
     # --- Shared utilities (apply to both modes) ---
     @ui.button(label="⚙️ Settings", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:home:set")
@@ -506,6 +514,28 @@ class MusicHubView(_SubView):
         ))
 
 
+class HorrorHubView(_SubView):
+    """🎃 Horror Mode hub — long-form narrated horror video actions."""
+
+    @ui.button(label="🎬 Make Horror Story", style=discord.ButtonStyle.success, row=0, custom_id="cp:hor:make")
+    async def b1(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Make Horror Story", "Theme (what's the horror about?)",
+            "e.g. an abandoned lighthouse that calls people into the sea",
+            "make_horror", "theme",
+        ))
+
+    @ui.button(label="🌫️ Ambient Bed", style=discord.ButtonStyle.secondary, row=0, custom_id="cp:hor:amb")
+    async def b2(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Ambient Bed", "On/Off", "on / off",
+            "set_horror_ambient", "value",
+        ))
+
+    @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=0, custom_id="cp:hor:final")
+    async def b3(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Rendered horror videos appear in 04_Outputs/final.")
+
+
 class VoiceMusicView(_SubView):
     @ui.button(label="🎙️ Set Voice", style=discord.ButtonStyle.primary, row=0, custom_id="cp:vm:voice")
     async def b1(self, i, b):
@@ -637,6 +667,7 @@ def register_views(bot: discord.Client, cmds: dict):
     bot.add_view(FinalView())
     bot.add_view(SystemView())
     bot.add_view(MusicHubView())
+    bot.add_view(HorrorHubView())
     log.info("Persistent views registered.")
 
 

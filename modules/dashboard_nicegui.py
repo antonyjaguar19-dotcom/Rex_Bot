@@ -130,6 +130,7 @@ class State:
         self.busy: bool = False
         self.log_lines: list[str] = []
         self.song: Optional[dict] = None       # music-video pipeline: current song
+        self.horror: Optional[dict] = None     # horror pipeline: current story
 
     def push(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -492,6 +493,61 @@ def render_musicvideo_action(refresh_cb):
             S.push(f"✅ Music video ready: {', '.join(done)} in 04_Outputs/final")
         except Exception as e:
             S.push(f"Music video render failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+# ----------------------------------------------------------------------------
+# HORROR STORY PIPELINE (web parity)
+# ----------------------------------------------------------------------------
+
+def generate_horror_action(theme: str, refresh_cb):
+    """Write a long-form horror story (chunked) from a theme. Stores S.horror."""
+    if not theme.strip():
+        ui.notify("❌ Theme required.", type="negative")
+        return
+    if not _try_begin("horror writing"):
+        return
+    S.stage = "script"
+    S.push(f"Writing horror story — theme='{theme}'")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import horror_writer as hw
+            story = hw.generate_horror_story(theme, 30, progress_cb=lambda m: S.push(f"· {m}"))
+            S.horror = story
+            words = sum(len(b.get("narration", "").split()) for b in story.get("beats", []))
+            S.push(f"Horror ready — '{story.get('title')}' "
+                   f"({len(story.get('beats', []))} beats, ~{words} words). Review, then Render.")
+        except Exception as e:
+            S.push(f"Horror writing failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def render_horror_action(refresh_cb):
+    """Render the approved horror story → 16x9 video (multi-hour)."""
+    if not S.horror:
+        ui.notify("❌ Generate a horror story first.", type="negative")
+        return
+    if not _try_begin("horror render"):
+        return
+    S.stage = "final"
+    S.push("Rendering horror video (deep voice + photoreal stills)...")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import horrorstory_pipeline as hsp
+            out = hsp.render_horror(S.horror, progress_cb=lambda m: S.push(f"· {m}"))
+            S.push(f"✅ Horror video ready: {out.get('16x9')}")
+        except Exception as e:
+            S.push(f"Horror render failed: {e}")
         finally:
             _end()
             refresh_cb()
@@ -1102,10 +1158,10 @@ def main_page():
     with mode_row:
         ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
         mode_toggle = ui.toggle(
-            {"story": "📖 Story", "music_video": "🎵 Music"},
+            {"story": "📖 Story", "music_video": "🎵 Music", "horror_story": "🎃 Horror"},
             value=rs.get_pipeline_mode(),
         ).props("dense")
-        ui.label("Story = kids story pipeline · Music = song + music video") \
+        ui.label("Story = kids story · Music = song + video · Horror = narrated horror") \
             .classes("text-xs opacity-60")
 
     # ============== STAGE 1 — SCRIPT ==============
@@ -1211,6 +1267,44 @@ def main_page():
 
         ui.button("✅ Approve Song → Render Music Video",
                   on_click=lambda: render_musicvideo_action(full_refresh)) \
+            .classes("rex-btn-primary").style("margin-top: 12px;")
+
+    # ============== HORROR STORY (mode: horror_story) ==============
+    with ui.card().classes("rex-card w-full") as card_horror:
+        with ui.row().classes("items-center"):
+            ui.label("🎃 Horror Story").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-pink") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "DREAD"
+        ui.label("~30-min narrated horror: deep voice + photoreal Ken Burns (16x9). "
+                 "Render is multi-hour.").classes("text-xs opacity-70")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
+            horror_theme = ui.input(label="Horror theme",
+                                    placeholder="e.g. an abandoned lighthouse that calls people into the sea") \
+                .classes("flex-1").props("outlined dark dense")
+            ui.button("🎲", on_click=lambda: horror_theme.set_value(get_random_theme())) \
+                .props("flat color=accent").tooltip("Random theme")
+
+        with ui.row().classes("gap-2"):
+            ui.button("✍️ Write Horror Story",
+                      on_click=lambda: generate_horror_action(horror_theme.value, full_refresh)) \
+                .classes("rex-btn-primary")
+
+            def _show_horror():
+                if not S.horror:
+                    ui.notify("No story yet — Write Horror Story first.", type="warning")
+                    return
+                b = S.horror.get("beats", [])
+                txt = f"{S.horror.get('title','')}\n\n" + "\n\n".join(x.get("narration","") for x in b[:6])
+                ui.notify(txt, multiline=True, close_button="OK", timeout=0)
+            ui.button("📋 Preview", on_click=_show_horror).props("flat color=accent")
+
+            ambient_sw = ui.switch("Ambient drone", value=rs.get_horror_ambient_enabled())
+            ambient_sw.on("update:model-value",
+                          lambda e: rs.set_horror_ambient_enabled(bool(ambient_sw.value)))
+
+        ui.button("✅ Approve Story → Render Horror Video",
+                  on_click=lambda: render_horror_action(full_refresh)) \
             .classes("rex-btn-primary").style("margin-top: 12px;")
 
     # ============== STAGE 2 — PROMPTS ==============
@@ -1463,6 +1557,7 @@ def main_page():
     stepper_row.move(pipeline_panel)
     card_script.move(pipeline_panel)
     card_musicvideo.move(pipeline_panel)
+    card_horror.move(pipeline_panel)
     card_prompts.move(pipeline_panel)
     card_storyboard.move(pipeline_panel)
     card_video.move(pipeline_panel)
@@ -1477,15 +1572,18 @@ def main_page():
                     card_video, card_final]
 
     def _apply_mode_visibility():
-        story = rs.get_pipeline_mode() == "story"
+        m = rs.get_pipeline_mode()
         for c in _story_cards:
-            c.set_visibility(story)
-        card_musicvideo.set_visibility(not story)
+            c.set_visibility(m == "story")
+        card_musicvideo.set_visibility(m == "music_video")
+        card_horror.set_visibility(m == "horror_story")
+
+    _MODE_LABEL = {"story": "Story", "music_video": "Music video", "horror_story": "Horror"}
 
     def _set_mode(m: str):
         rs.set_pipeline_mode(m)
         _apply_mode_visibility()
-        ui.notify(f"Mode → {'Story' if m == 'story' else 'Music video'}", type="positive")
+        ui.notify(f"Mode → {_MODE_LABEL.get(m, m)}", type="positive")
 
     mode_toggle.on("update:model-value", lambda e: _set_mode(mode_toggle.value))
     _apply_mode_visibility()

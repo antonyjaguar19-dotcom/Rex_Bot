@@ -42,6 +42,22 @@ HARD_BLOCKED_TERMS = [
     "suicide", "suicidal",
 ]
 
+# ADULT / HORROR profile — for the horror-story pipeline (teens+adults). Horror
+# REQUIRES the violence/dread/death vocabulary the kids list blocks, so this is a
+# much shorter list: only content that's disallowed regardless of genre —
+# sexual content, explicit self-harm, hard-drug glorification, real-world how-to
+# harm. Fictional horror violence/gore/monsters is allowed.
+ADULT_HARD_BLOCKED_TERMS = [
+    # Sexual content
+    "sex", "sexual", "sexy", "naked", "nude", "erotic", "rape", "molest",
+    # Real self-harm / suicide instruction
+    "kill myself", "cut myself", "want to die", "suicide", "suicidal",
+    # Hard drugs
+    "cocaine", "heroin", "meth", "methamphetamine",
+    # Child-protection: never sexualize minors (defense-in-depth)
+    "child porn", "underage sex",
+]
+
 # Warn-level — allowed in the story but logged for your review.
 # These are normal storytelling vocabulary that occasionally appear in kids' content.
 SOFT_WARNING_TERMS = [
@@ -88,6 +104,15 @@ def _collect_all_text(script: dict) -> str:
         parts.append(shot.get("visual_description", ""))
         parts.append(shot.get("first_frame_prompt", ""))
         parts.append(shot.get("last_frame_prompt", ""))
+    # Other pipelines: song lyrics/scenes (music video), horror beats.
+    parts.append(script.get("lyrics", ""))
+    parts.append(script.get("logline", ""))
+    for coll in ("scenes", "beats", "segments"):
+        for item in script.get(coll, []):
+            if isinstance(item, dict):
+                parts.append(item.get("narration", ""))
+                parts.append(item.get("image_prompt", ""))
+                parts.append(item.get("text", ""))
     return " ".join(parts).lower()
 
 
@@ -95,22 +120,29 @@ def _collect_all_text(script: dict) -> str:
 # MAIN API
 # ==============================================================================
 
-def check_safety(script: dict) -> Tuple[bool, List[str], List[str]]:
+def check_safety(script: dict, profile: str = "kids") -> Tuple[bool, List[str], List[str]]:
     """
     Check a generated script for safety issues.
 
+    profile:
+        "kids"  — default, strict (kids stories / music videos).
+        "adult" — horror-story pipeline. Allows fictional violence/dread/death;
+                  blocks only sexual content, real self-harm, hard drugs, CSAM.
+
     Returns:
         (is_safe, blocked_terms_found, warnings)
-        is_safe: False if any HARD_BLOCKED_TERM is found.
+        is_safe: False if any hard-blocked term for the profile is found.
         blocked_terms_found: list of hard-blocked terms detected.
         warnings: list of soft warnings (safe to proceed, just flag for review).
     """
     all_text = _collect_all_text(script)
 
+    block_list = ADULT_HARD_BLOCKED_TERMS if profile == "adult" else HARD_BLOCKED_TERMS
+
     # Use word-boundary regex to avoid false positives
     # (e.g., "die" matching "died" or "studies" — we want whole-word matches)
     blocked_found = []
-    for term in HARD_BLOCKED_TERMS:
+    for term in block_list:
         # \b = word boundary; re.escape handles special chars like spaces
         pattern = r"\b" + re.escape(term) + r"\b"
         if re.search(pattern, all_text):

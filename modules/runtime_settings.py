@@ -267,7 +267,7 @@ def clear_music_mood_override() -> None:
 #   music_video  — theme → song lyrics (Qwen) → ACE-Step song → Ken Burns stills.
 # Default story so existing behavior is unchanged until the user opts in.
 
-VALID_PIPELINE_MODES = ("story", "music_video")
+VALID_PIPELINE_MODES = ("story", "music_video", "horror_story")
 
 
 def get_pipeline_mode() -> str:
@@ -361,6 +361,21 @@ def clear_visual_style_override() -> None:
     data = _load()
     data.pop("visual_style", None)
     _save(data)
+
+
+# --- Horror story mode: ambient drone bed under narration ---
+
+def get_horror_ambient_enabled() -> bool:
+    """Whether a low ambient drone is mixed under the horror narration. Default True."""
+    val = _load().get("horror_ambient")
+    return True if val is None else bool(val)
+
+
+def set_horror_ambient_enabled(enabled: bool) -> None:
+    data = _load()
+    data["horror_ambient"] = bool(enabled)
+    _save(data)
+    log.info(f"Horror ambient bed: {enabled}")
 
 
 # --- Character reference mode (cast-sheet anchoring) ---

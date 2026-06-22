@@ -1480,6 +1480,8 @@ async def on_ready():
                     "set_song_style":      cmd_set_song_style,
                     "set_vocal_type":      cmd_set_vocal_type,
                     "set_visual_style":    cmd_set_visual_style,
+                    "make_horror":         cmd_make_horror,
+                    "set_horror_ambient":  cmd_set_horror_ambient,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -2533,9 +2535,13 @@ async def cmd_shutdown_bot(ctx):
 
 @bot.command(name="generate_script", aliases=["gs", "script"])
 async def cmd_generate_script(ctx, *, theme: str = None):
-    # Pipeline-mode router: in music-video mode the same entrypoint makes a song.
-    if rs.get_pipeline_mode() == "music_video":
+    # Pipeline-mode router: the same entrypoint branches by active mode.
+    _mode = rs.get_pipeline_mode()
+    if _mode == "music_video":
         await cmd_make_song(ctx, theme=theme)
+        return
+    if _mode == "horror_story":
+        await cmd_make_horror(ctx, theme=theme)
         return
 
     if theme is None:
@@ -4364,14 +4370,17 @@ async def cmd_set_mode(ctx, mode: str = None):
         await ctx.send(
             f"🎬 Current mode: `{rs.get_pipeline_mode()}`\n"
             f"• `story` — kids story → storyboard → video → narration\n"
-            f"• `music_video` — song lyrics → ACE-Step song → Ken Burns visuals"
+            f"• `music_video` — song lyrics → ACE-Step song → Ken Burns visuals\n"
+            f"• `horror_story` — long horror narration (deep voice) → photoreal Ken Burns"
         )
         return
     mode = mode.strip().lower()
     if mode in ("music", "mv", "musicvideo"):
         mode = "music_video"
+    if mode in ("horror", "horror_video", "horrorstory"):
+        mode = "horror_story"
     if mode not in rs.VALID_PIPELINE_MODES:
-        await ctx.send("⚠️ Mode must be `story` or `music_video`.")
+        await ctx.send("⚠️ Mode must be `story`, `music_video`, or `horror_story`.")
         return
     rs.set_pipeline_mode(mode)
     await ctx.send(f"✅ Pipeline mode → `{mode}`.")
@@ -4438,6 +4447,149 @@ async def cmd_set_visual_style(ctx, style: str = None):
         await ctx.send(f"✅ Visual style → `{style}`.")
     except ValueError as e:
         await ctx.send(f"⚠️ {e}")
+
+
+# ==============================================================================
+# HORROR STORY MODE — long-form narrated horror (deep voice + photoreal Ken Burns)
+# ==============================================================================
+
+def _horror_embed(story: dict) -> discord.Embed:
+    beats = story.get("beats", [])
+    words = sum(len(b.get("narration", "").split()) for b in beats)
+    est_min = max(1, round(words / 150))
+    e = discord.Embed(
+        title=f"🎃 {story.get('title','Untitled Horror')}",
+        description=(story.get("logline", "") or "")[:500],
+        color=0x8B0000,
+    )
+    e.add_field(name="Beats / stills", value=str(len(beats)), inline=True)
+    e.add_field(name="Words", value=str(words), inline=True)
+    e.add_field(name="Est. length", value=f"~{est_min} min", inline=True)
+    if beats:
+        e.add_field(name="Opening", value=(beats[0].get("narration", "")[:300]), inline=False)
+    e.set_footer(text=f"horror_id {story.get('horror_id','?')} · Approve to render "
+                      f"(deep voice + ~{len(beats)} photoreal stills — this takes a while)")
+    return e
+
+
+class _HorrorApprovalView(discord.ui.View):
+    """Approval gate for the horror pipeline. Timeout-based (not crash-persistent)
+    — re-run !make_horror if the bot restarts."""
+
+    def __init__(self, story: dict, owner_id: int):
+        super().__init__(timeout=7200)
+        self.story = story
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="Approve & Render", style=discord.ButtonStyle.success, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _render_horror_and_post(interaction.channel, self.story)
+        self.stop()
+
+    @discord.ui.button(label="Regenerate", style=discord.ButtonStyle.secondary, emoji="🔁")
+    async def regen(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from modules import horror_writer as hw
+        await interaction.response.defer()
+        theme = self.story.get("theme", "")
+        mins = self.story.get("target_minutes", 30)
+        story = await asyncio.to_thread(hw.generate_horror_story, theme, mins)
+        self.story = story
+        await interaction.message.edit(embed=_horror_embed(story), view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(content="❌ Horror story cancelled.", view=self)
+        self.stop()
+
+
+@_gpu_job("horror")
+async def _render_horror_and_post(channel, story: dict):
+    from modules import horrorstory_pipeline as hsp
+    status = await channel.send(
+        f"🎬 Rendering horror **{story.get('title','')}** — deep-voice narration + "
+        f"{len(story.get('beats',[]))} photoreal stills. This takes a while..."
+    )
+    loop = asyncio.get_running_loop()
+
+    async def _edit(msg):
+        try:
+            await status.edit(content=f"🎬 {story.get('title','')} — {msg}")
+        except Exception:
+            pass
+
+    def _cb(msg):
+        asyncio.run_coroutine_threadsafe(_edit(msg), loop)
+
+    try:
+        out = await asyncio.to_thread(hsp.render_horror, story, _cb)
+    except Exception as e:
+        log.exception("Horror render failed")
+        await status.edit(content=f"❌ Horror render failed: `{e}`")
+        return
+
+    await status.edit(content=f"✅ Horror video ready: **{story.get('title','')}**")
+    videos = get_channel_by_name(channel.guild, "videos") or channel
+    path = out.get("16x9")
+    if path and Path(path).exists():
+        try:
+            await videos.send(
+                content=f"🎃 {story.get('title','')} — 16x9",
+                file=discord.File(str(path), filename=Path(path).name),
+            )
+        except Exception as e:
+            log.warning(f"Could not post horror video: {e}")
+
+
+@bot.command(name="make_horror", aliases=["horror", "horror_story"])
+async def cmd_make_horror(ctx, *, theme: str = None):
+    """Horror pipeline: write a long horror story from a theme, approve, render."""
+    from modules import horror_writer as hw
+    if theme is None:
+        theme = get_random_theme()
+        await ctx.send(f"🎲 Using random theme: **{theme}**")
+
+    # Adult safety profile — horror needs dread/violence vocabulary.
+    is_safe, blocked, _ = check_safety({"theme": theme}, profile="adult")
+    if not is_safe:
+        await ctx.send(f"🚨 Theme blocked. Disallowed: `{', '.join(blocked)}`.")
+        return
+
+    status = await ctx.send(f"✍️ Writing horror story for **{theme}**... (several minutes, chunked)")
+    loop = asyncio.get_running_loop()
+
+    async def _edit(msg):
+        try:
+            await status.edit(content=f"✍️ {msg}")
+        except Exception:
+            pass
+
+    def _cb(msg):
+        asyncio.run_coroutine_threadsafe(_edit(msg), loop)
+
+    try:
+        story = await asyncio.to_thread(hw.generate_horror_story, theme, 30, _cb)
+    except Exception as e:
+        log.exception("Horror writing failed")
+        await status.edit(content=f"❌ Horror writing failed: `{e}`")
+        return
+    await status.delete()
+    await ctx.send(embed=_horror_embed(story), view=_HorrorApprovalView(story, ctx.author.id))
+
+
+@bot.command(name="set_horror_ambient", aliases=["horror_ambient"])
+async def cmd_set_horror_ambient(ctx, value: str = None):
+    """Toggle the ambient drone bed under horror narration (`on`/`off`)."""
+    if value is None:
+        await ctx.send(f"🌫️ Horror ambient bed: `{'on' if rs.get_horror_ambient_enabled() else 'off'}`")
+        return
+    on = value.strip().lower() in ("on", "true", "yes", "1")
+    rs.set_horror_ambient_enabled(on)
+    await ctx.send(f"✅ Horror ambient bed → `{'on' if on else 'off'}`.")
 
 
 if __name__ == "__main__":
