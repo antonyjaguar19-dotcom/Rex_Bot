@@ -94,20 +94,6 @@ def _concat_segments(segments: list[Path], out_path: Path, tag: str) -> Path:
 WATERMARK_TEXT = "Rexjaw"
 
 
-def _lyric_lines(lyrics: str) -> list[str]:
-    """Lyric lines for captions: drop [Section] tags + blanks, keep the words."""
-    out = []
-    for raw in (lyrics or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            continue  # section tag, not sung text
-        # ASS override blocks use { } — neutralize so they don't get parsed.
-        out.append(line.replace("{", "(").replace("}", ")"))
-    return out
-
-
 def _ass_time(t: float) -> str:
     t = max(0.0, t)
     h = int(t // 3600); m = int((t % 3600) // 60)
@@ -117,18 +103,12 @@ def _ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def _write_overlay_ass(lyrics: str, song_dur: float, w: int, h: int, path: Path) -> Path:
-    """Write an .ass file with BOTH overlays:
-      - lyric captions: spread evenly across the song, bottom-center, outlined.
-      - 'Rexjaw' watermark: small, middle-right, semi-transparent, whole song.
-    Watermark always present; captions only when there are lyric lines.
-    libass resolves the 'Arial' family by name — no font path needed.
-    """
-    cap_size = max(18, round(h * 0.045))
-    cap_margin = max(24, round(h * 0.06))
+def _write_overlay_ass(song_dur: float, w: int, h: int, path: Path) -> Path:
+    """Write an .ass file with the 'Rexjaw' watermark only — small, middle-right,
+    semi-transparent, spanning the whole song. libass resolves the 'Arial' family
+    by name (no font path needed)."""
     wm_size = max(14, round(h * 0.024))
     wm_margin = max(12, round(w * 0.012))
-    end_all = _ass_time(song_dur)
 
     header = (
         "[Script Info]\n"
@@ -138,24 +118,14 @@ def _write_overlay_ass(lyrics: str, song_dur: float, w: int, h: int, path: Path)
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
         "Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        # Captions: white, black outline, bottom-center (Alignment 2).
-        f"Style: Lyr,Arial,{cap_size},&H00FFFFFF,&H00000000,&H64000000,"
-        f"-1,0,1,3,1,2,40,40,{cap_margin}\n"
         # Watermark: semi-transparent white (&H80 alpha), middle-right (Alignment 6).
         f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
         f"0,0,1,1,1,6,40,{wm_margin},40\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        f"Dialogue: 0,{_ass_time(0)},{_ass_time(song_dur)},Mark,,0,0,0,,{WATERMARK_TEXT}\n"
     )
-    events = [f"Dialogue: 0,{_ass_time(0)},{end_all},Mark,,0,0,0,,{WATERMARK_TEXT}"]
-    lines = _lyric_lines(lyrics)
-    if lines:
-        per = song_dur / len(lines)
-        for i, line in enumerate(lines):
-            start = _ass_time(i * per)
-            end = _ass_time(min((i + 1) * per, song_dur))
-            events.append(f"Dialogue: 0,{start},{end},Lyr,,0,0,0,,{line}")
-    path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    path.write_text(header, encoding="utf-8")
     return path
 
 
@@ -249,9 +219,9 @@ def assemble_musicvideo(
         concat_path = TEMP_DIR / f"concat_{song_id}_{aspect_key}.mp4"
         _concat_segments(segments, concat_path, f"{song_id}_{aspect_key}")
 
-        # Per-aspect overlay .ass (captions + watermark; PlayRes matches dims).
+        # Per-aspect overlay .ass (watermark only; PlayRes matches dims).
         subs_path = TEMP_DIR / f"overlay_{song_id}_{aspect_key}.ass"
-        _write_overlay_ass(song.get("lyrics", ""), song_dur, w, h, subs_path)
+        _write_overlay_ass(song_dur, w, h, subs_path)
 
         out_path = FINAL_DIR / f"song_{song_id}_{aspect_key}.mp4"
         _mux_song(concat_path, song_audio, song_dur, out_path, subs_path)
