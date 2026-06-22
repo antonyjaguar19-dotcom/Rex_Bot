@@ -31,6 +31,9 @@ log = logging.getLogger("claw_bot.lora_autotrain")
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 HERO_DIR = PROJECT_ROOT / "07_Training" / "heroes"
 N_HEROES = 3
+# Flux LoRA train steps. ~800 = solid identity, faster than the 1500 default
+# (flux's slow low-VRAM load dominates either way). Bump for max fidelity.
+LORA_STEPS = 800
 PHOTO_SUFFIX = (get_style_description("photoreal") or {}).get("prompt_suffix", "photorealistic")
 
 
@@ -91,7 +94,7 @@ def ensure_character_loras(
             _p(f"🧬 {name}: {n} dataset frames — training (this is slow)...")
             trainer.train_character(
                 name, ch.get("locked_token") or ch.get("appearance", ""),
-                source_script=horror_id,
+                steps=LORA_STEPS, source_script=horror_id,
                 progress_callback=lambda lbl, cur, tot: _p(f"🧬 {lbl} {cur}/{tot}"),
             )
             result[name] = "ready"
