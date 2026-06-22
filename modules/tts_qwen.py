@@ -1,0 +1,105 @@
+"""
+Claw Bot — Qwen3-TTS bridge (production horror narrator)
+
+Qwen3-TTS Custom Voice = a preset, deterministic voice → identical narrator
+every beat (no drift), high quality. It needs transformers 4.56.1, which clashes
+with the main venv, so it lives in an ISOLATED venv (03_Models/venv_qwen_tts)
+and we drive it over a subprocess — exactly like the Chatterbox bridge. ComfyUI
+is never touched.
+
+Returns (master_wav, spans) like the other engines so the horror pipeline can
+use it interchangeably.
+"""
+
+import json
+import logging
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+_AGENT_DIR = Path(__file__).parent.parent.resolve()
+if str(_AGENT_DIR) not in sys.path:
+    sys.path.insert(0, str(_AGENT_DIR))
+
+log = logging.getLogger("claw_bot.tts_qwen")
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+VENV_PY = PROJECT_ROOT / "03_Models" / "venv_qwen_tts" / "Scripts" / "python.exe"
+CLI = _AGENT_DIR / "qwen_tts_cli.py"
+AUDIO_DIR = PROJECT_ROOT / "04_Outputs" / "audio"
+GROUP_GAP_SEC = 0.4
+TIMEOUT_SEC = 2400  # full story (many beats) + cold model load
+
+
+def is_available() -> bool:
+    return VENV_PY.exists() and CLI.exists()
+
+
+def health_check() -> tuple[bool, str]:
+    if not VENV_PY.exists():
+        return False, f"qwen venv missing: {VENV_PY}"
+    if not CLI.exists():
+        return False, f"qwen_tts_cli.py missing: {CLI}"
+    return True, "qwen3-tts bridge ready"
+
+
+def synthesize_segments(
+    texts: list,
+    output_path: Optional[Path] = None,
+    speaker: str = "eric",
+    language: str = "english",
+    gap_sec: float = GROUP_GAP_SEC,
+) -> tuple[Path, list[tuple[str, float, float]]]:
+    """Voice each text with Qwen3-TTS (preset Custom Voice) in the isolated venv,
+    stitched with silence gaps. Returns (master_wav, spans)."""
+    ok, msg = health_check()
+    if not ok:
+        raise RuntimeError(msg)
+    texts = [t for t in texts if (t or "").strip()]
+    if not texts:
+        raise ValueError("synthesize_segments() got no non-empty texts.")
+
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    if output_path is None:
+        from datetime import datetime
+        output_path = AUDIO_DIR / f"qwen_{datetime.now():%Y%m%d_%H%M%S}.wav"
+    output_path = Path(output_path)
+
+    with tempfile.TemporaryDirectory() as td:
+        job = Path(td) / "job.json"
+        spans_out = Path(td) / "spans.json"
+        job.write_text(json.dumps({
+            "texts": texts, "speaker": speaker, "language": language,
+            "gap_sec": gap_sec, "out_wav": str(output_path),
+            "spans_out": str(spans_out),
+        }), encoding="utf-8")
+
+        log.info(f"Qwen3-TTS voicing {len(texts)} segments (speaker={speaker})...")
+        r = subprocess.run(
+            [str(VENV_PY), str(CLI), str(job)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_SEC,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"qwen_tts_cli failed (rc={r.returncode}): "
+                               f"{(r.stderr or r.stdout or '')[-600:]}")
+        if not spans_out.exists():
+            raise RuntimeError(f"qwen_tts_cli produced no spans: {r.stdout[-300:]}")
+        data = json.loads(spans_out.read_text(encoding="utf-8"))
+
+    spans = [(t, float(a), float(b)) for t, a, b in data["spans"]]
+    log.info(f"Qwen3-TTS wrote {output_path.name} — {len(spans)} segments.")
+    return output_path, spans
+
+
+def synthesize_full(text: str, output_path: Path, speaker: str = "eric") -> Path:
+    """Whole-text convenience (single segment). Returns wav path."""
+    wav, _ = synthesize_segments([text], output_path=output_path, speaker=speaker)
+    return wav
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print(health_check())

@@ -157,16 +157,16 @@ def _narrate_continuous(narrations: list, out_path: Path, voice_design: str = ""
     full_text = " ".join(t.strip() for t in narrations if t.strip())
 
     if engine == "qwen":
-        # Production narrator: Qwen3-TTS via a dedicated ComfyUI adapter
-        # (comfyui_qwen_tts) rendering the full text with a consistent Custom
-        # Voice. Wired once the TTS-Audio-Suite node + its API workflow are
-        # installed/exported; until then fall through to Kokoro.
+        # Production narrator: Qwen3-TTS Custom Voice (preset = deterministic =
+        # consistent), driven in an isolated venv via the tts_qwen bridge. Each
+        # beat voiced with the same preset speaker -> no drift.
         try:
-            from modules.tts_qwen import synthesize_full  # built after install
-            wav = synthesize_full(full_text, out_path)
-            return Path(wav), "qwen3-tts"
+            from modules import tts_qwen
+            spk = rs.get_horror_qwen_speaker()
+            wav, _ = tts_qwen.synthesize_segments(narrations, output_path=out_path, speaker=spk)
+            return Path(wav), f"qwen3-tts:{spk}"
         except Exception as e:
-            log.warning(f"Qwen3-TTS not wired yet ({e}); falling back to Kokoro.")
+            log.warning(f"Qwen3-TTS failed ({e}); falling back to Chatterbox/Kokoro.")
 
     if engine == "chatterbox":
         # Expressive + consistent: every beat cloned from ONE fixed reference
@@ -200,12 +200,31 @@ def _narrate_continuous(narrations: list, out_path: Path, voice_design: str = ""
     return Path(wav), f"kokoro:{voice}"
 
 
+def narrate_story(story: dict, progress_cb: Optional[Callable[[str], None]] = None) -> Path:
+    """Render JUST the full narration audio (no visuals). Lets callers post the
+    story audio before the multi-hour image render. Returns the wav path."""
+    horror_id = story.get("horror_id") or story.get("_id")
+    beats = story.get("beats", [])
+    if not beats:
+        raise ValueError("Horror story has no beats.")
+    gpu_utils.ensure_vram_free()
+    NARRATION_DIR.mkdir(parents=True, exist_ok=True)
+    out = NARRATION_DIR / f"horror_{horror_id}.wav"
+    out, mode = _narrate_continuous(
+        [b.get("narration", "") for b in beats], out, story.get("voice_design", ""))
+    if progress_cb:
+        progress_cb(f"narration ready ({mode})")
+    return out
+
+
 def render_horror(
     story: dict,
     progress_cb: Optional[Callable[[str], None]] = None,
+    narration_path: Optional[Path] = None,
 ) -> dict:
     """Full render: continuous narration -> silence-split -> photoreal stills
-    -> 16x9 assembly (Ken Burns + ambient + watermark)."""
+    -> 16x9 assembly (Ken Burns + ambient + watermark). Pass `narration_path` to
+    reuse already-rendered narration (skips re-voicing)."""
     def _p(msg: str):
         log.info(msg)
         if progress_cb:
@@ -224,12 +243,16 @@ def render_horror(
     #         voice), then cut the visuals on the audio's real silences. ----
     gpu_utils.ensure_vram_free()
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
-    narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
-    _p(f"🎙️ narrating full story ({len(beats)} beats, continuous)...")
-    narration_path, mode = _narrate_continuous(
-        [b.get("narration", "") for b in beats], narration_path, voice_design)
+    if narration_path and Path(narration_path).exists():
+        narration_path = Path(narration_path)
+        _p("🎙️ using pre-rendered narration")
+    else:
+        narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
+        _p(f"🎙️ narrating full story ({len(beats)} beats, continuous)...")
+        narration_path, mode = _narrate_continuous(
+            [b.get("narration", "") for b in beats], narration_path, voice_design)
     total_dur = hasm._probe_duration(narration_path)
-    _p(f"🎙️ narration ready: {total_dur:.1f}s ({mode})")
+    _p(f"🎙️ narration ready: {total_dur:.1f}s")
 
     # Per-beat windows snapped to detected silences (images = silent splits).
     from modules import audio_segmenter

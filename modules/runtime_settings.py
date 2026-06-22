@@ -410,6 +410,18 @@ def set_horror_voice_speed(speed: float) -> None:
     log.info(f"Horror voice speed: {speed}")
 
 
+def get_horror_qwen_speaker() -> str:
+    """Qwen3-TTS preset speaker for the horror narrator (eric/ryan/dylan/...)."""
+    return _load().get("horror_qwen_speaker") or "eric"
+
+
+def set_horror_qwen_speaker(spk: str) -> None:
+    data = _load()
+    data["horror_qwen_speaker"] = spk.strip()
+    _save(data)
+    log.info(f"Horror qwen speaker: {spk}")
+
+
 def get_horror_chatterbox_exaggeration() -> float:
     """Chatterbox emotion intensity for the horror narrator (0.5 calm .. 0.8 intense)."""
     val = _load().get("horror_cb_exaggeration")
