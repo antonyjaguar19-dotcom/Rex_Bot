@@ -39,13 +39,13 @@ log = logging.getLogger("claw_bot.horror_writer")
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 OUTPUTS_DIR = PROJECT_ROOT / "04_Outputs" / "horror"
 
-# Pacing: narration ~150 wpm. 30 min ≈ 4500 words.
+# Pacing: narration ~150 wpm. Default target is SHORT + punchy (5 min ≈ 750 words).
 WORDS_PER_MINUTE = 150
-# Per-image beat sizing: ~45-60 words ≈ ~20-26s of slow narration per still.
-# Fuller beats = clearer TTS (no choppy fragments) + fewer stills/LoRA renders.
+DEFAULT_MINUTES = 5        # max ~5-min horror videos (tight, scary, animated)
+# Per-shot beat sizing: ~45-60 words ≈ ~20-26s of narration per shot.
 WORDS_PER_BEAT = 52
 MERGE_MIN_WORDS = 30       # merge consecutive beats below this into one
-MAX_BEATS = 130            # hard cap so render time can't run away
+MAX_BEATS = 16             # ~5-min cap (each beat -> a Wan clip, so keep it tight)
 MIN_BEAT_WORDS = 8         # drop empty/too-short fragments
 
 # One designed deep narrator voice, reused for the whole story (VoxCPM2).
@@ -60,7 +60,7 @@ DEFAULT_VOICE_DESIGN = (
 def _premise_system() -> str:
     return """You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with { end with }.
 
-You are a master horror writer creating the premise + cast for a ~30-minute narrated horror story for a MATURE audience (teens and adults): dread, suspense, a real arc.
+You are a master horror writer (think creepypasta / r-nosleep / Junji Ito) creating the premise + cast for a SHORT (~5 minute) narrated horror story for ADULTS. It must be GENUINELY FRIGHTENING — not mild, not whimsical. Build real dread: an ordinary moment that turns deeply wrong, a creeping sense of threat, a horrifying revelation, a bleak or gut-punch ending. Visceral, disturbing, original fiction.
 
 Output:
 {
@@ -82,30 +82,31 @@ Output:
 }
 
 Rules:
-- 1 to 3 recurring named characters (small cast = better consistency).
-- 2 to 5 distinct locations.
-- Grounded psychological/supernatural horror. Allowed: fear, death, monsters, ghosts, blood, fictional violence.
+- 1 to 2 recurring named characters (tiny cast = scarier + consistent visuals).
+- 2 to 4 distinct locations.
+- Genuinely scary psychological/supernatural horror: fear, dread, death, monsters, ghosts, body-horror, blood, fictional violence are ALL allowed and encouraged for real scares.
+- Keep it ORIGINAL fiction — invent the people and events; never depict real, named, living people.
 - FORBIDDEN: sexual content, sexualizing minors, real self-harm/suicide how-to, glorifying real drugs.
 - Output ONLY the JSON object."""
 
 
-def _chapters_system() -> str:
-    return """You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with { end with }.
+def _chapters_system(n_chapters: int) -> str:
+    return f"""You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with {{ end with }}.
 
-Given a horror premise + cast, plot the CHAPTERS only:
-{
+Given a horror premise + cast, plot the CHAPTERS of a SHORT, intense ~5-minute horror story:
+{{
   "chapters": [
-    {"title": "<short>", "summary": "<2-3 sentences of what happens in this chapter; advances the dread; name which cast members appear>"}
+    {{"title": "<short>", "summary": "<1-2 sentences of what happens; ratchets the dread; name which cast members appear>"}}
   ]
-}
+}}
 
 Rules:
-- 9 to 11 chapters, ordered: ordinary-but-uneasy opening → first wrong sign → investigation/descent → escalation → revelation/turn → horrifying climax → bleak or twist ending.
+- Exactly {n_chapters} chapters, ordered: ordinary-but-wrong opening → first scare → escalation → horrifying revelation → bleak/gut-punch ending. Tight and relentless — every chapter raises the fear.
 - Use the given character + location names.
 - Output ONLY the JSON object."""
 
 
-def _chapter_system(cast: str, locs: str) -> str:
+def _chapter_system(cast: str, locs: str, lo: int, hi: int) -> str:
     return f"""You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with {{ end with }}.
 
 You are writing ONE chapter of a narrated horror story, broken into IMAGE BEATS for a video. A narrator reads the `narration`; each beat shows ONE photorealistic still.
@@ -126,18 +127,18 @@ Output:
 }}
 
 Rules:
-- 7 to 9 beats for this chapter (fuller beats, not tiny ones) — this is a LONG ~30-minute story, so write generously.
+- {lo} to {hi} beats for this chapter — this is a SHORT, punchy ~5-minute story, so keep it tight.
 - Each beat's narration continues smoothly from the previous; together they fully narrate this chapter.
+- Make it genuinely scary: build dread, then hit hard. Real fear, threat, disturbing imagery.
 - Refer to characters by their EXACT cast name in narration AND image_prompt (identity is locked downstream by name).
 - `location` MUST be one of the given location names.
-- Dread over gore. Fictional horror (fear, death, monsters, blood) is allowed; NO sexual content, NO real self-harm instructions, NO sexualizing minors.
-- image_prompt must be appropriate (suggestive horror, not extreme gore).
+- Fictional horror (fear, death, monsters, body-horror, blood) is allowed; NO sexual content, NO real self-harm instructions, NO sexualizing minors.
 - Output ONLY the JSON object."""
 
 
-def _gen_outline(theme: str) -> dict:
-    # Two calls — one prompt can't reliably emit bible AND 11 chapters (the model
-    # finishes after the bible). Premise+cast first, then chapters.
+def _gen_outline(theme: str, n_chapters: int = 5) -> dict:
+    # Two calls — one prompt can't reliably emit bible AND chapters in one go.
+    # Premise+cast first, then chapters.
     data = _extract_json(_call_llm(
         f"Theme: {theme}\n\nWrite the premise JSON.", _premise_system(), role="creative"))
     cast_names = ", ".join(c.get("name", "") for c in data.get("characters", []) if isinstance(c, dict))
@@ -151,9 +152,9 @@ def _gen_outline(theme: str) -> dict:
         f"Locations: {loc_names or '(none)'}\n\n"
         f"Now write the chapters JSON."
     )
-    ch_data = _extract_json(_call_llm(ch_user, _chapters_system(), role="creative"))
+    ch_data = _extract_json(_call_llm(ch_user, _chapters_system(n_chapters), role="creative"))
     chapters = [c for c in ch_data.get("chapters", []) if isinstance(c, dict) and c.get("summary")]
-    if len(chapters) < 4:
+    if len(chapters) < 3:
         raise ValueError(f"Outline too short ({len(chapters)} chapters).")
     data["chapters"] = chapters
     data.setdefault("title", "Untitled Horror")
@@ -177,7 +178,8 @@ def _gen_outline(theme: str) -> dict:
 
 
 def _gen_chapter_beats(theme: str, logline: str, setting: str, prev_summary: str,
-                       chapter: dict, cast: list, locations: list) -> list[dict]:
+                       chapter: dict, cast: list, locations: list,
+                       beats_lo: int = 2, beats_hi: int = 3) -> list[dict]:
     cast_str = ", ".join(c["name"] for c in cast) or "(none — atmospheric)"
     loc_str = ", ".join(lc["name"] for lc in locations) or "(unnamed)"
     user = (
@@ -188,7 +190,7 @@ def _gen_chapter_beats(theme: str, logline: str, setting: str, prev_summary: str
         f"THIS chapter — {chapter.get('title','')}: {chapter.get('summary','')}\n\n"
         f"Write this chapter's beats JSON now."
     )
-    raw = _call_llm(user, _chapter_system(cast_str, loc_str), role="creative")
+    raw = _call_llm(user, _chapter_system(cast_str, loc_str, beats_lo, beats_hi), role="creative")
     data = _extract_json(raw)
     valid_locs = {lc["name"] for lc in locations}
     beats = []
@@ -225,10 +227,10 @@ def _merge_short_beats(beats: list[dict], min_words: int = MERGE_MIN_WORDS) -> l
 
 def generate_horror_story(
     theme: str,
-    target_minutes: int = 30,
+    target_minutes: int = DEFAULT_MINUTES,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> dict:
-    """Write a long-form horror story (chunked) and save it. Returns the dict."""
+    """Write a short, scary horror story (chunked) and save it. Returns the dict."""
     def _p(msg: str):
         log.info(msg)
         if progress_cb:
@@ -238,10 +240,16 @@ def generate_horror_story(
                 pass
 
     _job_start = _t.time()
+    target_minutes = max(2, min(int(target_minutes or DEFAULT_MINUTES), 8))
     target_words = int(target_minutes * WORDS_PER_MINUTE)
+    # Scale structure to length: ~1 chapter/min, ~2-3 beats each, capped tight.
+    n_chapters = max(3, min(target_minutes, 7))
+    total_beats_target = max(6, min(round(target_words / WORDS_PER_BEAT), MAX_BEATS))
+    beats_lo = max(2, total_beats_target // n_chapters)
+    beats_hi = beats_lo + 1
 
     _p("✍️ plotting outline...")
-    outline = _gen_outline(theme)
+    outline = _gen_outline(theme, n_chapters)
     chapters = outline["chapters"]
     cast = outline.get("characters", [])
     locations = outline.get("locations", [])
@@ -255,7 +263,7 @@ def generate_horror_story(
         try:
             ch_beats = _gen_chapter_beats(
                 theme, outline["logline"], outline["setting"], prev, ch,
-                cast, locations,
+                cast, locations, beats_lo, beats_hi,
             )
         except Exception as e:
             log.warning(f"Chapter {i+1} failed ({e}); skipping.")

@@ -4494,7 +4494,7 @@ class _HorrorApprovalView(discord.ui.View):
         from modules import horror_writer as hw
         await interaction.response.defer()
         theme = self.story.get("theme", "")
-        mins = self.story.get("target_minutes", 30)
+        mins = self.story.get("target_minutes", 5)
         story = await asyncio.to_thread(hw.generate_horror_story, theme, mins)
         self.story = story
         await interaction.message.edit(embed=_horror_embed(story), view=self)
@@ -4572,7 +4572,7 @@ async def cmd_make_horror(ctx, *, theme: str = None):
         asyncio.run_coroutine_threadsafe(_edit(msg), loop)
 
     try:
-        story = await asyncio.to_thread(hw.generate_horror_story, theme, 30, _cb)
+        story = await asyncio.to_thread(hw.generate_horror_story, theme, 5, _cb)
     except Exception as e:
         log.exception("Horror writing failed")
         await status.edit(content=f"❌ Horror writing failed: `{e}`")
