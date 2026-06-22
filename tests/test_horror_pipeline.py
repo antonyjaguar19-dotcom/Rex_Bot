@@ -64,11 +64,34 @@ def test_scene_durations_tile_full_timeline():
     assert durs[-1] == pytest.approx(total - 5.3)  # last runs to the end
 
 
-def test_scene_prompt_has_photoreal_suffix():
+def test_scene_prompt_injects_location_and_photoreal():
     from modules import horrorstory_pipeline as hsp
-    p = hsp._scene_prompt({"image_prompt": "a fog-drowned pier at midnight"})
+    beat = {"image_prompt": "Mara walks the fog-drowned pier at midnight",
+            "location": "Pier", "characters": ["Mara"]}
+    loc_map = {"Pier": "a rotting wooden pier swallowed by sea fog"}
+    char_look = {"Mara": "34-year-old woman, short dark hair, yellow raincoat"}
+    # no-LoRA: look tokens injected
+    p = hsp._scene_prompt(beat, loc_map, char_look, use_lora=False)
     assert "fog-drowned pier" in p
+    assert "rotting wooden pier" in p          # location desc injected
+    assert "yellow raincoat" in p              # char look injected (no LoRA)
     assert "photorealistic" in p.lower()
+    # LoRA: skip verbose look tokens (identity from LoRA trigger by name)
+    p2 = hsp._scene_prompt(beat, loc_map, char_look, use_lora=True)
+    assert "yellow raincoat" not in p2
+    assert "rotting wooden pier" in p2
+
+
+def test_flux_lora_not_ready_without_chars(monkeypatch):
+    from modules import horrorstory_pipeline as hsp
+    from modules.lora import store as lora_store
+    monkeypatch.setattr(lora_store, "all_characters", lambda: {})
+    assert hsp._flux_lora_ready() is False
+
+
+def test_lora_autotrain_importable():
+    from modules import lora_autotrain
+    assert hasattr(lora_autotrain, "ensure_character_loras")
 
 
 def test_writer_constants_bounded():

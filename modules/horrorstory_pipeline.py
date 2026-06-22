@@ -35,12 +35,52 @@ NARRATION_DIR = PROJECT_ROOT / "04_Outputs" / "audio"
 PHOTO_STYLE_ID = "photoreal"
 
 
-def _scene_prompt(beat: dict) -> str:
+def _scene_prompt(beat: dict, loc_map: dict, char_look: dict, use_lora: bool) -> str:
+    """Beat prompt: scene + location description (+ character look tokens when no
+    LoRA) + photoreal suffix. With LoRA, the character NAME in image_prompt makes
+    flux_lora auto-stack the identity, so we skip the verbose look tokens."""
     suffix = (get_style_description(PHOTO_STYLE_ID) or {}).get("prompt_suffix", "")
     parts = [beat.get("image_prompt", "").strip()]
+    loc = loc_map.get(beat.get("location", ""))
+    if loc:
+        parts.append(loc)
+    if not use_lora:
+        for nm in beat.get("characters", []):
+            tok = char_look.get(nm)
+            if tok:
+                parts.append(f"{nm}: {tok}")
     if suffix:
         parts.append(suffix)
     return ", ".join(p for p in parts if p)
+
+
+def _flux_lora_ready() -> bool:
+    """True if the flux_lora backend can run: its checkpoint is installed AND at
+    least one character LoRA is registered. Else we render with the active backend
+    (degraded: no identity lock) so horror still works pre-install."""
+    try:
+        from modules import model_registry
+        from modules.lora import store as lora_store
+        if not lora_store.all_characters():
+            return False
+        cfg = model_registry.get_available("image_backend", "comfyui_flux_lora")
+        if not cfg:
+            return False
+        ckpt = cfg.get("ckpt_name", "")
+        comfy = PROJECT_ROOT / "01_ComfyUI"
+        return bool(ckpt) and any(comfy.rglob(ckpt))
+    except Exception:
+        return False
+
+
+def _make_image_backend(use_lora: bool):
+    if use_lora:
+        import importlib
+        from modules import model_registry
+        cfg = model_registry.get_available("image_backend", "comfyui_flux_lora")
+        mod = importlib.import_module(cfg["module_path"])
+        return mod.Backend(cfg)
+    return image_backend.get_active_backend()
 
 
 def _scene_durations(spans: list, total_dur: float) -> list[float]:
@@ -74,17 +114,36 @@ def render_horror(
         raise ValueError("Horror story has no beats.")
     voice_design = story.get("voice_design", "")
 
-    # ---- 1. Narration (VoxCPM Voice Design — one deep narrator) ----
+    # ---- 1. Narration (VoxCPM — ONE anchored narrator, no drift) ----
     _p(f"🎙️ voicing {len(beats)} beats (deep narrator)...")
     gpu_utils.ensure_vram_free()
     from modules.tts_voxcpm import VoxCPMTTS
-    tts = VoxCPMTTS()
-    groups = [(b["narration"], voice_design) for b in beats]
+    # Higher inference_timesteps => clearer speech (default 10 was muddy).
+    tts = VoxCPMTTS(inference_timesteps=28)
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
     narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
-    narration_path, spans = tts.synthesize_designed(groups, output_path=narration_path)
+
+    # Anchored: mint ONE 'narrator' voice from the design, then clone it for every
+    # beat so the voice is identical throughout (fixes per-beat drift). Falls back
+    # to plain designed voicing if reference-cloning isn't available.
+    clone_ok = False
+    try:
+        from modules.audio_first_pipeline import _voxcpm_clone_supported
+        clone_ok = _voxcpm_clone_supported()
+    except Exception:
+        clone_ok = False
+
+    if clone_ok:
+        anchored = [(b["narration"], voice_design, "narrator") for b in beats]
+        narration_path, spans = tts.synthesize_designed_anchored(
+            anchored, output_path=narration_path)
+    else:
+        log.warning("VoxCPM clone unsupported — using designed (voice may vary slightly).")
+        groups = [(b["narration"], voice_design) for b in beats]
+        narration_path, spans = tts.synthesize_designed(groups, output_path=narration_path)
+
     total_dur = hasm._probe_duration(narration_path)
-    _p(f"🎙️ narration ready: {total_dur:.1f}s")
+    _p(f"🎙️ narration ready: {total_dur:.1f}s ({'anchored' if clone_ok else 'designed'})")
 
     # Per-beat scene durations from the real audio spans.
     if len(spans) != len(beats):
@@ -92,9 +151,25 @@ def render_horror(
         beats = beats[:len(spans)]
     durations = _scene_durations(spans, total_dur)
 
-    # ---- 2. Photoreal stills (one per beat) ----
+    # ---- 2a. Character LoRAs (identity lock) — train any missing, gated ----
     gpu_utils.free_comfyui_vram()
-    img = image_backend.get_active_backend()
+    if story.get("characters"):
+        try:
+            from modules import lora_autotrain
+            lora_autotrain.ensure_character_loras(story, progress_cb=progress_cb)
+        except Exception as e:
+            log.warning(f"LoRA auto-train skipped: {e}")
+
+    # ---- 2b. Photoreal stills (one per beat) ----
+    use_lora = _flux_lora_ready()
+    _p(f"🖼️ rendering {len(beats)} stills "
+       f"({'flux_lora identity-locked' if use_lora else 'active backend (no LoRA)'})...")
+    gpu_utils.free_comfyui_vram()
+    img = _make_image_backend(use_lora)
+    loc_map = {lc.get("name", ""): lc.get("description", "")
+               for lc in story.get("locations", [])}
+    char_look = {c.get("name", ""): c.get("locked_token", "")
+                 for c in story.get("characters", [])}
     out_dir = STILLS_DIR / f"horror_{horror_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,7 +177,7 @@ def render_horror(
     for i, b in enumerate(beats):
         _p(f"🖼️ still {i+1}/{len(beats)}...")
         path = img.generate(
-            prompt=_scene_prompt(b),
+            prompt=_scene_prompt(b, loc_map, char_look, use_lora),
             aspect_ratio="16:9",
             seed=random.randint(1, 2**31 - 1),
             output_filename=str(out_dir / f"beat_{i:04d}.png"),
