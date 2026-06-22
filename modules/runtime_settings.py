@@ -369,15 +369,18 @@ def clear_visual_style_override() -> None:
 # voice: a Kokoro voice id (am_michael / am_adam cached locally).
 # speed: <1.0 slows for dread.
 
+_HORROR_ENGINES = ("kokoro", "voxcpm", "chatterbox", "qwen")
+
+
 def get_horror_voice_engine() -> str:
     v = _load().get("horror_voice_engine")
-    return v if v in ("kokoro", "voxcpm") else "kokoro"
+    return v if v in _HORROR_ENGINES else "kokoro"
 
 
 def set_horror_voice_engine(engine: str) -> None:
     engine = (engine or "").strip().lower()
-    if engine not in ("kokoro", "voxcpm"):
-        raise ValueError(f"Invalid horror_voice_engine: {engine!r} (kokoro|voxcpm).")
+    if engine not in _HORROR_ENGINES:
+        raise ValueError(f"Invalid horror_voice_engine: {engine!r} ({'|'.join(_HORROR_ENGINES)}).")
     data = _load()
     data["horror_voice_engine"] = engine
     _save(data)
@@ -405,6 +408,19 @@ def set_horror_voice_speed(speed: float) -> None:
     data["horror_voice_speed"] = float(speed)
     _save(data)
     log.info(f"Horror voice speed: {speed}")
+
+
+def get_horror_chatterbox_exaggeration() -> float:
+    """Chatterbox emotion intensity for the horror narrator (0.5 calm .. 0.8 intense)."""
+    val = _load().get("horror_cb_exaggeration")
+    return float(val) if val is not None else 0.6
+
+
+def set_horror_chatterbox_exaggeration(v: float) -> None:
+    data = _load()
+    data["horror_cb_exaggeration"] = float(v)
+    _save(data)
+    log.info(f"Horror chatterbox exaggeration: {v}")
 
 
 # --- Horror story mode: ambient drone bed under narration ---

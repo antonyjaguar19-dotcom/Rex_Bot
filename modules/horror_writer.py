@@ -45,7 +45,7 @@ WORDS_PER_MINUTE = 150
 # Fuller beats = clearer TTS (no choppy fragments) + fewer stills/LoRA renders.
 WORDS_PER_BEAT = 52
 MERGE_MIN_WORDS = 30       # merge consecutive beats below this into one
-MAX_BEATS = 90             # hard cap so render time can't run away
+MAX_BEATS = 130            # hard cap so render time can't run away
 MIN_BEAT_WORDS = 8         # drop empty/too-short fragments
 
 # One designed deep narrator voice, reused for the whole story (VoxCPM2).
@@ -126,7 +126,7 @@ Output:
 }}
 
 Rules:
-- 4 to 6 beats for this chapter (fuller beats, not many tiny ones).
+- 7 to 9 beats for this chapter (fuller beats, not tiny ones) — this is a LONG ~30-minute story, so write generously.
 - Each beat's narration continues smoothly from the previous; together they fully narrate this chapter.
 - Refer to characters by their EXACT cast name in narration AND image_prompt (identity is locked downstream by name).
 - `location` MUST be one of the given location names.

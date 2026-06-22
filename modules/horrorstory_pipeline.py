@@ -134,12 +134,27 @@ def _kokoro_narrate(narrations: list, out_path: Path, gap_sec: float = 0.45):
     return out_path, spans
 
 
-def _narrate_continuous(full_text: str, out_path: Path, voice_design: str = "") -> tuple:
-    """Render the WHOLE narration in one pass → (wav, mode_label). Engine order:
-    qwen (ComfyUI Qwen3-TTS, production — once installed) -> kokoro (preset,
-    consistent, in-process) -> voxcpm. Continuous render = natural prosody; the
-    visual cuts are placed later on detected silences."""
+def _horror_reference_wav() -> Path:
+    """Fixed deep reference clip Chatterbox clones for a consistent narrator.
+    Uses 04_Outputs/audio/horror_ref.wav; generates one (Kokoro am_adam) if
+    missing. Replace this file with a real deep-voice recording for best results."""
+    ref = NARRATION_DIR / "horror_ref.wav"
+    if not ref.exists():
+        from modules.tts_engine import TTSEngine
+        NARRATION_DIR.mkdir(parents=True, exist_ok=True)
+        TTSEngine(voice="am_adam", speed=0.9).synthesize(
+            "Listen closely, for this is a story you will not soon forget.",
+            output_path=ref, voice="am_adam", speed=0.9)
+    return ref
+
+
+def _narrate_continuous(narrations: list, out_path: Path, voice_design: str = "") -> tuple:
+    """Render the whole narration → (wav, mode_label). Engine order:
+    qwen (ComfyUI Qwen3-TTS, production — once installed) -> chatterbox
+    (expressive, clones one fixed ref) -> kokoro (preset, consistent) -> voxcpm.
+    The visual cuts are placed later on detected silences."""
     engine = rs.get_horror_voice_engine()
+    full_text = " ".join(t.strip() for t in narrations if t.strip())
 
     if engine == "qwen":
         # Production narrator: Qwen3-TTS via a dedicated ComfyUI adapter
@@ -152,6 +167,20 @@ def _narrate_continuous(full_text: str, out_path: Path, voice_design: str = "") 
             return Path(wav), "qwen3-tts"
         except Exception as e:
             log.warning(f"Qwen3-TTS not wired yet ({e}); falling back to Kokoro.")
+
+    if engine == "chatterbox":
+        # Expressive + consistent: every beat cloned from ONE fixed reference
+        # (isolated venv → no ComfyUI risk). Per-beat groups keep each gen short.
+        try:
+            from modules import tts_chatterbox as cb
+            ref = _horror_reference_wav()
+            groups = [(t, str(ref), None) for t in narrations if t.strip()]
+            wav, _ = cb.synthesize_segments(
+                groups, output_path=out_path,
+                exaggeration=rs.get_horror_chatterbox_exaggeration())
+            return Path(wav), "chatterbox"
+        except Exception as e:
+            log.warning(f"Chatterbox failed ({e}); falling back to Kokoro.")
 
     if engine == "voxcpm":
         try:
@@ -196,9 +225,9 @@ def render_horror(
     gpu_utils.ensure_vram_free()
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
     narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
-    full_text = " ".join(b.get("narration", "").strip() for b in beats).strip()
     _p(f"🎙️ narrating full story ({len(beats)} beats, continuous)...")
-    narration_path, mode = _narrate_continuous(full_text, narration_path, voice_design)
+    narration_path, mode = _narrate_continuous(
+        [b.get("narration", "") for b in beats], narration_path, voice_design)
     total_dur = hasm._probe_duration(narration_path)
     _p(f"🎙️ narration ready: {total_dur:.1f}s ({mode})")
 
