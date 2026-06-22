@@ -469,6 +469,25 @@ def set_horror_chatterbox_exaggeration(v: float) -> None:
     log.info(f"Horror chatterbox exaggeration: {v}")
 
 
+# --- Horror visuals: animated Wan clips vs Ken Burns stills ---
+
+def get_horror_video_mode() -> str:
+    """'wan' = animated Wan I2V clip per shot (cinematic, slow). 'kenburns' =
+    photoreal stills with pan/zoom (fast). Default 'wan'."""
+    v = _load().get("horror_video_mode")
+    return v if v in ("wan", "kenburns") else "wan"
+
+
+def set_horror_video_mode(mode: str) -> None:
+    mode = (mode or "").strip().lower()
+    if mode not in ("wan", "kenburns"):
+        raise ValueError(f"Invalid horror_video_mode: {mode!r} (wan|kenburns).")
+    data = _load()
+    data["horror_video_mode"] = mode
+    _save(data)
+    log.info(f"Horror video mode: {mode}")
+
+
 # --- Horror story mode: ambient drone bed under narration ---
 
 def get_horror_ambient_enabled() -> bool:

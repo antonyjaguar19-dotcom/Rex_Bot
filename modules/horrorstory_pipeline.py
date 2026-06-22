@@ -301,13 +301,23 @@ def render_horror(
         )
         scene_images.append(Path(path))
 
-    # ---- 3. Assemble (16x9 + ambient + watermark) ----
-    _p("🎬 assembling horror video...")
-    gpu_utils.free_comfyui_vram()
-    out = hasm.assemble_horror(
-        story, narration_path, durations, scene_images,
-        ambient=rs.get_horror_ambient_enabled(), progress_cb=progress_cb,
-    )
+    # ---- 3. Visuals: animated Wan clips per shot, or Ken Burns stills ----
+    ambient = rs.get_horror_ambient_enabled()
+    if rs.get_horror_video_mode() == "wan":
+        _p("🎞️ animating shots (Wan I2V)...")
+        from modules import horror_video
+        clips = horror_video.render_shot_clips(
+            story, scene_images, durations, aspect_ratio="16:9", progress_cb=progress_cb)
+        _p("🎬 assembling horror video...")
+        gpu_utils.free_comfyui_vram()
+        out = hasm.assemble_horror_clips(
+            story, narration_path, clips, ambient=ambient, progress_cb=progress_cb)
+    else:
+        _p("🎬 assembling horror video (Ken Burns)...")
+        gpu_utils.free_comfyui_vram()
+        out = hasm.assemble_horror(
+            story, narration_path, durations, scene_images,
+            ambient=ambient, progress_cb=progress_cb)
     out["narration_audio"] = narration_path
     _p("✅ horror video complete")
     return out

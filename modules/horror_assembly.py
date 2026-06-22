@@ -90,6 +90,48 @@ def _mux_horror(video_path: Path, narration_path: Path, drone_path: Optional[Pat
     return out_path
 
 
+def assemble_horror_clips(
+    story: dict,
+    narration_audio: Path,
+    clip_paths: list[Path],
+    ambient: bool = True,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """Assemble from PRE-MADE per-shot clips (animated Wan, already window-sized):
+    concat → mux narration (+ drone) + watermark. 16x9."""
+    if not FFMPEG_EXE.exists():
+        raise FileNotFoundError(f"ffmpeg not found at {FFMPEG_EXE}")
+    horror_id = story.get("horror_id") or story.get("_id")
+    total_dur = _probe_duration(narration_audio)
+    w, h = ASPECTS[ASPECT_KEY]
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _p(m):
+        if progress_cb:
+            progress_cb(m)
+
+    _p("concatenating clips...")
+    concat_path = TEMP_DIR / f"hvconcat_{horror_id}.mp4"
+    _concat_segments(list(clip_paths), concat_path, f"horrorvid_{horror_id}")
+
+    drone_path = None
+    if ambient:
+        _p("building ambient drone...")
+        drone_path = TEMP_DIR / f"hdrone_{horror_id}.wav"
+        _build_drone(total_dur, drone_path)
+
+    subs_path = TEMP_DIR / f"overlay_horror_{horror_id}.ass"
+    _write_overlay_ass(total_dur, w, h, subs_path)
+
+    _p("muxing...")
+    out_path = FINAL_DIR / f"horror_{horror_id}_{ASPECT_KEY}.mp4"
+    _mux_horror(concat_path, narration_audio, drone_path, total_dur, subs_path, out_path)
+    log.info(f"✅ horror (animated) ready: {out_path.name}")
+    return {"horror_id": horror_id, "clip_count": len(clip_paths),
+            "duration": total_dur, ASPECT_KEY: out_path}
+
+
 def assemble_horror(
     story: dict,
     narration_audio: Path,

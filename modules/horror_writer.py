@@ -121,7 +121,8 @@ Output:
       "narration": "<{WORDS_PER_BEAT-12}-{WORDS_PER_BEAT+13} words of vivid, atmospheric horror narration: 2-4 COMPLETE flowing sentences, third person, no dialogue tags. Read ALOUD by one narrator — smooth and clear, never a choppy fragment.>",
       "characters": ["<names of cast members visible in this beat, [] if none>"],
       "location": "<exactly one location NAME from the list above>",
-      "image_prompt": "<25-45 words: which CHARACTER (by exact name) is present and what they do + what we see + camera + lighting/mood. No on-screen text. Do NOT name an art style — handled downstream.>"
+      "image_prompt": "<25-45 words: which CHARACTER (by exact name) is present and what they do + what we see + camera + lighting/mood. No on-screen text. Do NOT name an art style — handled downstream.>",
+      "motion_prompt": "<15-30 words: ONE subtle eerie motion + ONE slow camera move for this shot (e.g. 'shadow creeps across the wall as the camera pushes in slowly'). Restrained, dread-building, no fast action.>"
     }}
   ]
 }}
@@ -204,6 +205,8 @@ def _gen_chapter_beats(theme: str, logline: str, setting: str, prev_summary: str
             chs = [c for c in (b.get("characters") or []) if isinstance(c, str)]
             beats.append({
                 "narration": narr, "image_prompt": img,
+                "motion_prompt": (b.get("motion_prompt") or "").strip()
+                                 or "slow ominous camera push-in, faint shadows shifting",
                 "location": loc if loc in valid_locs else "",
                 "characters": chs,
             })
