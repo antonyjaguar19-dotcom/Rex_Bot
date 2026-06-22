@@ -363,6 +363,50 @@ def clear_visual_style_override() -> None:
     _save(data)
 
 
+# --- Horror story narrator voice ---
+# engine: 'kokoro' (preset, DETERMINISTIC — identical voice every call, no drift,
+#         the consistency fix) or 'voxcpm' (designed/anchored, can still drift).
+# voice: a Kokoro voice id (am_michael / am_adam cached locally).
+# speed: <1.0 slows for dread.
+
+def get_horror_voice_engine() -> str:
+    v = _load().get("horror_voice_engine")
+    return v if v in ("kokoro", "voxcpm") else "kokoro"
+
+
+def set_horror_voice_engine(engine: str) -> None:
+    engine = (engine or "").strip().lower()
+    if engine not in ("kokoro", "voxcpm"):
+        raise ValueError(f"Invalid horror_voice_engine: {engine!r} (kokoro|voxcpm).")
+    data = _load()
+    data["horror_voice_engine"] = engine
+    _save(data)
+    log.info(f"Horror voice engine: {engine}")
+
+
+def get_horror_voice() -> str:
+    return _load().get("horror_voice") or "am_michael"
+
+
+def set_horror_voice(voice: str) -> None:
+    data = _load()
+    data["horror_voice"] = voice.strip()
+    _save(data)
+    log.info(f"Horror voice: {voice}")
+
+
+def get_horror_voice_speed() -> float:
+    val = _load().get("horror_voice_speed")
+    return float(val) if val is not None else 0.88
+
+
+def set_horror_voice_speed(speed: float) -> None:
+    data = _load()
+    data["horror_voice_speed"] = float(speed)
+    _save(data)
+    log.info(f"Horror voice speed: {speed}")
+
+
 # --- Horror story mode: ambient drone bed under narration ---
 
 def get_horror_ambient_enabled() -> bool:

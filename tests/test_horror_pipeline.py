@@ -94,6 +94,26 @@ def test_lora_autotrain_importable():
     assert hasattr(lora_autotrain, "ensure_character_loras")
 
 
+def test_silence_window_planning(monkeypatch):
+    """Windows snap to detected silences + tile the full audio length."""
+    from modules import audio_segmenter as seg
+    monkeypatch.setattr(seg, "_probe_duration", lambda p: 30.0)
+    # pauses near the proportional boundaries (10s, 20s) for 3 equal beats
+    monkeypatch.setattr(seg, "detect_silence_midpoints", lambda *a, **k: [9.7, 20.3, 25.0])
+    durs = seg.plan_windows_from_silence(__import__("pathlib").Path("x.wav"),
+                                         [10, 10, 10])
+    assert len(durs) == 3
+    assert abs(sum(durs) - 30.0) < 0.05
+    # first boundary snapped to 9.7 -> first window ~9.7s
+    assert abs(durs[0] - 9.7) < 0.1
+
+
+def test_continuous_narration_engine_default():
+    from modules import runtime_settings as rs
+    # default horror engine is a real, runnable engine
+    assert rs.get_horror_voice_engine() in ("kokoro", "voxcpm", "qwen")
+
+
 def test_writer_constants_bounded():
     from modules import horror_writer as hw
     assert hw.MAX_BEATS <= 200

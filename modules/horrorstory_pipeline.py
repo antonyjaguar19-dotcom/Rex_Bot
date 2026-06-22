@@ -95,11 +95,88 @@ def _scene_durations(spans: list, total_dur: float) -> list[float]:
     return durs
 
 
+def _kokoro_narrate(narrations: list, out_path: Path, gap_sec: float = 0.45):
+    """Voice each beat with Kokoro (a fixed preset voice → identical narrator
+    every beat, zero drift), stitch with a silence gap. Returns (master_wav,
+    spans) where spans = [(text, t_start, t_end)] — same shape as VoxCPM path."""
+    import numpy as np
+    import soundfile as sf
+    from modules.tts_engine import TTSEngine
+
+    voice = rs.get_horror_voice()
+    speed = rs.get_horror_voice_speed()
+    eng = TTSEngine(voice=voice, speed=speed)
+    tmp = NARRATION_DIR / "_horror_beats"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    sr = None
+    pieces, spans, cursor = [], [], 0
+    for i, text in enumerate(narrations):
+        wpath = eng.synthesize(text, output_path=tmp / f"b_{i:04d}.wav",
+                               voice=voice, speed=speed)
+        wav, this_sr = sf.read(str(wpath), dtype="float32")
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        sr = sr or this_sr
+        if sr is None:
+            sr = this_sr
+        t0 = cursor / sr
+        pieces.append(wav)
+        cursor += len(wav)
+        spans.append((text, round(t0, 3), round(cursor / sr, 3)))
+        if i < len(narrations) - 1:
+            gap = np.zeros(int(round(gap_sec * sr)), dtype="float32")
+            pieces.append(gap)
+            cursor += len(gap)
+
+    master = np.concatenate(pieces) if pieces else np.zeros(1, dtype="float32")
+    sf.write(str(out_path), master, sr or 24000)
+    return out_path, spans
+
+
+def _narrate_continuous(full_text: str, out_path: Path, voice_design: str = "") -> tuple:
+    """Render the WHOLE narration in one pass → (wav, mode_label). Engine order:
+    qwen (ComfyUI Qwen3-TTS, production — once installed) -> kokoro (preset,
+    consistent, in-process) -> voxcpm. Continuous render = natural prosody; the
+    visual cuts are placed later on detected silences."""
+    engine = rs.get_horror_voice_engine()
+
+    if engine == "qwen":
+        # Production narrator: Qwen3-TTS via a dedicated ComfyUI adapter
+        # (comfyui_qwen_tts) rendering the full text with a consistent Custom
+        # Voice. Wired once the TTS-Audio-Suite node + its API workflow are
+        # installed/exported; until then fall through to Kokoro.
+        try:
+            from modules.tts_qwen import synthesize_full  # built after install
+            wav = synthesize_full(full_text, out_path)
+            return Path(wav), "qwen3-tts"
+        except Exception as e:
+            log.warning(f"Qwen3-TTS not wired yet ({e}); falling back to Kokoro.")
+
+    if engine == "voxcpm":
+        try:
+            from modules.tts_voxcpm import VoxCPMTTS
+            tts = VoxCPMTTS(inference_timesteps=28)
+            wav = tts.synthesize(full_text, output_path=out_path)
+            return Path(wav), "voxcpm:whole"
+        except Exception as e:
+            log.warning(f"VoxCPM whole-text failed ({e}); falling back to Kokoro.")
+
+    # Kokoro: fixed preset voice → fully consistent, in-process, handles long text.
+    from modules.tts_engine import TTSEngine
+    voice = rs.get_horror_voice()
+    speed = rs.get_horror_voice_speed()
+    wav = TTSEngine(voice=voice, speed=speed).synthesize(
+        full_text, output_path=out_path, voice=voice, speed=speed)
+    return Path(wav), f"kokoro:{voice}"
+
+
 def render_horror(
     story: dict,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> dict:
-    """Full render: narration (VoxCPM) -> photoreal stills -> 16x9 assembly."""
+    """Full render: continuous narration -> silence-split -> photoreal stills
+    -> 16x9 assembly (Ken Burns + ambient + watermark)."""
     def _p(msg: str):
         log.info(msg)
         if progress_cb:
@@ -114,42 +191,27 @@ def render_horror(
         raise ValueError("Horror story has no beats.")
     voice_design = story.get("voice_design", "")
 
-    # ---- 1. Narration (VoxCPM — ONE anchored narrator, no drift) ----
-    _p(f"🎙️ voicing {len(beats)} beats (deep narrator)...")
+    # ---- 1. Narration: ONE continuous render (natural prosody, consistent
+    #         voice), then cut the visuals on the audio's real silences. ----
     gpu_utils.ensure_vram_free()
-    from modules.tts_voxcpm import VoxCPMTTS
-    # Higher inference_timesteps => clearer speech (default 10 was muddy).
-    tts = VoxCPMTTS(inference_timesteps=28)
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
     narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
-
-    # Anchored: mint ONE 'narrator' voice from the design, then clone it for every
-    # beat so the voice is identical throughout (fixes per-beat drift). Falls back
-    # to plain designed voicing if reference-cloning isn't available.
-    clone_ok = False
-    try:
-        from modules.audio_first_pipeline import _voxcpm_clone_supported
-        clone_ok = _voxcpm_clone_supported()
-    except Exception:
-        clone_ok = False
-
-    if clone_ok:
-        anchored = [(b["narration"], voice_design, "narrator") for b in beats]
-        narration_path, spans = tts.synthesize_designed_anchored(
-            anchored, output_path=narration_path)
-    else:
-        log.warning("VoxCPM clone unsupported — using designed (voice may vary slightly).")
-        groups = [(b["narration"], voice_design) for b in beats]
-        narration_path, spans = tts.synthesize_designed(groups, output_path=narration_path)
-
+    full_text = " ".join(b.get("narration", "").strip() for b in beats).strip()
+    _p(f"🎙️ narrating full story ({len(beats)} beats, continuous)...")
+    narration_path, mode = _narrate_continuous(full_text, narration_path, voice_design)
     total_dur = hasm._probe_duration(narration_path)
-    _p(f"🎙️ narration ready: {total_dur:.1f}s ({'anchored' if clone_ok else 'designed'})")
+    _p(f"🎙️ narration ready: {total_dur:.1f}s ({mode})")
 
-    # Per-beat scene durations from the real audio spans.
-    if len(spans) != len(beats):
-        log.warning(f"spans({len(spans)}) != beats({len(beats)}); tiling on spans.")
-        beats = beats[:len(spans)]
-    durations = _scene_durations(spans, total_dur)
+    # Per-beat windows snapped to detected silences (images = silent splits).
+    from modules import audio_segmenter
+    weights = [max(1, len(b.get("narration", "").split())) for b in beats]
+    try:
+        durations = audio_segmenter.plan_windows_from_silence(narration_path, weights)
+        _p(f"✂️ split on {len(durations)} silence-aligned windows")
+    except Exception as e:
+        log.warning(f"silence split failed ({e}); falling back to proportional.")
+        wsum = sum(weights)
+        durations = [round(w / wsum * total_dur, 3) for w in weights]
 
     # ---- 2a. Character LoRAs (identity lock) — train any missing, gated ----
     gpu_utils.free_comfyui_vram()
