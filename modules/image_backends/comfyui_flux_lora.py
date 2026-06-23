@@ -149,20 +149,32 @@ class Backend(ImageBackend):
             raise RuntimeError(f"No prompt_id in response: {data}")
         return data["prompt_id"]
 
-    def _wait(self, prompt_id, timeout=900) -> dict:
+    def _wait(self, prompt_id, timeout=1800) -> dict:
+        # Tolerant polling: the FIRST flux render cold-loads the ~16GB fp8
+        # checkpoint, during which ComfyUI is unresponsive >10s. Use a generous
+        # per-request timeout + retry on connection/read timeouts (don't crash).
         start = time.time()
+        fails = 0
         while time.time() - start < timeout:
-            r = requests.get(f"{self.server_url}/history/{prompt_id}", timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                if prompt_id in data:
-                    entry = data[prompt_id]
-                    st = entry.get("status", {})
-                    if st.get("completed") is True:
-                        return entry
-                    if st.get("status_str") == "error":
-                        raise RuntimeError(f"ComfyUI error: {st.get('messages')}")
-            time.sleep(1)
+            try:
+                r = requests.get(f"{self.server_url}/history/{prompt_id}", timeout=60)
+                fails = 0
+                if r.status_code == 200:
+                    data = r.json()
+                    if prompt_id in data:
+                        entry = data[prompt_id]
+                        st = entry.get("status", {})
+                        if st.get("completed") is True:
+                            return entry
+                        if st.get("status_str") == "error":
+                            raise RuntimeError(f"ComfyUI error: {st.get('messages')}")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                fails += 1
+                if fails >= 8:
+                    raise RuntimeError(f"Lost ComfyUI for {prompt_id} after 8 poll timeouts")
+                time.sleep(5)
+                continue
+            time.sleep(2)
         raise TimeoutError(f"Timed out after {timeout}s for {prompt_id}")
 
     def _download(self, history_entry, prompt_id, output_filename) -> Path:
