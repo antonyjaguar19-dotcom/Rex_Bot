@@ -22,17 +22,9 @@ log = logging.getLogger("claw_bot.control_panel")
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 PANEL_STATE_PATH = PROJECT_ROOT / "05_Config" / "panel_state.json"
 
-# Dashboard URL for the 🖥️ Open Dashboard link button. Defaults to localhost
-# (only reachable ON the PC). Set CLAW_DASHBOARD_URL in secrets.env to a tunnel
-# URL (ngrok static / Cloudflare / Tailscale) to reach the dashboard while away.
-# Load secrets.env here: this module is imported before claw_bot calls
-# load_dotenv(), so without this the env var wouldn't be visible yet.
-try:
-    from dotenv import load_dotenv
-    load_dotenv(dotenv_path=PROJECT_ROOT / "05_Config" / "secrets.env")
-except Exception:
-    pass
-DASHBOARD_URL = os.environ.get("CLAW_DASHBOARD_URL", "http://127.0.0.1:7860")
+# Dashboard URL for the 🖥️ Open Dashboard link button. OFFLINE only — localhost
+# on this PC. Remote tunnels (ngrok/Cloudflare) were removed.
+DASHBOARD_URL = "http://127.0.0.1:7860"
 
 # Filled in by register_views() — maps cmd_key -> async function from claw_bot.py
 _CMDS: dict = {}
