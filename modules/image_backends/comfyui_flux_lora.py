@@ -90,18 +90,27 @@ class Backend(ImageBackend):
 
         width, height = model_registry.get_resolution(aspect_ratio)
 
-        # which character LoRAs does this prompt need?
-        loras = lora_store.resolve_for_prompt(prompt)
-        triggers = [e["trigger"] for e in loras]
+        # Character LoRAs: identity by trigger word. Skipped when use_char_lora is
+        # False (e.g. horror mode now uses prompt-token consistency, not a trained
+        # character LoRA).
+        use_char_lora = kwargs.get("use_char_lora", True)
+        loras = lora_store.resolve_for_prompt(prompt) if use_char_lora else []
+        triggers = [e["trigger"] for e in loras if e.get("trigger")]
         final_prompt = prompt.strip()
         if triggers:
             final_prompt = ", ".join(triggers) + ", " + final_prompt
             log.info(f"char LoRAs: {[e['lora_file'] for e in loras]}")
 
+        # Fixed STYLE LoRAs (no trigger) stacked on top — e.g. a horror look.
+        extra_loras = kwargs.get("extra_loras") or []
+        if extra_loras:
+            log.info(f"style LoRAs: {[e.get('lora_file') for e in extra_loras]}")
+        all_loras = loras + list(extra_loras)
+
         rs_steps = rs.get_steps_override()
         steps = rs_steps if rs_steps is not None else self.steps
 
-        wf = self._build_workflow(final_prompt, width, height, seed, steps, loras)
+        wf = self._build_workflow(final_prompt, width, height, seed, steps, all_loras)
 
         client_id = str(uuid.uuid4())
         prompt_id = self._submit(wf, client_id)
@@ -133,7 +142,7 @@ class Backend(ImageBackend):
                     "lora_name": e["lora_file"],
                     "strength_model": float(e.get("weight", 0.9)),
                 },
-                "_meta": {"title": f"lora {e['trigger']}"},
+                "_meta": {"title": f"lora {e.get('trigger') or e['lora_file']}"},
             }
             prev = [nid, 0]
         wf["40"]["inputs"]["model"] = prev

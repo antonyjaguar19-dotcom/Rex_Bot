@@ -1179,7 +1179,7 @@ def main_page():
                 ["(auto)", "indian", "western", "japanese", "mixed", "animal-kingdom", "fantasy"],
                 value="(auto)", label="Culture",
             ).props("outlined dark dense").style("min-width: 150px;")
-            style_choices = ["(auto)"] + sg.get_available_style_ids()
+            style_choices = ["(auto)"] + sg.get_style_ids_for_mode("story")
             style_select = ui.select(style_choices, value="(auto)", label="Style") \
                 .props("outlined dark dense").style("min-width: 150px;")
 
@@ -1363,9 +1363,14 @@ def main_page():
             ui.notify(f"{label} → {val}", type="positive")
 
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
+            _style_opts = ["(auto)"] + sg.get_style_ids_for_mode("story")
+            _style_ov = rs.get_style_override()
             style_set = ui.select(
-                ["(auto)"] + sg.get_available_style_ids(),
-                value=(rs.get_style_override() or "(auto)"), label="Style",
+                _style_opts,
+                # Guard against a stale saved style id no longer in the list
+                # (would crash the page with "Invalid value").
+                value=(_style_ov if _style_ov in _style_opts else "(auto)"),
+                label="Style",
             ).props("outlined dark dense").style("min-width: 160px;")
             def _set_style(e):
                 v = style_set.value

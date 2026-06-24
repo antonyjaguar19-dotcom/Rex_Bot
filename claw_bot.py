@@ -1420,7 +1420,7 @@ async def on_ready():
                 f"📅 Next auto-story: `{next_str}`\n"
                 f"🎯 Theme bank: `{get_theme_count()}` themes\n"
                 f"{pending_line}"
-                f"🎨 **Styles:** storybook, cartoon, anime, watercolor, pixelart (use `!list_styles`)\n"
+                f"🎨 **Styles:** pixar, cartoon_saloon, claymation, stickman (use `!list_styles`)\n"
                 f"📖 **New:** Type `!commands` for the full command reference.\n"
                 f"Scripts auto-trigger storyboards on approval."
             )
@@ -2999,7 +2999,7 @@ async def cmd_list_styles(ctx):
         lines.append(f"   💡 Best for: {info.get('best_for', '')}")
         lines.append("")
     lines.append("Scripts auto-pick the right style. You can override via revision feedback: ")
-    lines.append("_\"Use anime style instead\"_ or _\"Change to watercolor.\"_")
+    lines.append("_\"Use claymation style instead\"_ or _\"Change to stickman.\"_")
     await ctx.send("\n".join(lines))
 
 # ============================================================
@@ -4494,7 +4494,7 @@ class _HorrorApprovalView(discord.ui.View):
         from modules import horror_writer as hw
         await interaction.response.defer()
         theme = self.story.get("theme", "")
-        mins = self.story.get("target_minutes", 5)
+        mins = self.story.get("target_minutes", 2)
         story = await asyncio.to_thread(hw.generate_horror_story, theme, mins)
         self.story = story
         await interaction.message.edit(embed=_horror_embed(story), view=self)
@@ -4572,7 +4572,7 @@ async def cmd_make_horror(ctx, *, theme: str = None):
         asyncio.run_coroutine_threadsafe(_edit(msg), loop)
 
     try:
-        story = await asyncio.to_thread(hw.generate_horror_story, theme, 5, _cb)
+        story = await asyncio.to_thread(hw.generate_horror_story, theme, 2, _cb)
     except Exception as e:
         log.exception("Horror writing failed")
         await status.edit(content=f"❌ Horror writing failed: `{e}`")

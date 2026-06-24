@@ -4,7 +4,7 @@ Claw Bot — Script Generator (Session 1A)
 Generates a 30-second kids' story script in JSON format.
 
 Changes from previous version:
-- LLM picks style ("storybook", "cartoon", "anime", "watercolor", "pixelart")
+- LLM picks style ("pixar", "cartoon_saloon", "claymation", "stickman")
   based on story mood; user can override via revision feedback.
 - LLM picks culture/setting (Indian, Western, Japanese, mixed, animal-kingdom,
   fantasy) based on theme — no longer hardcoded to Indian.
@@ -49,13 +49,24 @@ STYLES_PATH = PROJECT_ROOT / "05_Config" / "styles.json"
 
 def _load_styles() -> dict:
     if not STYLES_PATH.exists():
-        return {"default": "storybook", "available": {}}
+        return {"default": "pixar", "available": {}}
     return json.loads(STYLES_PATH.read_text(encoding="utf-8"))
 
 
 def get_available_style_ids() -> list[str]:
     styles = _load_styles()
     return list(styles.get("available", {}).keys())
+
+
+def get_style_ids_for_mode(mode: str = "story") -> list[str]:
+    """Style ids tagged for a pipeline mode (story|music_video|horror_story).
+    Untagged styles (no 'modes' key) are treated as story styles."""
+    out = []
+    for sid, info in _load_styles().get("available", {}).items():
+        modes = info.get("modes") or ["story"]
+        if mode in modes:
+            out.append(sid)
+    return out
 
 
 def get_style_description(style_id: str) -> dict:
@@ -65,7 +76,7 @@ def get_style_description(style_id: str) -> dict:
 
 def get_default_style() -> str:
     styles = _load_styles()
-    return styles.get("default", "storybook")
+    return styles.get("default", "pixar")
 
 
 # ==============================================================================
@@ -73,10 +84,11 @@ def get_default_style() -> str:
 # ==============================================================================
 
 def _build_system_prompt() -> str:
-    available_styles = get_available_style_ids()
+    available_styles = get_style_ids_for_mode("story")
     styles_data = _load_styles().get("available", {})
     style_guide_lines = []
-    for sid, info in styles_data.items():
+    for sid in available_styles:
+        info = styles_data.get(sid, {})
         style_guide_lines.append(
             f'  - "{sid}": {info.get("description", "")} '
             f'Best for: {info.get("best_for", "")}'
@@ -202,7 +214,7 @@ Across the story: at least ONE wide establishing shot, at least ONE insert or cl
   "title": "<3-6 words>",
   "theme": "<the user's theme>",
   "culture": "indian | western | japanese | mixed | animal-kingdom | fantasy",
-  "style": "storybook | cartoon | anime | watercolor | pixelart",
+  "style": "pixar | cartoon_saloon | claymation | stickman",
   "duration_seconds": <total — narration is read aloud at ~2.5 words/sec>,
   "characters": [
     {{
@@ -425,30 +437,64 @@ _SPEECH_VERBS = (
     # action verbs the LLM uses as a dialogue tag ("Tortoise smiled, ...")
     r"smiled|nodded|beamed|shrugged|chuckled|grumbled|huffed|purred|smirked|"
     r"whimpered|sniffed|winked|waved|yawned|panted|breathed|groaned|whined|"
-    r"cheered|pleaded|bragged|wailed|hollered|stammered|chimed)"
+    r"cheered|pleaded|bragged|wailed|hollered|stammered|chimed|"
+    # NOTE: only verbs that read as SPEECH/emotive attribution belong here.
+    # Plain physical actions that commonly follow a pronoun in ordinary
+    # narration (paused, pointed, gestured, blinked) are deliberately EXCLUDED —
+    # the trailing scrub is greedy, so "he paused for a rest, ..." would lose the
+    # rest of the sentence.
+    r"frowned|scowled|mused|realized|realised|repeated|murmured|whispered|"
+    r"exclaimed|grinned|called|cried|shouted|challenged|dared|urged|teased|"
+    r"taunted|scoffed|retorted|countered|snickered|chirped)"
 )
 # Optional adverb(s) between the subject and the verb: "he softly replied".
 _ADV = r"(?:\w+ly\s+)?"
 
+# Verbs that ONLY ever introduce speech (never plain physical action). A line
+# carrying "said Pip," / "Pip replied:" is dialogue even with no '?'/'!' and no
+# first/second-person pronoun — unlike "smiled"/"nodded", which double as action.
+_PURE_SPEECH_VERBS = (
+    r"(?:said|says|asked|replied|reply|answered|called|cried|shouted|"
+    r"whispered|exclaimed|added|murmured|announced|declared|yelled|"
+    r"wondered|insisted|begged|warned|promised|crowed|chirped)"
+)
 
-def _strip_attribution(text: str, speaker: str) -> str:
+
+def _strip_attribution(text: str, speaker: str, extra_names=None) -> str:
     """Remove `he said` / `, she replied` / `X asked,` attribution tags from a
     character's spoken line so TTS voices ONLY the dialogue. Deterministic —
-    works even when the LLM used comma-attribution instead of quotes."""
+    works even when the LLM used comma-attribution instead of quotes.
+
+    `extra_names` = the full cast. A line is often mis-tagged `narrator` while
+    still carrying `... asked Finn, surprised` — without the cast names as
+    candidate subjects the tag survives and TTS speaks it. Passing every cast
+    name lets the scrub catch the tag regardless of the shot's `speaker`."""
     if not text:
         return text
     t = text.strip()
-    # Build a subject alternation: pronouns + each token of the speaker name.
-    name_tokens = [re.escape(tok) for tok in speaker.split() if tok]
+    # Build a subject alternation: pronouns + speaker name tokens + every cast
+    # name token (so a stray "asked Finn" is removed even on a narrator line).
+    name_tokens = [tok for tok in speaker.split() if tok]
+    for nm in (extra_names or []):
+        name_tokens.extend(tok for tok in str(nm).split() if tok)
+    name_tokens = [re.escape(tok) for tok in dict.fromkeys(name_tokens)]
     subj = "|".join(["he", "she", "they", "it"] + name_tokens) or "he|she|they|it"
 
     # Trailing: from the attribution tag to the END of the line — this also
     # drops any stage-action the author appended after it ("..., said Fox
-    # nervously, tugging his tail." -> "..."). Handles both subject-verb
-    # ("he said") and inverted ("said Fox") order.
+    # nervously, tugging his tail." -> "..."). Safe to be greedy because `subj`
+    # is the SPEAKER's own name + pronouns only (not every cast name), so a
+    # subordinate clause about a DIFFERENT character ("..., while Terry continued
+    # to crawl...") is never matched. Handles subject-verb ("he said") and
+    # inverted ("said Fox") order.
     t = re.sub(rf"[,\s]+(?:{subj})\s+{_ADV}{_SPEECH_VERBS}\b.*$", "", t,
                flags=re.IGNORECASE)
     t = re.sub(rf"[,\s]+{_ADV}{_SPEECH_VERBS}\s+(?:{subj})\b.*$", "", t,
+               flags=re.IGNORECASE)
+    # Subject-less broken tag that starts its own sentence after the spoken line
+    # ("See ya later! said to the sun as he sped past." -> "See ya later!"). A
+    # sentence beginning with a bare speech verb is never real narration.
+    t = re.sub(rf"(?<=[.!?])\s+{_ADV}{_SPEECH_VERBS}\b[^.!?]*[.!?]?\s*$", "", t,
                flags=re.IGNORECASE)
     # Leading: "Featherlite said, " / "He replied: " — the comma/colon is
     # REQUIRED so a real description ("He said nothing and left.") is not eaten.
@@ -493,6 +539,63 @@ def _looks_like_narration(text: str, speaker: str) -> bool:
     return False
 
 
+_ATTRIB_NAME = None  # lazy-compiled per cast (see _narrator_dialogue_owner)
+
+
+def _narrator_dialogue_owner(text: str, cast_names: list) -> Optional[str]:
+    """If a NARRATOR-tagged line is really a character's spoken line carrying an
+    attribution tag (`... asked Finn, surprised`, `Finn wondered aloud, ...`),
+    return that character's name so the caller can retag the speaker. Returns
+    None for genuine narration. Conservative: only fires when the line ALSO
+    carries a speech cue (a `?`/`!` or a first/second-person pronoun), so plain
+    third-person action like `Finn smiled and ran.` is never mistaken for
+    dialogue."""
+    if not text or not cast_names:
+        return None
+    names = [(nm or "").strip() for nm in cast_names if (nm or "").strip()]
+
+    # 1) Explicit PURE-speech attribution ("said Pip,", "Pip replied:") — a
+    # certain dialogue signal, so no '?'/'!'/pronoun cue is required. Punctuation
+    # after the tag is required so plain narration ("Pip said nothing and left")
+    # is not mistaken for a tag.
+    for nm in names:
+        n = re.escape(nm)
+        if re.search(rf"\b{_PURE_SPEECH_VERBS}\s+{n}\b\s*[,.!?]", text, re.IGNORECASE) or \
+           re.search(rf"\b{n}\b\s+{_ADV}{_PURE_SPEECH_VERBS}\s*[,:]", text, re.IGNORECASE):
+            return nm
+
+    # The rest needs a spoken-line cue to avoid retagging plain narration.
+    has_cue = ("?" in text or "!" in text or bool(_FIRST_SECOND_PERSON.search(text)))
+    if not has_cue:
+        return None
+
+    # 2) Action-as-tag attribution ("Pip grinned,") — only with a cue present.
+    for nm in names:
+        n = re.escape(nm)
+        if re.search(rf"\b{n}\b\s+{_ADV}{_SPEECH_VERBS}\b", text, re.IGNORECASE) or \
+           re.search(rf"\b{_SPEECH_VERBS}\s+{n}\b", text, re.IGNORECASE):
+            return nm
+
+    # 3) Untagged dialogue that DIRECTLY ADDRESSES one character (vocative): in a
+    # two-character scene the speaker is the OTHER character ("Tess, you ready?"
+    # -> Pip speaks; "Pip! Wait!" -> Tess speaks). Restricted to vocative position
+    # (name at start/end or comma-set-off) so a line where the name is the SUBJECT
+    # ("Bunny took off, I'm ahead") is NOT mis-assigned to the other character.
+    def _is_vocative(nm: str) -> bool:
+        n = re.escape(nm)
+        return bool(
+            re.search(rf"(?:^|[,.!?]\s*){n}\s*[,!?]", text, re.IGNORECASE)
+            or re.search(rf",\s*{n}\s*[.!?]*$", text, re.IGNORECASE)
+        )
+    addressed = [nm for nm in names if _is_vocative(nm)]
+    subjects = [nm for nm in names
+                if nm not in addressed and re.search(rf"\b{re.escape(nm)}\b", text, re.IGNORECASE)]
+    others = [nm for nm in names if nm not in addressed]
+    if len(addressed) == 1 and not subjects and len(others) == 1:
+        return others[0]
+    return None
+
+
 def _validate_and_default(script: dict) -> dict:
     """Apply sensible defaults for missing fields. Does NOT cap shot count."""
     available_styles = get_available_style_ids()
@@ -511,6 +614,33 @@ def _validate_and_default(script: dict) -> dict:
             else:
                 normalized.append({"name": c.strip(), "type": "character", "appearance": ""})
     script["characters"] = normalized
+
+    # Canonicalize names: "Greenfield the Rabbit" -> "Greenfield" (the species
+    # belongs in `type`, not the name). Propagate the rename through every
+    # `speaker` and `narration` so the spoken story matches the cast list.
+    rename = {}
+    for ch in script["characters"]:
+        if not isinstance(ch, dict):
+            continue
+        nm = (ch.get("name") or "").strip()
+        m = re.match(r"^(.+?)\s+the\s+\w+$", nm, re.IGNORECASE)
+        if m and m.group(1).strip() and m.group(1).strip().lower() != nm.lower():
+            short = m.group(1).strip()
+            rename[nm] = short
+            ch["name"] = short
+    if rename:
+        for s in script.get("shots", []):
+            if not isinstance(s, dict):
+                continue
+            spk = (s.get("speaker") or "").strip()
+            if spk in rename:
+                s["speaker"] = rename[spk]
+            narr = s.get("narration")
+            if isinstance(narr, str):
+                for old, new in rename.items():
+                    narr = re.sub(rf"\b{re.escape(old)}\b", new, narr)
+                s["narration"] = narr
+        log.info(f"Canonicalized character names: {rename}")
 
     # Ensure every character has a locked_visual_token. If the LLM didn't
     # provide one, derive it from appearance (truncated). This is the SINGLE
@@ -584,6 +714,13 @@ def _validate_and_default(script: dict) -> dict:
             beat = (s.get("beat") or "").strip().lower()
             s["shot_type"] = _beat_to_shot_type.get(beat, "medium")
 
+    # Force sequential shot_number 1..N. The structurer sometimes repeats or
+    # skips numbers (seen: two "shot 10"), which would make on-disk artifacts
+    # (clip_{id}_shot{N}.mp4, approved_prompts keys, seeds) collide/overwrite.
+    for idx, s in enumerate(script.get("shots", []), start=1):
+        if isinstance(s, dict):
+            s["shot_number"] = idx
+
     # Default + validate per-shot `speaker`. It selects the TTS voice and the
     # talking-vs-narrator render route (character → lip-synced backend later).
     # Missing, "narrator", or a name not in the cast → "narrator" so the
@@ -606,6 +743,20 @@ def _validate_and_default(script: dict) -> dict:
                 f"defaulting to narrator."
             )
             s["speaker"] = "narrator"
+
+    cast_names = list(canon.values())
+
+    # Forward retag: a NARRATOR line that is actually a character's spoken line
+    # with an attribution tag ("... asked Finn, surprised") → retag speaker to
+    # that character so it gets their voice (and the tag is scrubbed below).
+    for s in script["shots"]:
+        if (s.get("speaker") or "narrator") != "narrator":
+            continue
+        owner = _narrator_dialogue_owner(s.get("narration", ""), cast_names)
+        if owner:
+            log.info(f"Shot {s.get('shot_number')} narrator line is {owner}'s "
+                     f"dialogue; retagging speaker -> {owner}.")
+            s["speaker"] = owner
 
     # Inverse-leak guard: a character shot whose line is plainly third-person
     # narration about that character → retag to narrator (safe: VO, no lip-sync
@@ -636,11 +787,20 @@ def _validate_and_default(script: dict) -> dict:
     for s in script["shots"]:
         narr = s.get("narration")
         if isinstance(narr, str):
+            # Speaker-only subjects here: the narrator->character retag above
+            # already fixed dialogue mislabeled as narrator, so feeding ALL cast
+            # names into these destructive patterns only risks gutting genuine
+            # narration that happens to start with "<Character> <action-verb>,".
             stripped = _strip_attribution(narr, s.get("speaker") or "")
             if stripped != narr:
                 log.info(f"Shot {s.get('shot_number')} attribution scrubbed: "
                          f"'{narr}' -> '{stripped}'")
                 s["narration"] = stripped
+
+    # Pin ONE light direction for the whole film so every shot's lighting comes
+    # from the same side (the assembler reads this; stops shot-to-shot flips).
+    if not script.get("_light_direction"):
+        script["_light_direction"] = "the upper right"
 
     # Cast a distinct speaking voice to each character (idempotent — never
     # overrides a voice the user already picked). Narrator uses the global voice.
@@ -746,10 +906,11 @@ def _build_structurer_system_prompt(shot_min: int = 5, shot_max: int = 9) -> str
     in the JSON must be drawn from the prose verbatim (or near-verbatim — only
     splits and very light edits allowed).
     """
-    available_styles = get_available_style_ids()
+    available_styles = get_style_ids_for_mode("story")
     styles_data = _load_styles().get("available", {})
     style_guide_lines = []
-    for sid, info in styles_data.items():
+    for sid in available_styles:
+        info = styles_data.get(sid, {})
         style_guide_lines.append(
             f'  - "{sid}": {info.get("description", "")}'
         )
@@ -770,7 +931,7 @@ You are a story structurer. The story has already been WRITTEN by another author
 1c. **DIALOGUE → speaker + spoken words (this is a TALKING film).** Every shot has a `speaker` field. Classify each sentence of the prose:
 - **Is it something a character SAYS?** (in quotes, OR clearly spoken: a question, command, exclamation, greeting, or first-person "I/we/my" line addressed to another character). → It becomes its OWN shot. Set `speaker` to that character's EXACT name and put ONLY the spoken words in `narration` — strip the quotation marks AND any `X said`/`asked X` attribution. Example: prose `"Let's race!" said Mr. Snail.` → `speaker: "Mr. Snail"`, `narration: "Let's race!"`.
 - **Is it the narrator describing the scene/action in third person?** → `speaker: "narrator"`, keep the prose verbatim.
-Rules: ONE speaker per shot — never merge two characters' lines into one shot; a quoted exchange becomes consecutive shots that alternate `speaker`. **NEVER leave a spoken line tagged `narrator`.** A sentence is SPOKEN if it is a question, a command, an exclamation, a greeting, or uses first/second person ("I", "we", "you", "let's") — these are ALWAYS a character talking, never the narrator. If the prose did not mark who said it, INFER the speaker from the story: in a two-character scene the dialogue alternates between them, and lines often name the person being spoken TO (so the OTHER character is the speaker). Assign your best-guess character. Use `narrator` ONLY for third-person description of the scene or an action ("Twig took a deep breath", "The two friends reached the river").
+Rules: ONE speaker per shot — never merge two characters' lines into one shot; a quoted exchange becomes consecutive shots that alternate `speaker`. **A character shot's narration is ONLY the spoken words — NEVER append a following description sentence to it.** If the prose is `"This is easy!" he yawned. Then he rested under a tree.`, that is TWO shots: shot A `speaker: "<character>"`, `narration: "This is easy!"`; shot B `speaker: "narrator"`, `narration: "Then he rested under a tree."`. Do not put the spoken line and the description in the same shot. **NEVER leave a spoken line tagged `narrator`.** A sentence is SPOKEN if it is a question, a command, an exclamation, a greeting, or uses first/second person ("I", "we", "you", "let's") — these are ALWAYS a character talking, never the narrator. If the prose did not mark who said it, INFER the speaker from the story: in a two-character scene the dialogue alternates between them, and lines often name the person being spoken TO (so the OTHER character is the speaker). Assign your best-guess character. Use `narrator` ONLY for third-person description of the scene or an action ("Twig took a deep breath", "The two friends reached the river").
 
 Worked mapping (prose → shots):
 - `"Shy! We need to cross today!" Twig called.` → speaker: Twig, narration: "Shy! We need to cross today!"
@@ -793,6 +954,8 @@ Worked mapping (prose → shots):
 
 4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only; NO poses, NO emotions, NO setting) that MUST state an explicit AGE first: for humans give a number ("a 7-year-old girl..."), for animals/creatures give a clear life stage ("a young sparrow...", "an old grey-whiskered dog..."). Then species, color, body shape, clothing, distinctive features. Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature` — it must start with the age words.
 
+4b. **ONE canonical name per character, used consistently.** Each character's `name` is a SHORT proper name only — NOT "Greenfield the Rabbit", just "Greenfield"; never put the species in the name. In EVERY `narration` line refer to that character by their exact canonical name. If the author's prose called the same character by a nickname or by their species as if it were a name ("Bunny", "the rabbit", "Tortoise"), REWRITE that mention to the canonical name so the spoken story and the pictures always match. Never introduce a second name for a character.
+
 5. **If the prose only hints at a character's look ("a small girl", "a brown dog"), invent simple visual details that fit the story tone.** Pick concrete colors. Keep it kid-friendly. Be consistent across shots.
 
 6. **Setting field**: one short sentence describing where the story takes place.
@@ -804,7 +967,11 @@ Worked mapping (prose → shots):
 
 9. **Culture field**: pick from `indian | western | japanese | mixed | animal-kingdom | fantasy` — infer from prose, default `mixed`.
 
-10. **Frame and motion prompts**: write SHORT placeholders only (~20-40 words each). A downstream module (shot_tailor) rewrites them beat-by-beat with rendering rules — don't waste effort here. Just describe: subject + brief pose + camera framing for first_frame_prompt; small change for last_frame_prompt; gentle motion for motion_prompt.
+10. **Frame and motion prompts** (~20-40 words each) — these are the REAL image prompts, write them properly:
+   - **ALWAYS name the character by their exact name** (e.g. "Beep", "Lila"). NEVER refer to a character by type or description ("the robot", "a small robot", "the boy", "a child", "a mouse"). The renderer injects each named character's locked look automatically — if you don't use the name, it draws a random stranger and breaks consistency.
+   - `first_frame_prompt`: named subject + pose + camera framing + lighting. Do NOT re-describe hair/clothes/age/species (that is auto-injected). Example: "Beep rolls in through the classroom doorway, looking around shyly. Wide shot, warm morning light." For an establishing/atmosphere shot with no character on screen, describe the location only.
+   - `last_frame_prompt`: same rules, a clearly different pose/expression to show change.
+   - `motion_prompt`: physical motion + one camera move, no speech.
 
 11. **Moral**: one-sentence summary of the lesson for the parent (NOT spoken in the story).
 
@@ -835,9 +1002,9 @@ Worked mapping (prose → shots):
       "speaker": "narrator | <exact character name>",
       "narration": "<if speaker is a character: their SPOKEN words only (quotes + 'X said' stripped). If speaker is 'narrator': the author's prose verbatim. 6-15 words. NEVER empty.>",
       "visual_description": "<one short sentence>",
-      "first_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
-      "last_frame_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>",
-      "motion_prompt": "<short placeholder, ~20-40 words; shot_tailor will rewrite>"
+      "first_frame_prompt": "<~20-40 words: NAME the character (never 'the robot'/'the boy') + pose + camera framing + lighting; no appearance words>",
+      "last_frame_prompt": "<~20-40 words: same rules, a different pose/expression to show change>",
+      "motion_prompt": "<~20-40 words: physical motion + one camera move, no speech>"
     }}
   ],
   "moral": "<one sentence summary for parents>",
@@ -1216,11 +1383,22 @@ def format_for_discord(script: dict) -> str:
     style_info = get_style_description(style)
     style_label = style_info.get("display_name", style) if style_info else style
 
+    audio_first = bool(script.get("_audio_first"))
+    if audio_first:
+        # Real voiced length from the rendered master track (sum of shot windows).
+        voiced = sum(float(s.get("win_dur") or 0) for s in script.get("shots", []))
+        dur_line = (f"🎙️ **Audio-first** · voiceover **rendered** "
+                    f"({voiced:.0f}s) — pauses set the cuts")
+    else:
+        dur_line = (f"⏱️ Est. narration: "
+                    f"**~{_count_narration_words(script) / WORDS_PER_SECOND:.0f}s** "
+                    f"({_count_narration_words(script)} words)")
+
     lines = [
         f"**📖 {title}**{rev_suffix}",
         f"_Theme: {theme}_",
         f"🎨 Style: **{style_label}**  ·  🌍 Culture: **{culture}**  ·  🎬 Shots: **{len(script.get('shots', []))}**",
-        f"⏱️ Est. narration: **~{_count_narration_words(script) / WORDS_PER_SECOND:.0f}s** ({_count_narration_words(script)} words)",
+        dur_line,
         f"ID: `{script_id}`",
         "",
         "**Characters:**",
@@ -1239,12 +1417,17 @@ def format_for_discord(script: dict) -> str:
     lines.append("")
     lines.append(f"**Setting:** {script.get('setting', '')}")
     lines.append("")
-    lines.append("**Shots:**")
+    if audio_first:
+        lines.append("**Shots:** _(narration is voiced & locked — pauses set the cuts)_")
+    else:
+        lines.append("**Shots:**")
     for shot in script.get("shots", []):
         n = shot.get("shot_number", "?")
         narration = shot.get("narration", "")
         vd = shot.get("visual_description", "")
-        lines.append(f"**{n}.** 🎙️ *{narration}*")
+        wd = shot.get("win_dur")
+        tag = f" `⏱{float(wd):.1f}s`" if audio_first and wd else ""
+        lines.append(f"**{n}.**{tag} 🎙️ *{narration}*")
         lines.append(f"       🖼️ {vd}")
     lines.append("")
     lines.append(f"✨ **Moral:** {moral}")

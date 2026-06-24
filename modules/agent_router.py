@@ -46,7 +46,7 @@ TOOLS = [
         ),
         "args": {
             "theme": "string — the story theme (required)",
-            "style": "string OR null — storybook|cartoon|anime|watercolor|pixelart (only if user asked)",
+            "style": "string OR null — pixar|cartoon_saloon|claymation|stickman (only if user asked)",
             "culture": "string OR null — indian|western|japanese|mixed|animal-kingdom|fantasy (only if user asked)",
         },
     },

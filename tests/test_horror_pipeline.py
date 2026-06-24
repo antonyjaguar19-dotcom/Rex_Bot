@@ -70,26 +70,24 @@ def test_scene_prompt_injects_location_and_photoreal():
             "location": "Pier", "characters": ["Mara"]}
     loc_map = {"Pier": "a rotting wooden pier swallowed by sea fog"}
     char_look = {"Mara": "34-year-old woman, short dark hair, yellow raincoat"}
-    # no-LoRA: look tokens injected
-    p = hsp._scene_prompt(beat, loc_map, char_look, use_lora=False)
+    # prompt-token consistency: scene + location + char look + photoreal suffix
+    p = hsp._scene_prompt(beat, loc_map, char_look)
     assert "fog-drowned pier" in p
     assert "rotting wooden pier" in p          # location desc injected
-    assert "yellow raincoat" in p              # char look injected (no LoRA)
+    assert "yellow raincoat" in p              # char look injected (prompt token)
     assert "photorealistic" in p.lower()
-    # LoRA: skip verbose look tokens (identity from LoRA trigger by name)
-    p2 = hsp._scene_prompt(beat, loc_map, char_look, use_lora=True)
-    assert "yellow raincoat" not in p2
-    assert "rotting wooden pier" in p2
 
 
-def test_flux_lora_not_ready_without_chars(monkeypatch):
+def test_flux_ckpt_ready_handles_missing(monkeypatch):
     from modules import horrorstory_pipeline as hsp
-    from modules.lora import store as lora_store
-    monkeypatch.setattr(lora_store, "all_characters", lambda: {})
-    assert hsp._flux_lora_ready() is False
+    from modules import model_registry
+    monkeypatch.setattr(model_registry, "get_available", lambda *a, **k: None)
+    assert hsp._flux_ckpt_ready() is False
 
 
 def test_lora_autotrain_importable():
+    # Per-character LoRA dropped from the horror pipeline but the training setup
+    # is kept for later reuse.
     from modules import lora_autotrain
     assert hasattr(lora_autotrain, "ensure_character_loras")
 

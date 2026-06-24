@@ -103,21 +103,26 @@ class StoryboardResult:
 # PROMPT FORMATTING — uses the script's chosen style
 # ==============================================================================
 
-def _characters_description(script: dict, raw_prompt: str = "") -> str:
+def _characters_description(script: dict, raw_prompt: str = "", match_text: str = "") -> str:
     """Build the locked character description prepend conditionally.
-    Only injects characters whose names appear in the raw_prompt.
+    Injects a character whose name appears in the prompt OR in `match_text`
+    (the shot's narration + speaker). This stops identity drift when the LLM
+    writes the first_frame_prompt by description ("small robot") instead of by
+    name — the narration still names the character, so the locked token is
+    injected and flux renders the right one.
     """
     chars = script.get("characters", [])
     parts = []
-    prompt_lower = raw_prompt.lower()
+    corpus = f"{raw_prompt} {match_text}".lower()
+    have_filter = bool(raw_prompt or match_text)
     for ch in chars:
         if isinstance(ch, dict):
             name = ch.get("name", "").strip()
-            
-            # Skip this character if their name isn't in the prompt
-            if raw_prompt and name and name.lower() not in prompt_lower:
+
+            # Skip this character if their name isn't anywhere in the corpus
+            if have_filter and name and name.lower() not in corpus:
                 continue
-                
+
             locked = (ch.get("locked_visual_token") or ch.get("appearance") or "").strip()
             if name and locked:
                 parts.append(f"{name} — {locked}")
@@ -126,7 +131,7 @@ def _characters_description(script: dict, raw_prompt: str = "") -> str:
         elif isinstance(ch, str):
             # Legacy string format
             name = ch.split(",")[0].split("-")[0].strip()
-            if raw_prompt and name and name.lower() not in prompt_lower:
+            if have_filter and name and name.lower() not in corpus:
                 continue
             parts.append(name)
     return "; ".join(parts) if parts else ""
@@ -163,8 +168,11 @@ def _rewrite_as_paragraph(raw_prompt: str, script: dict, shot: dict) -> str:
         if tag.lower() in cleaned.lower():
             cleaned = cleaned.rstrip(" .,")
 
-    # Pass the prompt in so we only fetch characters actually in this shot
-    char_para = _characters_description(script, raw_prompt=cleaned)
+    # Match characters by the shot's narration + speaker too, so a character
+    # named only in the narration (prompt described them by type) still gets the
+    # locked token injected — prevents the protagonist rendering as a stranger.
+    match_text = f"{shot.get('narration', '')} {shot.get('speaker', '')}"
+    char_para = _characters_description(script, raw_prompt=cleaned, match_text=match_text)
     setting = script.get("setting", "")
     style_suffix = _style_suffix(script)
 
@@ -302,7 +310,7 @@ def generate_storyboard(
 
     backend = ib.get_active_backend()
     backend_id = backend.backend_id
-    style_used = script.get("style", "storybook")
+    style_used = script.get("style", "pixar")
     log.info(
         f"Generating storyboard for script {script_id} "
         f"({len(shots)} shots, style={style_used}) using backend {backend_id}"

@@ -429,7 +429,7 @@ class SettingsView(_SubView):
     @ui.button(label="🎨 Style", style=discord.ButtonStyle.primary, row=0, custom_id="cp:set:style")
     async def b1(self, i, b):
         await i.response.send_modal(ValueModal(
-            "Set Style", "Style", "storybook / cartoon / anime / watercolor / pixelart",
+            "Set Style", "Style", "pixar / cartoon_saloon / claymation / stickman",
             "set_style", "style_id",
         ))
 

@@ -41,11 +41,11 @@ OUTPUTS_DIR = PROJECT_ROOT / "04_Outputs" / "horror"
 
 # Pacing: narration ~150 wpm. Default target is SHORT + punchy (5 min ≈ 750 words).
 WORDS_PER_MINUTE = 150
-DEFAULT_MINUTES = 5        # max ~5-min horror videos (tight, scary, animated)
+DEFAULT_MINUTES = 2        # max ~2-min horror videos (tight, scary, animated)
 # Per-shot beat sizing: ~45-60 words ≈ ~20-26s of narration per shot.
 WORDS_PER_BEAT = 52
 MERGE_MIN_WORDS = 30       # merge consecutive beats below this into one
-MAX_BEATS = 16             # ~5-min cap (each beat -> a Wan clip, so keep it tight)
+MAX_BEATS = 10             # ~2-min cap (each beat -> a Wan clip, so keep it tight)
 MIN_BEAT_WORDS = 8         # drop empty/too-short fragments
 
 # One designed deep narrator voice, reused for the whole story (VoxCPM2).
@@ -243,11 +243,11 @@ def generate_horror_story(
                 pass
 
     _job_start = _t.time()
-    target_minutes = max(2, min(int(target_minutes or DEFAULT_MINUTES), 8))
+    target_minutes = max(1, min(int(target_minutes or DEFAULT_MINUTES), 3))
     target_words = int(target_minutes * WORDS_PER_MINUTE)
     # Scale structure to length: ~1 chapter/min, ~2-3 beats each, capped tight.
-    n_chapters = max(3, min(target_minutes, 7))
-    total_beats_target = max(6, min(round(target_words / WORDS_PER_BEAT), MAX_BEATS))
+    n_chapters = max(2, min(target_minutes + 1, 4))
+    total_beats_target = max(5, min(round(target_words / WORDS_PER_BEAT), MAX_BEATS))
     beats_lo = max(2, total_beats_target // n_chapters)
     beats_hi = beats_lo + 1
 

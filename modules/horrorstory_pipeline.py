@@ -35,34 +35,30 @@ NARRATION_DIR = PROJECT_ROOT / "04_Outputs" / "audio"
 PHOTO_STYLE_ID = "photoreal"
 
 
-def _scene_prompt(beat: dict, loc_map: dict, char_look: dict, use_lora: bool) -> str:
-    """Beat prompt: scene + location description (+ character look tokens when no
-    LoRA) + photoreal suffix. With LoRA, the character NAME in image_prompt makes
-    flux_lora auto-stack the identity, so we skip the verbose look tokens."""
+def _scene_prompt(beat: dict, loc_map: dict, char_look: dict) -> str:
+    """Beat prompt: scene + location + character look tokens + photoreal suffix.
+    Character consistency comes from these prompt tokens (locked_token) — no
+    per-character LoRA. Same prompt-driven approach as the kids mode."""
     suffix = (get_style_description(PHOTO_STYLE_ID) or {}).get("prompt_suffix", "")
     parts = [beat.get("image_prompt", "").strip()]
     loc = loc_map.get(beat.get("location", ""))
     if loc:
         parts.append(loc)
-    if not use_lora:
-        for nm in beat.get("characters", []):
-            tok = char_look.get(nm)
-            if tok:
-                parts.append(f"{nm}: {tok}")
+    for nm in beat.get("characters", []):
+        tok = char_look.get(nm)
+        if tok:
+            parts.append(f"{nm}: {tok}")
     if suffix:
         parts.append(suffix)
     return ", ".join(p for p in parts if p)
 
 
-def _flux_lora_ready() -> bool:
-    """True if the flux_lora backend can run: its checkpoint is installed AND at
-    least one character LoRA is registered. Else we render with the active backend
-    (degraded: no identity lock) so horror still works pre-install."""
+def _flux_ckpt_ready() -> bool:
+    """True if the flux_lora backend's checkpoint is installed. We render horror
+    stills on Flux + a fixed STYLE LoRA (Horrorstyle). No character LoRA needed.
+    Falls back to the active backend (Z-Image) when the flux ckpt is absent."""
     try:
         from modules import model_registry
-        from modules.lora import store as lora_store
-        if not lora_store.all_characters():
-            return False
         cfg = model_registry.get_available("image_backend", "comfyui_flux_lora")
         if not cfg:
             return False
@@ -73,8 +69,8 @@ def _flux_lora_ready() -> bool:
         return False
 
 
-def _make_image_backend(use_lora: bool):
-    if use_lora:
+def _make_image_backend(use_flux: bool):
+    if use_flux:
         import importlib
         from modules import model_registry
         cfg = model_registry.get_available("image_backend", "comfyui_flux_lora")
@@ -268,21 +264,25 @@ def render_horror(
         wsum = sum(weights)
         durations = [round(w / wsum * total_dur, 3) for w in weights]
 
-    # ---- 2a. Character LoRAs (identity lock) — train any missing, gated ----
-    gpu_utils.free_comfyui_vram()
-    if story.get("characters"):
-        try:
-            from modules import lora_autotrain
-            lora_autotrain.ensure_character_loras(story, progress_cb=progress_cb)
-        except Exception as e:
-            log.warning(f"LoRA auto-train skipped: {e}")
-
-    # ---- 2b. Photoreal stills (one per beat) ----
-    use_lora = _flux_lora_ready()
+    # ---- 2. Horror stills (one per beat) — Flux + a fixed STYLE LoRA
+    #         (Horrorstyle). Character consistency = prompt tokens, NOT a trained
+    #         per-character LoRA (dropped: costly + unstable training faces). The
+    #         lora_autotrain setup stays in the repo for later reuse. ----
+    use_flux = _flux_ckpt_ready()
+    style_kw = {}
+    if use_flux:
+        style = rs.get_horror_style_lora()
+        if style:
+            style_kw = {
+                "use_char_lora": False,
+                "extra_loras": [{"lora_file": style,
+                                 "weight": rs.get_horror_style_lora_weight()}],
+            }
     _p(f"🖼️ rendering {len(beats)} stills "
-       f"({'flux_lora identity-locked' if use_lora else 'active backend (no LoRA)'})...")
+       f"({'flux + Horrorstyle LoRA' if use_flux else 'active backend (Z-Image)'}, "
+       f"prompt-token consistency)...")
     gpu_utils.free_comfyui_vram()
-    img = _make_image_backend(use_lora)
+    img = _make_image_backend(use_flux)
     loc_map = {lc.get("name", ""): lc.get("description", "")
                for lc in story.get("locations", [])}
     char_look = {c.get("name", ""): c.get("locked_token", "")
@@ -294,10 +294,11 @@ def render_horror(
     for i, b in enumerate(beats):
         _p(f"🖼️ still {i+1}/{len(beats)}...")
         path = img.generate(
-            prompt=_scene_prompt(b, loc_map, char_look, use_lora),
+            prompt=_scene_prompt(b, loc_map, char_look),
             aspect_ratio="16:9",
             seed=random.randint(1, 2**31 - 1),
             output_filename=str(out_dir / f"beat_{i:04d}.png"),
+            **style_kw,
         )
         scene_images.append(Path(path))
 

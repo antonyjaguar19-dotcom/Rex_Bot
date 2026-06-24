@@ -431,10 +431,11 @@ def set_horror_qwen_instruct(text: str) -> None:
 
 
 def get_horror_qwen_pitch() -> float:
-    """Post-process pitch/tempo factor for the horror narrator. <1.0 makes the
-    voice DEEPER and SLOWER (ffmpeg asetrate). 1.0 = off. Default 0.90."""
+    """Post-process pitch/tempo factor for the horror narrator. <1.0 deepens via
+    ffmpeg asetrate (tempo restored, no slow-mo). 1.0 = OFF (raw TTS, never sped
+    up or slowed). Default 1.0 — keep the narrator's natural voice untouched."""
     val = _load().get("horror_qwen_pitch")
-    return float(val) if val is not None else 0.90
+    return float(val) if val is not None else 1.0
 
 
 def set_horror_qwen_pitch(factor: float) -> None:
@@ -486,6 +487,35 @@ def set_horror_video_mode(mode: str) -> None:
     data["horror_video_mode"] = mode
     _save(data)
     log.info(f"Horror video mode: {mode}")
+
+
+# --- Horror visuals: fixed STYLE LoRA (no per-character LoRA) ---
+
+def get_horror_style_lora() -> str:
+    """ComfyUI loras/ filename of the horror STYLE LoRA stacked on every horror
+    still (flux_lora backend). Identity consistency comes from prompt tokens, not
+    a character LoRA. '' = no style LoRA. Default 'Horrorstyle.safetensors'."""
+    val = _load().get("horror_style_lora")
+    return "Horrorstyle.safetensors" if val is None else str(val)
+
+
+def set_horror_style_lora(name: str) -> None:
+    data = _load()
+    data["horror_style_lora"] = (name or "").strip()
+    _save(data)
+    log.info(f"Horror style LoRA: {name}")
+
+
+def get_horror_style_lora_weight() -> float:
+    val = _load().get("horror_style_lora_weight")
+    return float(val) if val is not None else 0.8
+
+
+def set_horror_style_lora_weight(w: float) -> None:
+    data = _load()
+    data["horror_style_lora_weight"] = float(w)
+    _save(data)
+    log.info(f"Horror style LoRA weight: {w}")
 
 
 # --- Horror story mode: ambient drone bed under narration ---
@@ -550,7 +580,7 @@ def get_effective_style() -> str:
     override = get_style_override()
     if override:
         return override
-    return "storybook"  # fallback default
+    return "pixar"  # fallback default
 
 
 def get_effective_aspect_ratio() -> str:

@@ -6,7 +6,7 @@
 **Jeffy** — VFX artist (Maya, Nuke, Redshift, Shotgun), Chennai. Zero coding. Use VFX analogies. Windows 10/11. **RTX 5080 (16 GB VRAM), 64 GB RAM.** (Upgraded from RTX 3070 8GB 2026-05-29.) VRAM no longer hard bottleneck — full-quality paths viable.
 
 ## Core Rules (NEVER violate)
-1. **Containment** — everything inside `E:\Rexjaw_VFX`. No system pip.
+1. **Containment** — all inside `E:\Rexjaw_VFX`. No system pip.
 2. **No secrets in repo** — `.env` + `secrets.env` gitignored.
 3. **Approval gates** — pause at script, prompts, storyboard, video, final.
 4. **VRAM discipline** — call ComfyUI `/free`, unload Ollama between stages.
@@ -29,7 +29,7 @@ E:\Rexjaw_VFX\
 ---
 
 ## 1. What This Bot Does
-Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollama) → per-shot storyboard image (ComfyUI + Z-Image Turbo) → per-shot video (ComfyUI + Wan 2.2 14B I2V @16fps) → Kokoro TTS narration → assemble 9x16 + 16x9 + 1x1 MP4s for YouTube Shorts. Driven by Discord bot **and** NiceGUI browser dashboard (localhost:7860, left-nav tabbed UI), shared on-disk JSON state synced both ways. User approves every stage; prompts + narration editable inline (manual or AI rewrite). Dashboard reachable from phone via ngrok tunnel behind a password gate. Strict containment in `E:\Rexjaw_VFX`.
+Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollama) → per-shot storyboard image (ComfyUI + Z-Image Turbo) → per-shot video (ComfyUI + Wan 2.2 14B I2V @16fps) → Kokoro TTS narration → assemble 9x16 + 16x9 + 1x1 MP4s for YouTube Shorts. Driven by Discord bot **and** NiceGUI browser dashboard (localhost:7860, left-nav tabbed UI), shared on-disk JSON state synced both ways. User approves every stage; prompts + narration editable inline (manual or AI rewrite). Dashboard reachable from phone via ngrok tunnel behind password gate. Strict containment in `E:\Rexjaw_VFX`.
 
 ---
 
@@ -99,22 +99,29 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ---
 
+## 3b. What We Changed (2026-06-24) — kids styles on flux + horror cleanup + QA loop
+- **Kids = 4 prompt-only styles** (`pixar` default, `cartoon_saloon`, `claymation`, `stickman`) in `05_Config/styles.json`, tagged `modes:["story"]`. `spectrum`/`photoreal` kept for music/horror. New `script_generator.get_style_ids_for_mode(mode)` filters the LLM style menu + all pickers. Old styles removed (storybook/cartoon/anime/watercolor/pixelart/stopmotion); all `storybook` fallbacks → `pixar`.
+- **Active image backend `comfyui_zimage_turbo → comfyui_flux_lora`** (models.json) — kids + music now render on flux1-dev. The user's 4 style LoRAs + Horrorstyle are **SDXL = no-op on flux** (`lora key not loaded`) → styles are PROMPT-ONLY. For real style LoRAs need Base Model "Flux.1 D".
+- **Horror: per-char LoRA DROPPED → prompt-token consistency** (training setup kept). Stills on flux + fixed `Horrorstyle` style LoRA (runtime `horror_style_lora`/`_weight`; `comfyui_flux_lora` gained `use_char_lora`/`extra_loras` kwargs). Length **5min→2min** (DEFAULT_MINUTES=2, MAX_BEATS=10). Voice **pitch 0.90→1.0** = raw Qwen3-TTS, never sped/slowed.
+- **Dashboard "Server error" fixed** — stale `style=storybook` override crashed NiceGUI select; cleared override + selects fall back to `(auto)` on unknown value.
+- **QA loop** (`qa_styles_run.py`, env `QA_ONLY=`): per style → story → storyboard → stills, judge story/prompt/image. R1: cartoon_saloon+stickman ✅; pixar consistency bug (shot1 = human girl not robot) + claymation too glossy. Fixed: `storyboard_generator._characters_description` injects locked token when char in shot narration/speaker (not only prompt); structurer rule #10 + schema now require NAMING the char in first_frame_prompt; claymation suffix forced to matte plasticine. R2: pixar shots 2&3 fixed, shot1 wide still drifts; claymation re-render was still running at handoff. 187 tests green. **Bot restart needed.**
+
 ## 3. What We Changed Today (2026-06-11) — dramatic storytelling pass
-- **Insert-shot feature** — new `modules/shot_editor.py` `insert_shot(script_id, position, brief)`: LLM writes a new shot from surrounding-shot context (fallback builds from brief if Ollama down), script renumbers, on-disk artifacts shift DESCENDING so rendered work stays attached (approved_prompts keys, `shot{N}_*.png` + storyboard.json manifest, `clip_{sid}_shot{N}[_vK].mp4` incl. revisions, seeds json). New shot gets an UNAPPROVED prompts entry. Discord: `!add_shot <id> <before|after> <shot#> [brief]`. Dashboard: per-shot "➕ Add shot" button + before/after dialog. After insert: `!regen_shot` + `!regen_video_shot` that shot only, then `!assemble`. Tests: `tests/test_shot_editor.py` (3 tests).
-- **Shot-type grammar** — required `shot_type` field (wide|medium|closeup|insert) in BOTH script-gen prompts (single-stage AND 2-stage structurer): insert REQUIRED when a character handles an object, wide REQUIRED for new locations, closeup for reactions; never two consecutive same types. `_validate_and_default` derives shot_type from beat when LLM omits. `prompt_assembler.SHOT_TYPE_FRAMING` injects concrete spatial framing into image prompts per shot_type.
-- **Age-first appearance** — character `appearance` + `locked_visual_token` must START with explicit age (number for humans, life stage for animals); assembler never drops the age words.
+- **Insert-shot feature** — new `modules/shot_editor.py` `insert_shot(script_id, position, brief)`: LLM writes new shot from surrounding-shot context (fallback builds from brief if Ollama down), script renumbers, on-disk artifacts shift DESCENDING so rendered work stays attached (approved_prompts keys, `shot{N}_*.png` + storyboard.json manifest, `clip_{sid}_shot{N}[_vK].mp4` incl. revisions, seeds json). New shot gets UNAPPROVED prompts entry. Discord: `!add_shot <id> <before|after> <shot#> [brief]`. Dashboard: per-shot "➕ Add shot" button + before/after dialog. After insert: `!regen_shot` + `!regen_video_shot` that shot only, then `!assemble`. Tests: `tests/test_shot_editor.py` (3 tests).
+- **Shot-type grammar** — required `shot_type` field (wide|medium|closeup|insert) in BOTH script-gen prompts (single-stage AND 2-stage structurer): insert REQUIRED when character handles object, wide REQUIRED for new locations, closeup for reactions; never two consecutive same types. `_validate_and_default` derives shot_type from beat when LLM omits. `prompt_assembler.SHOT_TYPE_FRAMING` injects concrete spatial framing into image prompts per shot_type.
+- **Age-first appearance** — character `appearance` + `locked_visual_token` must START with explicit age (number for humans, life stage for animals); assembler never drops age words.
 - **Simpler motion prompts** — motion system prompt rewritten: ONE main action + ONE camera move, 25-50 words, camera matched to shot_type (insert/closeup → static/push-in, wide → pan/drift).
 - **Casting confirmation gate** — after script approval + health gate, 🎭 casting embed (name/type/appearance per char) with Continue/Edit cast/Cancel. Edit modal (≤5 chars) updates BOTH appearance and locked_visual_token in script JSON. View NOT crash-persistent — re-run `!generate_storyboard <id>` to re-post. Skipped when no structured characters.
 - **NOT YET LIVE** — bot needs restart to load these edits. 75 tests green.
 
 ## Earlier (2026-06-10) — production hardening pass
-- **Git repo FIXED.** Ignore file was named `gitignore` (no dot) → git never read it; venv (3,496 files) + .pyc were tracked, and most live modules were NEVER committed. Now: `.gitignore` proper (adds secrets.env, .nicegui/, *.zip), venv/pycache untracked, ALL live source committed + pushed to GitHub `origin` (Rex_Bot repo). 85 tracked files.
+- **Git repo FIXED.** Ignore file named `gitignore` (no dot) → git never read it; venv (3,496 files) + .pyc tracked, most live modules NEVER committed. Now: `.gitignore` proper (adds secrets.env, .nicegui/, *.zip), venv/pycache untracked, ALL live source committed + pushed to GitHub `origin` (Rex_Bot repo). 85 tracked files.
 - **Atomic JSON writes** — new `modules/file_utils.py` (`atomic_write_json`: tmp + fsync + rename). All 16 state-write sites converted (stats, pending_state, scripts, approved prompts, runtime settings, registry, panel state, seeds, gen history, feedback, agent memory). Crash mid-write keeps old file.
-- **Shared GPU job lock** — new `modules/job_lock.py`. Same-thread reentrant (Discord pipeline chains), cross-thread release (dashboard UI-thread acquire → worker release), on-disk marker `05_Config/job_lock.json` (blocks 2nd bot process; stale/dead-pid markers stolen; 4h staleness). Discord entrypoints via `_gpu_job(label)` decorator; `!upscale`/`!assemble` inline; dashboard via `_try_begin/_end` (keeps S.busy). NOTE: two Discord commands on the same event loop can still interleave (same thread = reentrant) — status quo kept.
+- **Shared GPU job lock** — new `modules/job_lock.py`. Same-thread reentrant (Discord pipeline chains), cross-thread release (dashboard UI-thread acquire → worker release), on-disk marker `05_Config/job_lock.json` (blocks 2nd bot process; stale/dead-pid markers stolen; 4h staleness). Discord entrypoints via `_gpu_job(label)` decorator; `!upscale`/`!assemble` inline; dashboard via `_try_begin/_end` (keeps S.busy). NOTE: two Discord commands on same event loop can still interleave (same thread = reentrant) — status quo kept.
 - **subprocess timeouts** — every ffmpeg/ffprobe `subprocess.run` now has timeout (60s probes, 300–900s encodes): assembly, clip_generator, music_generator, upscaler.
 - **Dashboard login hardened** — `secrets.compare_digest` + 60s lockout after 5 failed attempts (public tunnel exposure).
 - **Log rotation** — claw_bot.log rotates at 10 MB, 5 backups.
-- **Crash auto-restart** — `00_Tools/launch_clawbot.ps1` runs bot in a loop: exit 0 (`!shutdown`/`!restart_bot`) = stop; non-zero = relaunch after 10s, max 5 crashes/5 min.
+- **Crash auto-restart** — `00_Tools/launch_clawbot.ps1` runs bot in loop: exit 0 (`!shutdown`/`!restart_bot`) = stop; non-zero = relaunch after 10s, max 5 crashes/5 min.
 - **Boot config validation** — new `modules/config_check.py`: models.json (active∈available per backend), styles.json, runtime_settings parse; refuses boot w/ clear error. Warns on secrets.env BOM + <10 GB disk. Disk also checked per GPU job (decorator + _try_begin).
 - **Test suite** — `tests/` pytest, 72 tests, no GPU: import smoke (all modules), clip fps/duration math + LTX 8N+1 rule + fps-relabel regression, atomic writes, job-lock semantics, sync-bridge cursor, config validation. Run: `venv\Scripts\python -m pytest tests -q`.
 - **requirements.txt re-pinned to venv reality** (discord.py 2.7.1, aiohttp 3.13.5, nicegui 3.12.1…); dropped unused ollama/watchdog/nvidia-ml-py/loguru pkgs; full snapshot in `requirements.lock.txt`. pytest added.
@@ -127,7 +134,7 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - **Per-shot narration edit** (dashboard Prompts tab): 🎙️ textarea + Save → writes script JSON `shots[].narration` (`update_shot_narration`). Read from disk each render → synced across front-ends.
 - **AI rewrite narration**: `script_generator.rewrite_narration` (Qwen, one clean line). Web 🪄 dialog button; Discord `!rewrite_narration <id> <shot> [hint]` + control-panel `NarrationRewriteModal`.
 - **Dashboard auth**: Starlette `_AuthMiddleware` + `/login` page. ON when `DASHBOARD_PASSWORD` set in secrets.env; unset = open + warning. Logout button. Bypass `/_nicegui*` + `/login`. Uses `app.storage.user` (storage_secret already set).
-- **Remote mobile access**: ngrok fixed static URL (`*.ngrok-free.dev`). `02_Agent/start_dashboard_ngrok.ps1` (reads NGROK_AUTHTOKEN/NGROK_DOMAIN/DASHBOARD_PASSWORD). Cloudflare quick-tunnel fallback `start_dashboard_tunnel.ps1` (random URL, no account). `start_rex.bat` one-click (bot+tunnel). Wired into `00_Tools/launch_clawbot.ps1` (boot shortcut now starts tunnel + kills stale ngrok; `stop_clawbot.ps1` kills ngrok). `control_panel.py` now load_dotenv()s secrets.env so `CLAW_DASHBOARD_URL` feeds the Discord "Open Dashboard" link.
+- **Remote mobile access**: ngrok fixed static URL (`*.ngrok-free.dev`). `02_Agent/start_dashboard_ngrok.ps1` (reads NGROK_AUTHTOKEN/NGROK_DOMAIN/DASHBOARD_PASSWORD). Cloudflare quick-tunnel fallback `start_dashboard_tunnel.ps1` (random URL, no account). `start_rex.bat` one-click (bot+tunnel). Wired into `00_Tools/launch_clawbot.ps1` (boot shortcut now starts tunnel + kills stale ngrok; `stop_clawbot.ps1` kills ngrok). `control_panel.py` now load_dotenv()s secrets.env so `CLAW_DASHBOARD_URL` feeds Discord "Open Dashboard" link.
 
 ### Earlier (2026-05-29)
 - **GPU upgrade** RTX 3070 8GB → RTX 5080 16GB. Updated both CLAUDE.md owner lines.
@@ -139,16 +146,16 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - **`control_panel.py`**: VideosView 🎞️ Transition button → set_transition.
 - **`claw_bot.py`**: `cmd_set_transition` (aliases transition/set_xfade) + `_CMDS["set_transition"]`.
 - **`upscaler.py`**: **ROOT CAUSE FIX** for cropped narration. `_probe_fps` reads source r_frame_rate; `_build_workflow(source_fps)` injects it into `VHS_VideoCombine.frame_rate` (was hardcoded 24 vs 16fps source → 0.667x shrink). `_reattach_audio` dropped `-shortest`.
-- **`dashboard_nicegui.py`**: control parity with Discord. Added Settings card (style/aspect/voice/music/sync/transition/steps/cfg + upscale & reference toggles + show-current/reset-all), Models card (image/video backend switch), Queue card (pending feedback list/load/drop), Tools card (upscale/re-assemble/suggest theme), and per-shot 🔁 Regen buttons on storyboard + video cards. New actions: `regen_storyboard_shot`, `regen_video_shot`, `run_upscale_action`, `render_queue`. Settings write straight to runtime_settings.json (shared state, no Discord coupling).
+- **`dashboard_nicegui.py`**: control parity with Discord. Added Settings card (style/aspect/voice/music/sync/transition/steps/cfg + upscale & reference toggles + show-current/reset-all), Models card (image/video backend switch), Queue card (pending feedback list/load/drop), Tools card (upscale/re-assemble/suggest theme), per-shot 🔁 Regen buttons on storyboard + video cards. New actions: `regen_storyboard_shot`, `regen_video_shot`, `run_upscale_action`, `render_queue`. Settings write straight to runtime_settings.json (shared state, no Discord coupling).
 
 ---
 
 ## 4. In Progress / Half-Done
 - **RESTARTED 2026-06-10 23:08** — hardening pass + watchdog LIVE. Verified: 1 bot instance, dashboard answers HTTP 307 (login gate active), status embed posted, sync poller up, no stale lock. Still unverified by hand: Discord busy-notice when dashboard renders, login lockout, mobile ☰.
-- **Launcher restart-loop gotcha (fixed)** — first version of the crash-restart loop in `00_Tools/launch_clawbot.ps1` caused launcher windows to ping-pong: new launcher kills old launcher's bot → old loop sees non-zero exit → respawns → 2-3 simultaneous bots. Loop now exits if another claw_bot.py is already running. Launcher is OUTSIDE the repo — back it up manually if edited.
+- **Launcher restart-loop gotcha (fixed)** — first version of crash-restart loop in `00_Tools/launch_clawbot.ps1` caused launcher windows to ping-pong: new launcher kills old launcher's bot → old loop sees non-zero exit → respawns → 2-3 simultaneous bots. Loop now exits if another claw_bot.py already running. Launcher is OUTSIDE the repo — back up manually if edited.
 - **Bot restart needed (2026-06-04)** — today's .py edits (UI tabs, sync_bridge, auth, narration edit, AI rewrite) on disk, NOT live until restart.
-- **Mobile nav ☰** — verified by server build only, not a live phone browser. Confirm on device after restart + hard-refresh.
-- **Discord→Web settings widgets** — web reads runtime settings live on render, but the select WIDGETS show stale value until page reload.
+- **Mobile nav ☰** — verified by server build only, not live phone browser. Confirm on device after restart + hard-refresh.
+- **Discord→Web settings widgets** — web reads runtime settings live on render, but select WIDGETS show stale value until page reload.
 - **AI rewrite** — LLM output not exercised live (needs Ollama up).
 - **Bot not yet restarted** — today's .py fixes on disk, NOT live. Must restart + regenerate clips for script `20260529_080533` (its on-disk clips still old cropped 24fps).
 - **Recovery option unused** — `04_Outputs/clips/_temp` holds full 16fps raw Wan part videos; clips rebuildable without re-render (user chose clean regenerate instead).
@@ -160,8 +167,8 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ## 5. Known Issues / TODOs
 **New (2026-06-04):**
-- **secrets.env must be BOM-free** — PS `Out-File -Encoding utf8` adds a BOM → dotenv drops the first line. Edit with a plain editor / append only.
-- **ngrok free = 1 tunnel/agent**, fixed `.ngrok-free.dev` URL. Second run collides (launcher kills stale ngrok first). Custom-hostname errors (ERR_NGROK_314) = wrong value pasted (use the `*.ngrok-free.dev` hostname, not `rd_/ep_` IDs).
+- **secrets.env must be BOM-free** — PS `Out-File -Encoding utf8` adds BOM → dotenv drops first line. Edit with plain editor / append only.
+- **ngrok free = 1 tunnel/agent**, fixed `.ngrok-free.dev` URL. Second run collides (launcher kills stale ngrok first). Custom-hostname errors (ERR_NGROK_314) = wrong value pasted (use `*.ngrok-free.dev` hostname, not `rd_/ep_` IDs).
 - **Mobile drawer** hidden < Quasar breakpoint → needs header ☰ toggle (added).
 - **`sync_events.json`** capped at 200 events; cursor in `sync_cursor.json`.
 
@@ -182,22 +189,22 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ## 6. Important Decisions (don't redo)
 - **Sync directions split (2026-06-04).** Discord→Web = disk poll (dashboard 1.5s, free, no code). Web→Discord = `sync_bridge` event queue + bot poller. Separate files (events web-writes, cursor bot-writes) = no cross-process write contention. Skip backlog on boot (cursor=latest_id).
-- **Narration source of truth = script JSON** (`shots[].narration`), NOT the prompts JSON. Edit/AI-rewrite reads disk first (no clobber) + writes back → both front-ends sync. Consumed at render time.
+- **Narration source of truth = script JSON** (`shots[].narration`), NOT prompts JSON. Edit/AI-rewrite reads disk first (no clobber) + writes back → both front-ends sync. Consumed at render time.
 - **Public dashboard ⇒ password gate MANDATORY.** Bind stays `127.0.0.1`; tunnel runs on same PC and reaches it. NEVER bind 0.0.0.0 to expose. Gate = Starlette middleware, off when `DASHBOARD_PASSWORD` unset (localhost dev).
-- **ngrok free static domain over Cloudflare named tunnel.** CF named tunnel needs an owned domain; ngrok free gives 1 fixed `.ngrok-free.dev`. CF quick tunnel kept as no-account random-URL fallback.
-- **Dashboard layout = left-nav vertical tabs, not long scroll.** Cards built then `.move()`'d into panels (avoids re-indenting the whole UI). Mobile MUST keep the ☰ toggle (drawer auto-hides).
-- **Narration = duration source of truth.** Video freeze-pads if short; audio never truncated. NO `-shortest` anywhere in muxes — it crops the last word.
-- **fps must match across gen→upscale→assemble.** Wan = 16fps. Upscale output fps PROBED from source + injected (not hardcoded). Relabeling frames to another fps shrinks duration (16/24=0.667x) — the bug that cropped all narration.
+- **ngrok free static domain over Cloudflare named tunnel.** CF named tunnel needs owned domain; ngrok free gives 1 fixed `.ngrok-free.dev`. CF quick tunnel kept as no-account random-URL fallback.
+- **Dashboard layout = left-nav vertical tabs, not long scroll.** Cards built then `.move()`'d into panels (avoids re-indenting whole UI). Mobile MUST keep ☰ toggle (drawer auto-hides).
+- **Narration = duration source of truth.** Video freeze-pads if short; audio never truncated. NO `-shortest` anywhere in muxes — crops last word.
+- **fps must match across gen→upscale→assemble.** Wan = 16fps. Upscale output fps PROBED from source + injected (not hardcoded). Relabeling frames to another fps shrinks duration (16/24=0.667x) — bug that cropped all narration.
 - **4-step lightx2v LoRA OFF.** Distill = quality ceiling + artifacts. 5080 has VRAM for full 20-step. cfg 3.5 full path; beat overrides 2.0-2.8 valid.
 - **Transition modes:** crossfade (0.3s dissolve, silent-tail padded so narration never overlaps) vs cut (instant + 0.4s breath so last word finishes). Default crossfade. Switchable: control panel 🎞️ / `!set_transition`.
-- **Dashboard refresh guarded by content signature** — never blind `.clear()` on the 1.5s timer (caused media flicker + textarea wipe).
+- **Dashboard refresh guarded by content signature** — never blind `.clear()` on 1.5s timer (caused media flicker + textarea wipe).
 - **Approve prompts BEFORE render** (edit-then-render). Single Approve-All. Image + motion approved separately per shot. Modal popups for edits. Batch posting + master button.
 - **Dropped shot_tailor + prompt_polisher** from auto pipeline (prompt_assembler does it once, beat-aware).
 - **Removed QA + continuity VLM passes** — Qwen2.5-VL hallucinated, net negative. Model + code deleted.
 - **NiceGUI over Gradio** (Material Design, Quasar). Both Discord + Dashboard run, shared on-disk JSON. Localhost-only dashboard.
 - **Clip ceiling is PER-MODEL** via `max_clip_seconds` in models.json (Wan=5, LTX=20). `n_parts=ceil(narration/max)`. Wan splits + last-frame chains; LTX single pass (chaining auto-skipped when n_parts=1). One MP4/shot. fps also per-model (`default_fps`).
 - **Switching video/image model RESETS cfg+steps overrides** (`rs.reset_overrides_for_model_switch`) → each model runs at its own models.json recommended settings. Wired in `cmd_switch_model` + dashboard model selects.
-- **LTX adapter workflow file is configurable** (`workflow_file` in models.json; default `ltx2_video_only_v1_api.json`). LTX-2.3 not yet runnable: only UI-format workflow exists (`LTX-2.3_-_I2V_T2V_Basic_GGUF.json`, 111 nodes) — needs API-format export + models.json entry.
+- **LTX adapter workflow file configurable** (`workflow_file` in models.json; default `ltx2_video_only_v1_api.json`). LTX-2.3 not yet runnable: only UI-format workflow exists (`LTX-2.3_-_I2V_T2V_Basic_GGUF.json`, 111 nodes) — needs API-format export + models.json entry.
 - **`approved_prompts/{script_id}.json`** = shared Discord↔Dashboard state, read every render.
 - **Persistent approval views** — custom_id + timeout=None + _PersistentDict → pending_state.json + restore on_ready. Survives crash.
 - **Contact sheet before approval** — one composite PNG > scrolling 10 embeds.
@@ -210,8 +217,8 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 ---
 
 ## Known Bug Patterns
-- **fps relabel ≠ resample** — re-containering N frames at a different fps changes DURATION (16→24 = 0.667x shorter), and -shortest re-mux then crops audio. Always match output fps to source.
-- **`-shortest` crops narration** — with `-c:v copy` a frame-timing quirk stops on the short video stream. Use `-t audio_duration` or map full audio.
+- **fps relabel ≠ resample** — re-containering N frames at different fps changes DURATION (16→24 = 0.667x shorter), and -shortest re-mux then crops audio. Always match output fps to source.
+- **`-shortest` crops narration** — with `-c:v copy` a frame-timing quirk stops on short video stream. Use `-t audio_duration` or map full audio.
 - **Dual-import bug** — never `python -m modules.X`.
 - **Asyncio threading** — progress callbacks from non-async threads need `asyncio.run_coroutine_threadsafe`.
 - **aiohttp ClientOSError [WinError 64]** during Discord upload — `_send_with_retry`; per-retry fresh `discord.File`.
