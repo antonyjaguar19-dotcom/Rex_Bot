@@ -510,6 +510,79 @@ def _strip_attribution(text: str, speaker: str, extra_names=None) -> str:
     return t
 
 
+# Manner adverbs the LLM appends as a leaked stage direction AFTER the closing
+# quote ('"Hello," quietly but clearly.' → narration "Hello, quietly but
+# clearly."). These carry no speech VERB so _strip_attribution misses them. The
+# scrub only fires when the ENTIRE trailing comma-clause is made of these words
+# (+ and/but/yet), so a real spoken phrase like "Run, you can do it!" is safe.
+_MANNER_ADVERBS = {
+    "quietly", "softly", "loudly", "clearly", "nervously", "shyly", "boldly",
+    "bravely", "calmly", "cheerfully", "sadly", "happily", "proudly", "gently",
+    "firmly", "sweetly", "slowly", "eagerly", "hesitantly", "confidently",
+    "warmly", "coldly", "sternly", "kindly", "politely", "excitedly",
+    "anxiously", "timidly", "gleefully", "merrily", "brightly", "faintly",
+    "weakly", "breathlessly", "solemnly", "earnestly", "quickly", "carefully",
+    "curiously", "thoughtfully", "wearily", "grumpily", "crossly", "sheepishly",
+}
+
+
+# Gerund-led expressions/actions the LLM tacks onto a locked_visual_token
+# ("...yellow boots, smiling", "...white fur, wagging its tail"). The token is
+# injected verbatim into EVERY shot, so a baked-in action forces that pose into
+# every frame (a worried "struggle" shot still shows the dog wagging). Strip
+# trailing comma-clauses that are an action/expression, not a stable look.
+_ACTION_GERUNDS = {
+    "smiling", "grinning", "frowning", "laughing", "crying", "wagging",
+    "beaming", "waving", "jumping", "running", "sitting", "standing", "looking",
+    "holding", "walking", "hopping", "playing", "dancing", "singing", "sleeping",
+    "winking", "pointing", "reaching", "leaning", "crouching", "kneeling",
+    "stretching", "yawning", "nodding", "blinking", "gazing", "staring",
+    "panting", "trotting", "flying", "swimming", "climbing", "skipping",
+}
+
+
+def _clean_locked_token(token: str) -> str:
+    """Drop trailing comma-clauses that are an ACTION or EXPRESSION rather than a
+    stable visual trait, so the injected token never forces a fixed pose into
+    every shot. Only strips a trailing segment whose first word is a known
+    action/expression gerund ('smiling', 'wagging its tail') — colors, clothes
+    and features (which never start with such a gerund) are untouched."""
+    if not token or "," not in token:
+        return token.strip()
+    segs = [s.strip() for s in token.split(",")]
+    while len(segs) > 1:
+        first = re.sub(r"[^A-Za-z]", "", segs[-1].split()[0]).lower() if segs[-1].split() else ""
+        if first in _ACTION_GERUNDS:
+            segs.pop()
+        else:
+            break
+    return ", ".join(s for s in segs if s).strip().rstrip(".")
+
+
+def _strip_trailing_stage_direction(text: str) -> str:
+    """Drop a trailing ', <manner-adverb(s)>' clause leaked from prose like
+    `said, "Hi," softly and shyly.` Only strips when every word in the trailing
+    comma-clause is a manner adverb or a conjunction — never real spoken words."""
+    if not text or "," not in text:
+        return text
+    head, _, tail = text.rstrip().rpartition(",")
+    if not head.strip():
+        return text
+    tail_words = re.findall(r"[A-Za-z']+", tail)
+    if not tail_words:
+        return text
+    conj = {"and", "but", "yet", "then"}
+    if all(w.lower() in _MANNER_ADVERBS or w.lower() in conj for w in tail_words):
+        out = head.strip().rstrip(",.! ?").strip()
+        if out:
+            if out[-1] not in ".!?":
+                # keep the original sentence-final punctuation if it was ! or ?
+                end = text.rstrip()[-1]
+                out += end if end in "!?" else "."
+            return out
+    return text
+
+
 _FIRST_SECOND_PERSON = re.compile(
     r"\b(I|I'm|I'll|I've|I'd|my|mine|me|we|we're|we'll|us|our|ours|"
     r"you|you're|you'll|your|yours|let's)\b",
@@ -628,6 +701,16 @@ def _validate_and_default(script: dict) -> dict:
             short = m.group(1).strip()
             rename[nm] = short
             ch["name"] = short
+            nm = short
+        # Strip an article-led generic name ("the puppy", "a robot") to a proper
+        # name ("Puppy", "Robot") — a leading article in a character name renders
+        # as spoken text and reads as no-name. Title-case the remainder.
+        am = re.match(r"^(?:the|a|an)\s+(\w[\w\s'-]*)$", nm, re.IGNORECASE)
+        if am:
+            short = am.group(1).strip().title()
+            if short and short.lower() != nm.lower():
+                rename[ch.get("name", "").strip()] = short
+                ch["name"] = short
     if rename:
         for s in script.get("shots", []):
             if not isinstance(s, dict):
@@ -657,11 +740,26 @@ def _validate_and_default(script: dict) -> dict:
                 token = " ".join(words[:30])
             else:
                 token = ch.get("name", "a character")
-            ch["locked_visual_token"] = token
             log.warning(
                 f"Character '{ch.get('name')}' missing locked_visual_token; "
                 f"derived from appearance: '{token[:80]}...'"
             )
+        # Strip the character's OWN name out of its token — the structurer
+        # sometimes bakes it in ("a young grey mouse Wobbly with round ears"),
+        # which then double-prints as "Wobbly is a ... mouse Wobbly ..." once the
+        # injector prefixes the name. The token must be name-free appearance only.
+        own_name = (ch.get("name") or "").strip()
+        if own_name:
+            token = re.sub(rf"\s*\b{re.escape(own_name)}\b\s*", " ", token).strip()
+            token = re.sub(r"\s{2,}", " ", token).strip(" ,")
+        # Strip any baked-in action/expression ("..., smiling", "..., wagging its
+        # tail") so the injected token carries only the stable look.
+        cleaned_token = _clean_locked_token(token)
+        if cleaned_token and cleaned_token != token:
+            log.info(f"Cleaned action/expression from token for "
+                     f"'{ch.get('name')}': '{token}' -> '{cleaned_token}'")
+            token = cleaned_token
+        ch["locked_visual_token"] = token
 
     script.setdefault("title", "Untitled Story")
     script.setdefault("theme", "")
@@ -702,6 +800,24 @@ def _validate_and_default(script: dict) -> dict:
             log.warning(f"Duplicate narration detected: '{narr[:60]}...'")
         seen_narration.add(narr)
 
+    # Beat-order guard: `consequence` is the payoff and must be the FINAL shot
+    # only. The structurer occasionally puts it mid-story or swaps choice<->
+    # consequence at the end. Demote any non-final `consequence` to observation,
+    # then make the genuine last shot the consequence (kids 30s arcs end on the
+    # payoff). Conservative: never touches atmosphere/hook openers.
+    _shots = script.get("shots", [])
+    if len(_shots) >= 4:
+        last_i = len(_shots) - 1
+        for i, s in enumerate(_shots):
+            if (s.get("beat") or "").strip().lower() == "consequence" and i != last_i:
+                log.info(f"Beat guard: demoting mid-story consequence at shot "
+                         f"{i+1} -> observation.")
+                s["beat"] = "observation"
+        lb = (_shots[last_i].get("beat") or "").strip().lower()
+        if lb in ("choice", "reaction", "observation"):
+            log.info(f"Beat guard: final shot beat '{lb}' -> consequence (payoff).")
+            _shots[last_i]["beat"] = "consequence"
+
     # Default shot_type when the LLM omitted it — derive from the beat
     _beat_to_shot_type = {
         "atmosphere": "wide",
@@ -713,6 +829,30 @@ def _validate_and_default(script: dict) -> dict:
         if st_val not in ("wide", "medium", "closeup", "insert"):
             beat = (s.get("beat") or "").strip().lower()
             s["shot_type"] = _beat_to_shot_type.get(beat, "medium")
+
+    # Insert nudge: an `insert` (hands/paws + object close-up) is REQUIRED when a
+    # character handles an object, but the structurer routinely skips it, leaving
+    # a wall of mediums. If the story handles objects yet has ZERO inserts,
+    # promote ONE medium whose text shows manipulation to `insert` for variety.
+    _shots2 = script.get("shots", [])
+    if _shots2 and not any((s.get("shot_type") or "").lower() == "insert" for s in _shots2):
+        _manip = re.compile(
+            r"\b(pick(?:s|ed)?|hold(?:s|ing)?|held|grab(?:s|bed)?|place(?:s|d)?|"
+            r"put(?:s|ting)?|drop(?:s|ped)?|pour(?:s|ed)?|mix(?:es|ed|ing)?|"
+            r"stir(?:s|red|ring)?|crack(?:s|ed|ing)?|cut(?:s|ting)?|lift(?:s|ed)?|"
+            r"carry|carries|carried|hand(?:s|ed)?|plant(?:s|ed|ing)?|dig(?:s|ging)?|"
+            r"paint(?:s|ed|ing)?|wrap(?:s|ped)?|press(?:es|ed)?|scoop(?:s|ed)?|"
+            r"sprinkle(?:s|d)?|spread(?:s|ing)?)\b", re.IGNORECASE)
+        for s in _shots2:
+            if (s.get("shot_type") or "").lower() != "medium":
+                continue
+            text = " ".join(str(s.get(k, "")) for k in
+                            ("narration", "first_frame_prompt", "visual_description"))
+            if _manip.search(text):
+                log.info(f"Insert nudge: shot {s.get('shot_number')} handles an "
+                         f"object -> shot_type insert.")
+                s["shot_type"] = "insert"
+                break
 
     # Force sequential shot_number 1..N. The structurer sometimes repeats or
     # skips numbers (seen: two "shot 10"), which would make on-disk artifacts
@@ -792,6 +932,12 @@ def _validate_and_default(script: dict) -> dict:
             # names into these destructive patterns only risks gutting genuine
             # narration that happens to start with "<Character> <action-verb>,".
             stripped = _strip_attribution(narr, s.get("speaker") or "")
+            # Then drop any leaked trailing manner-adverb stage direction
+            # ("Hello, quietly but clearly." -> "Hello.") on SPOKEN lines only —
+            # narrator prose legitimately ends in adverbs ("she walked away
+            # slowly").
+            if (s.get("speaker") or "narrator") != "narrator":
+                stripped = _strip_trailing_stage_direction(stripped)
             if stripped != narr:
                 log.info(f"Shot {s.get('shot_number')} attribution scrubbed: "
                          f"'{narr}' -> '{stripped}'")
@@ -943,7 +1089,13 @@ Worked mapping (prose → shots):
 
 3. **Pick a beat for each shot** from this fixed list:
    `atmosphere | hook | spark | reaction | observation | struggle | moment-of-decision | choice | consequence`
-   First shot is often `atmosphere` (no character, sets scene) or `hook` (introduces character). Middle shots are `spark`/`struggle`/`observation`/`reaction`. Near the end, `choice` then `consequence`.
+   The beats follow the story ARC in order: `atmosphere`/`hook` open it, then `spark` (the problem/surprise appears), then `struggle`/`observation`/`reaction` in the middle, then `moment-of-decision`, then `choice` (the character decides), and finally ONE `consequence` as the very LAST shot (the payoff).
+   STRICT beat rules:
+   - `spark`, `moment-of-decision`, `choice`, and `consequence` each appear AT MOST ONCE in the whole story.
+   - `consequence` is ONLY the final shot — never put it in the middle, never use it twice. If several late shots all show the happy result, label the earlier ones `reaction`/`observation` and keep `consequence` for the last shot alone.
+   - ORDER IS FIXED: `choice` always comes BEFORE `consequence`, never after. The VERY LAST shot is the `consequence` (the payoff/result we see). If the last shot shows the outcome or a final line landing the payoff, it is `consequence` — do NOT label it `choice`. A `choice` in the final slot or a `consequence` that is not last is WRONG.
+   - NEVER repeat the same beat on two consecutive shots. For a back-and-forth dialogue in the middle, alternate `reaction`/`observation`/`struggle`, not the same beat over and over.
+   - Match the beat to what the line actually DOES: a character merely answering a question or greeting is `reaction` or `observation`, NOT `choice`. `choice` is reserved for the one moment the character makes a real decision.
 
 3b. **Pick a shot_type for each shot** (REQUIRED FIELD) — the camera framing:
    - `"wide"` — establishing shot, whole location visible, character small in frame. REQUIRED for the first shot in every new location; natural for atmosphere beats.
@@ -952,7 +1104,14 @@ Worked mapping (prose → shots):
    - `"insert"` — extreme close-up of HANDS + OBJECT (paw, beak, fingers count). REQUIRED whenever a character picks up, holds, drops, places, or manipulates an object.
    Across the story: at least ONE wide, at least ONE insert or closeup, and avoid two consecutive shots with the same shot_type — EXCEPT a dialogue exchange, where alternating `closeup`/`medium` shots between the two speakers is correct (shot/reverse-shot). For a `closeup`/`medium` shot where a character speaks, frame that speaker facing the camera (mouth visible for lip-sync).
 
-4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only; NO poses, NO emotions, NO setting) that MUST state an explicit AGE first: for humans give a number ("a 7-year-old girl..."), for animals/creatures give a clear life stage ("a young sparrow...", "an old grey-whiskered dog..."). Then species, color, body shape, clothing, distinctive features. Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + hair + clothing colors + ONE distinctive feature` — it must start with the age words.
+4. **Extract characters from the prose.** For each named character the author mentioned, write a one-sentence `appearance` (visual traits only; NO poses, NO emotions, NO setting) that MUST state an explicit AGE first: for humans give a number ("a 7-year-old girl..."), for animals/creatures give a clear life stage ("a young sparrow...", "an old grey-whiskered dog..."). Then species, color, body shape, clothing, distinctive features. Then write a tight `locked_visual_token` (15-30 words) the renderer can paste verbatim into every shot prompt: `age + species/race + body-color + body-shape + clothing colors + ONE distinctive feature` — it must start with the age words.
+
+4a. **The token must be CONCRETE and PURELY VISUAL — this is what keeps the character looking the same in every picture.** The image model draws exactly the nouns and colors it is given, so:
+   - Lead with the SOLID FORM and its main COLOR right after the age: "a small round white robot...", "a young brown rabbit...", "a 6-year-old girl with black hair...". Name the body material/shape (round, boxy, fluffy, sleek) and the single dominant body color FIRST — never bury them.
+   - BAN non-visual words from `appearance` AND `locked_visual_token`: no "energetic", "friendly", "cheerful", "happy", "curious", "shy", "brave", "cute", "magical", "lively". These describe personality, not pixels, and make the model draw a random creature. Replace them with a physical trait.
+   - BAN vague glow-words as the lead descriptor ("glowing", "sparkly", "bright lights", "energetic form"). A robot is "a small round white robot with two round blue eyes", NOT "an energetic robot with yellow lights" (that renders a fuzzy yellow blob). If you want lights, attach them to a part: "a blue light strip on its chest".
+   - For a NON-HUMAN character always name the species/form noun explicitly (robot, rabbit, mouse, turtle) so it can never drift into a different creature between shots.
+   - For a HUMAN character, state the gender word AND the hair LENGTH/style right after the age ("a 7-year-old boy with short brown hair", "a 6-year-old girl with long curly black hair"). The renderer otherwise draws an ambiguous figure — a boy with only "brown hair" comes out looking like a girl. Always pin gender + hair length for humans.
 
 4b. **ONE canonical name per character, used consistently.** Each character's `name` is a SHORT proper name only — NOT "Greenfield the Rabbit", just "Greenfield"; never put the species in the name. In EVERY `narration` line refer to that character by their exact canonical name. If the author's prose called the same character by a nickname or by their species as if it were a name ("Bunny", "the rabbit", "Tortoise"), REWRITE that mention to the canonical name so the spoken story and the pictures always match. Never introduce a second name for a character.
 

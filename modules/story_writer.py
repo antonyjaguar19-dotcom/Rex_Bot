@@ -31,12 +31,28 @@ log = logging.getLogger("claw_bot.story_writer")
 
 _STORY_SYSTEM_PROMPT = """You are a beloved children's storyteller — the kind of writer who makes parents tear up and kids ask "again!"
 
-Write a tiny illustrated story for kids ages 3 to 10. Around 30 seconds when read aloud — roughly 70 to 85 words of narration total.
+Write a tiny illustrated story for kids ages 3 to 10. It reads aloud in about 30 SECONDS. AIM FOR ~75 WORDS TOTAL — a window of 70 to 85 words counting BOTH the narrator's prose AND every spoken line together. Hit that window: under ~65 words the story is too thin and rushed (add the missing beat or enrich a line); over ~90 words it runs too long (trim repeated lines). ~75 words is the sweet spot. Count the words before you finish.
+
+# RIGHT LENGTH — FEW LINES, FULL ARC
+A 30-second film holds about 6 to 8 little moments — enough for a complete arc, not a long conversation. Use AT MOST 5 short spoken lines of dialogue total, and keep each narrator sentence to one line. One quick exchange (a greeting, a question, an answer) is plenty; do NOT write a long back-and-forth.
+Spend your ~75 words on a COMPLETE story, not a fragment. The three load-bearing beats must ALWAYS be present and clear: (1) the SPARK (the problem/surprise appears), (2) the TURNING POINT (the choice or action that decides the ending — e.g. the hare lying down to nap), and (3) the PAYOFF (the visible result / who wins). Trim repeated lines and chit-chat to make room — never trim one of those three.
+
+# EVERY STORY NEEDS A COMPLETE ARC THAT ENDS ON THE PAYOFF
+Walk the arc in order and STOP at the payoff: setup → spark → the character tries/struggles → the turning point that decides it → the payoff (the result we see). The LAST beat must be the payoff/result — do NOT keep going after the outcome is decided (no aimless "and then he thought about it" shots once the race is won). Each main character must behave IN CHARACTER for the tale: in the hare-and-tortoise, the RABBIT is over-confident and careless (boasts, then stops/naps), and the TORTOISE is slow but steady — never swap their attitudes or give the rabbit the tortoise's determined "one more step" lines.
 
 # HONOR THE THEME EXACTLY (most important rule)
 The theme names the subject. Use the EXACT characters, animals, and objects it names — never substitute a similar one. If the theme says "tortoise", the story has a tortoise, NOT a turtle, NOT a snail. If it says "rabbit and tortoise race", both a rabbit AND a tortoise appear and they race. If the theme is a known classic ("the tortoise and the hare", "the ant and the grasshopper"), keep its real characters and real ending. Do not swap species, rename the core animals, or change the famous outcome. Inventing a different animal than the one named is a failure.
 
 Write like a real storyteller, not a worksheet. Use simple, warm language. Let the story breathe — small moments, a feeling, a tiny twist. Include 1 to 3 named characters with simple looks (a color, a piece of clothing, a defining feature). Give the story a small problem, a clear choice the character makes, and a payoff that lands.
+
+# CAUSE → EFFECT THE PAYOFF (a child must understand WHY it ends this way)
+The most important thing for a young child is that the ending is CAUSED by something they SAW happen earlier. Show the cause on screen, then show the result. Do not skip the turning point.
+- If a character wins or loses, the reason must be a CHOICE or ACTION shown earlier in the story — not luck, not a time-skip. Show the moment that decides it.
+- For "the tortoise and the hare": the hare loses because he is over-confident and STOPS — he naps, plays, or wanders off while ahead. SHOW that pause clearly (he lies down / closes his eyes / gets distracted). The tortoise keeps going and passes him. Without that nap beat the story makes no sense to a child — never omit it.
+- Keep ONE clear winner when the tale has one. NEVER soften it into "they both won" / "everyone is a winner" / "they celebrated their own way." That erases the lesson. The one who earned it wins; the other learns something.
+- Avoid abrupt time-skips ("hours passed", "the next day") that hide the cause. Keep the action continuous so the child sees the why.
+
+**ONE name per character — use it every single time.** Give each character a single simple name and refer to them ONLY by that exact name throughout — in dialogue tags AND in narration. NEVER give a character a second name, nickname, title, or racing-name, and NEVER use their species as a stand-in name. If the rabbit is "Pip", he is "Pip" in every line — never also "Bunny", "the rabbit", or "Speedy". If the tortoise is "Tess", she is "Tess" everywhere — never also "Slow Steady" or "the tortoise". Two names for one character is a FAILURE.
 
 # DON'T TELL THE MORAL, DON'T USE CLICHÉS
 Never write the lesson in the narration. BANNED: "learned that…", "and so he learned", "the moral is", "you never know when…", "and that's how…". The ending shows what happened (an action, an image, a feeling) and lets the kid feel the lesson — it never states it. Also avoid the tired opener "Once upon a time"; start with the character or the world doing something.
@@ -44,8 +60,9 @@ Never write the lesson in the narration. BANNED: "learned that…", "and so he l
 Don't lecture. Don't label emotions ("she felt sad"). Let actions and pictures show feeling. Trust the kid to feel the moral.
 
 # WRITE LOTS OF DIALOGUE — THE CHARACTERS TALK
-This is a TALKING film. The characters speak out loud, and a narrator fills the gaps. Make it dialogue-heavy: most of the story should be spoken by the characters in their own voices and personalities.
+This is a TALKING film. The characters speak out loud, and a narrator fills the gaps. Give the characters real voices — but keep it SHORT: at most 5 spoken lines in the whole 30-second story. A few well-chosen lines beat a long conversation. When a character speaks, it must be in quotes and named (below).
 - **EVERY spoken line MUST be in double quotes AND attributed to a character BY NAME** — `Bunny said, "Watch me — I'll win for sure!"` or `"Wait for me!" called Terry.` The attribution name must be one of YOUR named characters.
+- **The quotation marks wrap ONLY the spoken words. The name and the verb ("said", "called") go OUTSIDE the quotes — never inside.** WRONG: `"Pip said, "I'll win!""` (name and a second set of quotes inside). RIGHT: `Pip said, "I'll win!"`. Use the character's proper name in the tag, never the species word ("Bunny said"/"Tortoise replied" are wrong if the names are Pip and Tess).
 - **NEVER let a character's words appear as plain narration.** If someone asks, suggests, exclaims, or says anything — even one word like "Hmm…" or "Wait!" — it goes in quotes with a name. A spoken line written as bare narration (no quotes, no name) is a FAILURE.
 - One speaker per quoted line. For a back-and-forth, alternate and attribute EACH line: `"But why you?" asked Terry. "Because I'm fastest!" crowed Bunny.`
 - Keep spoken lines short and natural for a young child (6-14 words).
@@ -218,6 +235,59 @@ def write_story(
         title2, body2 = _split_title_body(cleaned2)
         if not _looks_like_reasoning_leak(body2) or len(body2.split()) < len(body.split()):
             raw, title, body = raw2, title2, body2
+
+    # Over-length guard: a 30-second film is ~70-85 words. The model often
+    # overshoots (long dialogue scenes → 150-220 words → 12+ micro-shots
+    # downstream). Retry ONCE with an explicit shorten brief, keep whichever
+    # version is closer to the budget. ~110 words ≈ 44s is the trip-wire.
+    if len(body.split()) > 110:
+        over = len(body.split())
+        log.warning(f"Stage-1 story is {over} words (>110, ~{over/2.5:.0f}s) — "
+                    f"too long for a 30s film; retrying once for a tighter cut.")
+        shorten_prompt = (
+            user_prompt
+            + f"\n\nYour previous draft was {over} words — FAR too long for a "
+              f"30-second film. Tell the SAME story in 70-85 words TOTAL "
+              f"(narrator prose + every spoken line combined). Use at most 5 "
+              f"short spoken lines. Keep the title, characters, the one key "
+              f"choice and the payoff; cut repeated beats and trim every "
+              f"sentence. Count the words."
+        )
+        raw3 = _call_llm(shorten_prompt, _STORY_SYSTEM_PROMPT, temperature=0.7)
+        cleaned3 = _strip_meta(raw3)
+        title3, body3 = _split_title_body(cleaned3)
+        # Accept the retry only if it is shorter and not a reasoning leak.
+        if body3 and not _looks_like_reasoning_leak(body3) and \
+                len(body3.split()) < len(body.split()):
+            log.info(f"Shorten retry: {over} -> {len(body3.split())} words.")
+            raw, title, body = raw3, (title3 or title), body3
+
+    # Under-length guard: a 30-second film wants ~70-85 words. The model often
+    # writes a tight 40-60 word arc that renders a thin ~20s video. Retry ONCE
+    # asking to ENRICH to the target while keeping the SAME arc; keep whichever
+    # version lands closer to ~75 words. ~62 words ≈ 25s is the trip-wire.
+    elif len(body.split()) < 62:
+        under = len(body.split())
+        log.warning(f"Stage-1 story is {under} words (<62, ~{under/2.5:.0f}s) — "
+                    f"too thin for a 30s film; retrying once to enrich.")
+        enrich_prompt = (
+            user_prompt
+            + f"\n\nYour previous draft was only {under} words — too short for a "
+              f"30-second film, which needs about 75 words (70-85). Tell the SAME "
+              f"story with the SAME beats, characters, turning point and payoff, "
+              f"but ENRICH it to ~75 words: add a one-line opening that sets the "
+              f"scene, give the narrator sentences a little more vivid detail, and "
+              f"add at most one more short spoken line. Do NOT add new plot or new "
+              f"characters. Count the words — land between 70 and 85."
+        )
+        raw3 = _call_llm(enrich_prompt, _STORY_SYSTEM_PROMPT, temperature=0.85)
+        cleaned3 = _strip_meta(raw3)
+        title3, body3 = _split_title_body(cleaned3)
+        # Accept only if it grew toward the target and isn't a reasoning leak/over-long.
+        n3 = len(body3.split())
+        if body3 and not _looks_like_reasoning_leak(body3) and under < n3 <= 100:
+            log.info(f"Enrich retry: {under} -> {n3} words.")
+            raw, title, body = raw3, (title3 or title), body3
 
     word_count = len(body.split())
     log.info(

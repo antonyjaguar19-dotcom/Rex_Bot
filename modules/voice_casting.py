@@ -70,15 +70,29 @@ def guess_gender(character: dict, context: str = "") -> str:
     explicit = str(character.get("gender", "")).strip().lower()
     if explicit in ("male", "female"):
         return explicit
-    blob = " ".join(str(character.get(k, "")) for k in ("name", "appearance",
-                                                        "locked_visual_token", "type"))
-    blob = f"{blob} {context}"
-    male = len(_MALE_HINTS.findall(blob))
-    female = len(_FEMALE_HINTS.findall(blob))
+
+    # SELF fields first (appearance/token/name/type). A character's OWN
+    # description ("a 7-year-old boy...") is decisive and must outrank the story
+    # context — otherwise a male child whose dialogue addresses "Mom" gets a
+    # female hint from that word and is mis-voiced. Context is only a tiebreaker.
+    self_blob = " ".join(str(character.get(k, "")) for k in
+                         ("appearance", "locked_visual_token", "name", "type"))
+    male = len(_MALE_HINTS.findall(self_blob))
+    female = len(_FEMALE_HINTS.findall(self_blob))
     if male > female:
         return "male"
     if female > male:
         return "female"
+
+    # Self fields are gender-silent or tied — fall back to story context
+    # (narration pronouns 'his'/'her' the character is described with).
+    if context:
+        cmale = len(_MALE_HINTS.findall(context))
+        cfemale = len(_FEMALE_HINTS.findall(context))
+        if cmale > cfemale:
+            return "male"
+        if cfemale > cmale:
+            return "female"
     return "neutral"
 
 
@@ -130,6 +144,10 @@ def assign_voices(script: dict, narrator_voice: Optional[str] = None) -> dict:
         if c.get("voice"):
             continue
         g = guess_gender(c, _gender_context(script, c.get("name", "")))
+        # Persist a decided gender so the pronoun deriver (prompt_assembler.
+        # _pronoun) and any re-cast use it directly instead of re-guessing.
+        if g in ("male", "female") and not str(c.get("gender", "")).strip():
+            c["gender"] = g
         if g == "male":
             voice = _pick(MALE_VOICES, "male")
         elif g == "female":

@@ -531,9 +531,14 @@ def assemble_image_prompt_mechanical(
 def _build_motion_system_prompt(beat: str, no_chars: bool) -> str:
     char_rule = (
         "This is a BREATHING SHOT — no characters in the starting frame. "
-        "Describe ONLY environmental motion: drifting leaves, swaying grass, "
-        "shifting light, slow camera push or pull, gentle parallax. "
-        "Never mention people, animals, or named characters."
+        "Describe ONLY environmental motion that physically BELONGS to THIS "
+        "setting — read `starting_frame_description` and animate what is actually "
+        "there: shifting light, a slow camera push or pull, gentle parallax, "
+        "drifting dust or steam, a banner/curtain/flag stirring, ripples on water. "
+        "Do NOT invent outdoor elements (falling leaves, swaying grass, blowing "
+        "wind) unless the frame is clearly outdoors — indoors there are no leaves "
+        "or grass. When unsure, use only a slow camera move plus a subtle light "
+        "shift. Never mention people, animals, or named characters."
         if no_chars else
         "Characters in the starting frame perform ONE clear, simple action. "
         "Use present-tense action verbs. No dialog. No mouth movement. No lip sync. "
