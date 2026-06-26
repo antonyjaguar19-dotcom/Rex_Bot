@@ -57,8 +57,18 @@ STYLE_LORAS = {
     "pixar":          {"file": "disneyPixarCartoon_v10.safetensors",       "trigger": "Disney Pixar style 3D animation", "strength": 0.85},
     "cartoon_saloon": {"file": "Cartoon_Saloon_Style_XL_kk-000009.safetensors", "trigger": "cartoon saloon style, hand-drawn 2D", "strength": 0.9},
     "claymation":     {"file": "CLAYMATE_V2.03_.safetensors",              "trigger": "claymation, stop-motion clay model", "strength": 0.9},
-    "stickman":       {"file": "Stickman_stick_figure-000006.safetensors", "trigger": "stickman, simple stick figure drawing", "strength": 1.0},
+    "stickman":       {"file": "Stickman_stick_figure-000006.safetensors",
+                       "trigger": "stickman, simple stick figure drawing, round dot heads, thick black marker outlines, basic shapes, flat white background, whiteboard doodle",
+                       "strength": 1.35,
+                       "negative": "detailed, realistic, coloring book, ornate, intricate, decorative, "
+                                   "patterns, shading, gradient, photorealistic, 3D, render, human face, "
+                                   "clothing details, mandala, floral"},
 }
+
+# Flat/minimal styles: stick figures etc. have no distinctive identity, so the
+# IP-Adapter (and a detailed cast sheet) would FIGHT the simplification — render
+# them prompt-only from the LoRA. storyboard_generator skips cast sheets for these.
+MINIMAL_STYLES = {"stickman"}
 
 
 class Backend(ImageBackend):
@@ -157,6 +167,8 @@ class Backend(ImageBackend):
         # carries scene + locked character tokens.
         pos = f"{lora['trigger']}. {self.format_prompt_for_backend(prompt)}"
         neg = negative_prompt or DEFAULT_NEGATIVE
+        if lora.get("negative"):                 # per-style negative (e.g. anti-detail for stickman)
+            neg = f"{neg}, {lora['negative']}"
 
         log.info(f"SDXL+IPA gen — style={style or self.default_style} "
                  f"lora={lora['file']} ref={'yes' if use_ref else 'no'} "

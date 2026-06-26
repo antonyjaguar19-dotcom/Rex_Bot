@@ -196,6 +196,16 @@ def _rewrite_as_paragraph(raw_prompt: str, script: dict, shot: dict) -> str:
     _stype = (shot.get("shot_type") or "").strip().lower()
     if not char_para and _stype in ("closeup", "medium", "insert"):
         char_para = _characters_description(script)
+    # MINIMAL styles (stickman doodle): the detailed character tokens ("in a
+    # floral dress") fight the stick-figure simplification — drop the character
+    # sheet so the LoRA renders generic stick figures. Names in the scene line
+    # still drive who's present.
+    try:
+        from modules.image_backends.comfyui_sdxl_ipadapter import MINIMAL_STYLES
+    except Exception:
+        MINIMAL_STYLES = {"stickman"}
+    if (script.get("style") or "").strip().lower() in MINIMAL_STYLES:
+        char_para = ""
     setting = script.get("setting", "")
     style_suffix = _style_suffix(script)
 
@@ -513,15 +523,25 @@ def generate_storyboard(
 
     # Per-character cast sheets (one clean solo reference each) + environment.
     # Per-shot we pick/compose the right character references — see _shot_reference.
+    # MINIMAL styles (stickman doodle) have no distinctive character identity, so a
+    # cast sheet + IP-Adapter would FIGHT the simplification — render prompt-only.
     char_sheets: dict = {}
     environment_image = None
-    if rs.get_reference_mode_enabled():
+    try:
+        from modules.image_backends.comfyui_sdxl_ipadapter import MINIMAL_STYLES
+    except Exception:
+        MINIMAL_STYLES = {"stickman"}
+    minimal_style = (script.get("style") or "").strip().lower() in MINIMAL_STYLES
+    if rs.get_reference_mode_enabled() and not minimal_style:
         if progress_callback:
             progress_callback("Generating per-character reference sheets...", 0, len(shots))
         char_sheets = _generate_character_sheets(script, script_id, backend)
         if progress_callback:
             progress_callback("Generating environment sheet...", 0, len(shots))
         environment_image = _generate_environment_sheet(script, script_id, backend, aspect_ratio)
+    elif minimal_style:
+        log.info(f"Style '{script.get('style')}' is minimal — skipping cast sheet / IP-Adapter "
+                 f"(prompt-only render).")
 
     frames: list[FrameResult] = []
     total = len(shots)
@@ -793,8 +813,13 @@ def regenerate_shot(
         env_path = story_dir / "_env_sheet.png"
         # Rebuild the per-character sheet map from disk (_cast_<slug>.png); pick
         # this shot's reference. Fall back to the combined sheet if solos absent.
+        try:
+            from modules.image_backends.comfyui_sdxl_ipadapter import MINIMAL_STYLES
+        except Exception:
+            MINIMAL_STYLES = {"stickman"}
+        minimal_style = (script.get("style") or "").strip().lower() in MINIMAL_STYLES
         shot_refs = []
-        if rs.get_reference_mode_enabled():
+        if rs.get_reference_mode_enabled() and not minimal_style:
             sheets = {}
             for c in script.get("characters", []):
                 if isinstance(c, dict) and c.get("name"):
