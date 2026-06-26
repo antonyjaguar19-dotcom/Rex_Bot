@@ -87,9 +87,11 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `video_workflow.py` — Discord workflow: per-shot TTS+video, post clips w/ ClipControlView, approval.
 
 ### `02_Agent/modules/image_backends/`
-- `comfyui_flux2.py` — Flux.2 Klein 9B fp8 (best quality, slow).
+- `comfyui_sdxl_ipadapter.py` — **KIDS** backend. SDXL + per-style LoRA + IP-Adapter PLUS (cast-sheet character lock). Pinned for kids via `storyboard_generator._kids_backend()`.
+- `comfyui_flux_lora.py` — **global active** (music + horror fallback). Flux.1-dev + char-LoRA stacking.
+- `comfyui_flux2.py` — Flux.2 Klein 9B fp8 (best quality, slow; has Node-100 reference path).
 - `comfyui_kontext_base.py` — Kontext img2img (char anchor).
-- `comfyui_zimage_base.py` — **ACTIVE** Z-Image Base/Turbo; paragraph prompts; injects seed/dims/cfg.
+- `comfyui_zimage_base.py` — Z-Image Base/Turbo; paragraph prompts; injects seed/dims/cfg.
 
 ### `02_Agent/modules/video_backends/`
 - `__init__.py` — empty.
@@ -98,6 +100,18 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `comfyui_wan22_14B.py` — **ACTIVE** Wan 2.2 14B I2V dual-UNet fp8; optional lightx2v 4-step LoRA (default OFF).
 
 ---
+
+## 3z. What We Changed (2026-06-26) — kids mode → production (LLM + SDXL+IP-Adapter character consistency)
+Deep pass on KIDS story mode (audio-first pipeline). Restart needed each .py edit; bot restarted + verified single instance. 201 tests green. Commits on `feat/horror-story-mode`: 7b83031, 0183636, 68c8e88, c924822, 2210edb, cd38419, c41b653, 08f4c09, f15b706.
+- **Dialogue-aware narration split** (`audio_first_pipeline._split_sentences`) — old splitter broke on `!`/`?` inside quotes + didn't split after `."` → dangling fragments + two-speaker shots + wrong speaker→voice. New walker: never breaks inside a quote, keeps trailing close-quote, newlines = hard breaks. `_breath_groups` keeps a quoted line whole even if >70c. Structurer prompt rules 6+7: continuation fragments keep same subject/place, never pull later plot in.
+- **Story length loop** (`story_writer.write_story`) — one-shot retry accepted 47→48 as "fixed". Now 3-pass loop keeping the draft closest to 75w, stops in-window [65,90]. Stories land 65-85w / 7-9 shots (~30s) instead of thin 45-60w / 4-5 shots (~20s).
+- **Cast correctness** — `_normalize_char_types` (talking mouse stays animal, was typed human → rendered people), structurer only extracts NAMED chars (killed phantom 3rd character), title-label leak stripped (`_split_title_body`).
+- **Render-path fixes** (`storyboard_generator`) — backfilled approved prompts now enriched via `_rewrite_as_paragraph` (were bare → rendered HUMANS); empty-frame anti-ghost only on `wide` shots (was blanking closeups); char-sheet injected on closeup/medium/insert even when prompt names no one.
+- **NEW kids backend** `comfyui_sdxl_ipadapter.py` — SDXL + real per-style LoRA (pixar/cartoon_saloon/claymation/stickman, no-op on flux) + IP-Adapter PLUS on the cast sheet. PINNED kids-only (`_kids_backend()`); global active stays flux_lora so music/horror untouched. Workflow `05_Config/workflows/sdxl_ipadapter_api.json`.
+- **Cast-sheet hardening** — SDXL+Pixar is human-biased + "reference sheet"+wide → drew a HUMAN on a contact-sheet collage that IPA propagated everywhere. Fixed: species-forward + anti-human (animal casts) + anti-collage + 1:1 aspect.
+- **Per-character references (mixed-species fix)** — one combined cast sheet collapsed 2 different animal species into 1 (rabbit+tortoise → 2 rabbits). Now `_generate_character_sheets` renders ONE solo ref per char; `_shot_reference` uses this shot's char(s): 1→its sheet, 2+→`_composite_refs` stitches solos side-by-side as the IPA ref. Verified rabbit+tortoise both correct.
+- **Style guard** (`audio_first._guard_style_for_cast`) — humanoid-art styles (cartoon_saloon/stickman) render animals as humanoids; non-human casts auto-switch to pixar.
+- **CAST MATRIX — what kids mode is good at:** ✅ solo any type · same-species pair/trio · two humans · human+animal · two-different-animal-species (now, via per-char refs). Note: `05_Config` (models.json + workflow) is OUTSIDE the git repo.
 
 ## 3a. What We Changed (2026-06-25) — kids-story LLM QA hardening (13 fixes)
 Deep QA of the kids LLM chain (story → image+motion prompts → storyboard stills) across 7 render rounds (robots/animals/humans/two-same-species). Harness: `scratchpad/kids_qa.py` (gen story → run real `prompt_assembler` per shot → render N stills → `kids_qa_report.json`). 187 tests green. Files touched: `story_writer.py`, `script_generator.py`, `prompt_assembler.py`, `voice_casting.py`. **Bot restart needed.**
