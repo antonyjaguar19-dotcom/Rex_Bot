@@ -197,6 +197,22 @@ def test_stamp_gender_skips_when_already_present():
     assert script["characters"][0]["locked_visual_token"] == "a female robin"
 
 
+def test_normalize_char_types_animal_over_human():
+    """A talking mouse the LLM mislabeled 'human' must be corrected to 'animal'
+    from the species word in its token; a robot -> creature; a real boy stays."""
+    script = {"characters": [
+        {"name": "Squeaks", "type": "human",
+         "locked_visual_token": "a young male mouse in a blue scarf"},
+        {"name": "Rusty", "type": "human",
+         "locked_visual_token": "a small friendly robot with round eyes"},
+        {"name": "Tom", "type": "human",
+         "locked_visual_token": "a male 7-year-old boy with curly hair"},
+    ]}
+    afp._normalize_char_types(script)
+    types = {c["name"]: c["type"] for c in script["characters"]}
+    assert types == {"Squeaks": "animal", "Rusty": "creature", "Tom": "human"}
+
+
 def test_split_sentences():
     out = afp._split_sentences("Hello there. How are you? Run!")
     assert out == ["Hello there.", "How are you?", "Run!"]

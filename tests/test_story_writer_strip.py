@@ -28,6 +28,22 @@ def test_plain_text_unchanged():
     assert "Mittens crouched in the grass." in out
 
 
+def test_title_label_prefix_stripped():
+    for raw in (
+        "Title of the Story: Rusty Finds a Friend\n\nRusty beeped sadly.",
+        "Title: The Last Crumb\n\nTwo mice scurried home.",
+        "Story Title - Little Seeds\n\nSunny dug a hole.",
+    ):
+        title, body = sw._split_title_body(raw)
+        assert not title.lower().startswith("title"), f"label leaked: {title!r}"
+        assert body.strip()
+
+
+def test_plain_title_not_mangled():
+    title, body = sw._split_title_body("The Race\n\nPip hopped fast.")
+    assert title == "The Race"
+
+
 def test_strip_orphan_unclosed_think_tag():
     # No closing tag — the orphan <think> must not survive as a title line.
     raw = "<think>\nreasoning with no close\n\nThe Title\n\nStory body here."

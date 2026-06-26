@@ -423,6 +423,40 @@ def _gendered_phrase(text: str, gender: str) -> str:
     return f"a {gender} {rest}"
 
 
+_ANIMAL_WORDS = {
+    "mouse", "mice", "rat", "rabbit", "bunny", "hare", "fox", "cat", "kitten",
+    "dog", "puppy", "bear", "tortoise", "turtle", "bird", "robin", "owl", "duck",
+    "frog", "toad", "pig", "piglet", "cow", "calf", "horse", "pony", "lion",
+    "tiger", "elephant", "monkey", "deer", "fawn", "squirrel", "hedgehog",
+    "sheep", "lamb", "goat", "hen", "chick", "rooster", "snail", "bee", "ant",
+    "butterfly", "ladybug", "panda", "koala", "wolf", "otter", "beaver", "crab",
+    "fish", "whale", "dolphin", "penguin", "goose", "swan", "donkey", "badger",
+}
+_CREATURE_WORDS = {
+    "robot", "android", "dragon", "monster", "alien", "ghost", "fairy", "elf",
+    "dwarf", "goblin", "troll", "unicorn", "dinosaur", "golem", "sprite", "gnome",
+}
+
+
+def _normalize_char_types(script: dict) -> None:
+    """Deterministic backstop for the structurer's `type` field. An animal that
+    talks/wears clothes is still an ANIMAL — the LLM sometimes mislabels it
+    `human`, which then mis-routes voice/logic. Re-derive type from the species
+    word in the character's appearance/token (token wins, it's most explicit)."""
+    for c in script.get("characters", []):
+        if not isinstance(c, dict):
+            continue
+        text = ((c.get("locked_visual_token") or "") + " " +
+                (c.get("appearance") or "") + " " + (c.get("name") or "")).lower()
+        words = set(re.findall(r"[a-z]+", text))
+        if words & _CREATURE_WORDS:
+            c["type"] = "creature"
+        elif words & _ANIMAL_WORDS:
+            c["type"] = "animal"
+        elif (c.get("type") or "").lower() not in ("human", "animal", "creature"):
+            c["type"] = "human"
+
+
 def _stamp_gender(script: dict) -> None:
     """Pin each character's gender into the cast fields so the VOICE, the visual
     token, and the image prompt all agree. Source of truth: structurer `gender`
@@ -532,7 +566,12 @@ The story's narration has ALREADY been written, voiced, and split into {n} numbe
    - `visual_description`: one short sentence — what we SEE this segment.
    - `first_frame_prompt` / `last_frame_prompt`: ~25-45 words, pose + setting + camera framing + lighting ONLY. Refer to characters by NAME — never re-describe their appearance (a locked token is injected later).
    - `motion_prompt`: ~25-45 words, physical motion + ONE camera move. No speech.
-4. Extract every named character into `characters` with `name` (short proper name, no species), `type` (EXACTLY ONE of: human|animal|creature — never combine), `gender` (male|female — MUST match the pronouns you use for them in the story; if you wrote "he/his" they are male, if "she/her" they are female), `appearance` (one sentence, MUST start with gender + explicit age — e.g. "a male 7-year-old boy" / "a female young fox" — then species/colors/clothing/feature; NO poses/actions), and `locked_visual_token` (tight 15-30 words starting with gender + age, pasteable verbatim into every shot).
+4. Extract characters into `characters`. ONLY include a character whose proper name actually APPEARS in the segments above — never invent, add, or split a character that is not named in the narration. Each gets:
+   - `name`: the short proper name exactly as written (no species word).
+   - `type`: EXACTLY ONE of human|animal|creature. **An animal is ALWAYS `animal`, even if it talks, walks upright, or wears clothes** — a mouse, rabbit, fox, tortoise, bird, etc. is `animal`, NOT `human`. Use `human` ONLY for actual human people (a boy, girl, grandpa). Use `creature` for robots, monsters, or invented fantasy beings.
+   - `gender`: male|female — MUST match the pronouns you used (he/his→male, she/her→female).
+   - `appearance`: one sentence starting with gender + explicit age + SPECIES — e.g. "a male 7-year-old boy" / "a female young fox" / "a small male robot" — then colors/clothing/feature; NO poses/actions.
+   - `locked_visual_token`: tight 15-30 words starting with gender + age + species (e.g. "a young male mouse in a blue scarf"), pasteable verbatim into every shot. The species word is MANDATORY so the image renders the right kind of being.
 5. Pick `style` from: {styles}. Pick `culture` from indian|western|japanese|mixed|animal-kingdom|fantasy. Pick `music_mood` from cheerful|calm|adventurous|tender|magical|energetic. Write a one-line `moral` (for parents, never spoken).
 6. CONTINUATION SEGMENTS: a long sentence may be split across two adjacent segments, so a segment can begin lower-case or have no subject (e.g. "moving steadily forward without pause." or "his white fur flashing against the grass."). When a segment is a continuation of the previous one, its visual MUST stay on the SAME subject, same place, same moment as the previous segment — describe the SAME action continuing. NEVER introduce a new character action, new location, or later plot event into a continuation segment.
 7. STORY ORDER IS FIXED: annotate only what THIS segment shows, using the full story for context. Do not pull a later event (a nap, a finish line, a result) into an earlier segment. The visual must match where we are in the story right now.
@@ -629,6 +668,9 @@ def _structure_segments(
     # Reuse the canonical validator: fills char tokens, normalizes speakers,
     # shot_type defaults, light direction, voice casting.
     script = sg._validate_and_default(script)
+
+    # Deterministic type backstop: a talking mouse is still an animal, not a human.
+    _normalize_char_types(script)
 
     # AUDIO-FIRST INVARIANT: the master VO already voiced each segment VERBATIM.
     # The validator's attribution scrub is for the per-character lip-sync path —

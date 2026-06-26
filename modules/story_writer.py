@@ -174,6 +174,10 @@ def _split_title_body(text: str) -> tuple[str, str]:
     for i, ln in enumerate(lines):
         if ln.strip():
             title = ln.strip().strip("#*_\"' ").strip()
+            # Strip a leading label the model sometimes emits ("Title:", "Title
+            # of the Story:", "Story Title -") so it never leaks into the UI/filename.
+            title = re.sub(r"(?i)^\s*(the\s+)?(story\s+)?title(\s+of\s+the\s+story)?\s*[:\-–—]\s*",
+                           "", title).strip().strip("#*_\"' ").strip()
             body_start = i + 1
             break
     body = "\n".join(lines[body_start:]).strip()
@@ -236,58 +240,54 @@ def write_story(
         if not _looks_like_reasoning_leak(body2) or len(body2.split()) < len(body.split()):
             raw, title, body = raw2, title2, body2
 
-    # Over-length guard: a 30-second film is ~70-85 words. The model often
-    # overshoots (long dialogue scenes → 150-220 words → 12+ micro-shots
-    # downstream). Retry ONCE with an explicit shorten brief, keep whichever
-    # version is closer to the budget. ~110 words ≈ 44s is the trip-wire.
-    if len(body.split()) > 110:
-        over = len(body.split())
-        log.warning(f"Stage-1 story is {over} words (>110, ~{over/2.5:.0f}s) — "
-                    f"too long for a 30s film; retrying once for a tighter cut.")
-        shorten_prompt = (
-            user_prompt
-            + f"\n\nYour previous draft was {over} words — FAR too long for a "
-              f"30-second film. Tell the SAME story in 70-85 words TOTAL "
-              f"(narrator prose + every spoken line combined). Use at most 5 "
-              f"short spoken lines. Keep the title, characters, the one key "
-              f"choice and the payoff; cut repeated beats and trim every "
-              f"sentence. Count the words."
-        )
-        raw3 = _call_llm(shorten_prompt, _STORY_SYSTEM_PROMPT, temperature=0.7)
-        cleaned3 = _strip_meta(raw3)
-        title3, body3 = _split_title_body(cleaned3)
-        # Accept the retry only if it is shorter and not a reasoning leak.
-        if body3 and not _looks_like_reasoning_leak(body3) and \
-                len(body3.split()) < len(body.split()):
-            log.info(f"Shorten retry: {over} -> {len(body3.split())} words.")
-            raw, title, body = raw3, (title3 or title), body3
-
-    # Under-length guard: a 30-second film wants ~70-85 words. The model often
-    # writes a tight 40-60 word arc that renders a thin ~20s video. Retry ONCE
-    # asking to ENRICH to the target while keeping the SAME arc; keep whichever
-    # version lands closer to ~75 words. ~62 words ≈ 25s is the trip-wire.
-    elif len(body.split()) < 62:
-        under = len(body.split())
-        log.warning(f"Stage-1 story is {under} words (<62, ~{under/2.5:.0f}s) — "
-                    f"too thin for a 30s film; retrying once to enrich.")
-        enrich_prompt = (
-            user_prompt
-            + f"\n\nYour previous draft was only {under} words — too short for a "
-              f"30-second film, which needs about 75 words (70-85). Tell the SAME "
-              f"story with the SAME beats, characters, turning point and payoff, "
-              f"but ENRICH it to ~75 words: add a one-line opening that sets the "
-              f"scene, give the narrator sentences a little more vivid detail, and "
-              f"add at most one more short spoken line. Do NOT add new plot or new "
-              f"characters. Count the words — land between 70 and 85."
-        )
-        raw3 = _call_llm(enrich_prompt, _STORY_SYSTEM_PROMPT, temperature=0.85)
-        cleaned3 = _strip_meta(raw3)
-        title3, body3 = _split_title_body(cleaned3)
-        # Accept only if it grew toward the target and isn't a reasoning leak/over-long.
-        n3 = len(body3.split())
-        if body3 and not _looks_like_reasoning_leak(body3) and under < n3 <= 100:
-            log.info(f"Enrich retry: {under} -> {n3} words.")
-            raw, title, body = raw3, (title3 or title), body3
+    # Length-correction LOOP. A 30-second film wants ~75 words (window 65-90).
+    # qwen consistently writes thin 45-60 word arcs (→ 4-5 micro-shots, ~20s
+    # film) or occasionally overshoots. A single retry was unreliable: it often
+    # accepted a 47→48 "growth" as fixed. Instead loop up to 3 corrective passes,
+    # always KEEPING THE DRAFT CLOSEST TO 75, and stop early once in-window.
+    TARGET, LO, HI, MAX_PASSES = 75, 65, 90, 3
+    best_raw, best_title, best_body = raw, title, body
+    best_n = len(best_body.split())
+    passes = 0
+    while passes < MAX_PASSES and not (LO <= best_n <= HI):
+        passes += 1
+        cur_n = len(best_body.split())
+        if cur_n > HI:
+            corr = (
+                user_prompt
+                + f"\n\nYour previous draft was {cur_n} words — too LONG for a "
+                  f"30-second film. Tell the SAME story (same title, characters, "
+                  f"turning point, payoff) in 70-85 words TOTAL counting narrator "
+                  f"prose AND every spoken line. Use at most 5 short spoken lines; "
+                  f"cut repeated beats and trim every sentence. Count the words."
+            )
+            temp = 0.7
+        else:
+            corr = (
+                user_prompt
+                + f"\n\nYour previous draft was only {cur_n} words — too SHORT for "
+                  f"a 30-second film, which needs about 75 words (70-85). Tell the "
+                  f"SAME story with the SAME beats, characters, turning point and "
+                  f"payoff, but ENRICH it to ~75 words: open with a one-line scene "
+                  f"set, give narrator sentences more vivid sensory detail, and add "
+                  f"at most one more short spoken line. Do NOT add new plot or new "
+                  f"characters. Count the words — land between 70 and 85."
+            )
+            temp = 0.85
+        log.warning(f"Stage-1 length pass {passes}: {cur_n} words "
+                    f"(~{cur_n/2.5:.0f}s); correcting toward {TARGET}.")
+        rawX = _call_llm(corr, _STORY_SYSTEM_PROMPT, temperature=temp)
+        titleX, bodyX = _split_title_body(_strip_meta(rawX))
+        nX = len(bodyX.split())
+        if not bodyX or _looks_like_reasoning_leak(bodyX):
+            continue
+        # keep whichever draft is closest to the target word count
+        if abs(nX - TARGET) < abs(best_n - TARGET):
+            log.info(f"Stage-1 length pass {passes}: {best_n} -> {nX} words (kept).")
+            best_raw, best_title, best_body, best_n = rawX, (titleX or best_title), bodyX, nX
+    raw, title, body = best_raw, best_title, best_body
+    if not (LO <= best_n <= HI):
+        log.warning(f"Stage-1 length still off after {passes} passes: {best_n} words.")
 
     word_count = len(body.split())
     log.info(
