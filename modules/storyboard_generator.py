@@ -333,6 +333,133 @@ def _generate_cast_sheet(script: dict, script_id: str, backend, aspect_ratio: st
         log.warning(f"Cast sheet generation failed (continuing without reference): {e}")
         return None
 
+
+def _char_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (name or "char").lower()).strip("_") or "char"
+
+
+def _generate_character_sheets(script: dict, script_id: str, backend) -> dict:
+    """Render ONE clean SOLO reference per character (`_cast_<name>.png`).
+
+    Solo renders are reliable (the matrix proved single-subject = perfect),
+    whereas a single combined sheet collapses two different animal species into
+    one (rabbit + tortoise -> two rabbits). Each solo sheet is the per-character
+    IP-Adapter anchor; multi-character shots composite the relevant solos
+    side-by-side (see _shot_reference), so SDXL never has to invent two distinct
+    species in one generation.
+
+    Returns {character_name: abs Path}. Also writes a combined _cast_sheet.png
+    (montage of the solos) for the dashboard.
+    """
+    chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
+    style_suffix = _style_suffix(script)
+    sheets: dict[str, Path] = {}
+    for i, c in enumerate(chars):
+        name = (c.get("name") or "").strip()
+        tok = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
+        if not (name and tok):
+            continue
+        typ = (c.get("type") or "").strip().lower()
+        non_human = typ in ("animal", "creature")
+        subject = ("a single anthropomorphic cartoon animal" if typ == "animal"
+                   else "a single robot/creature" if typ == "creature"
+                   else "a single character")
+        parts = []
+        if style_suffix:
+            parts.append(f"Art style: {style_suffix}.")
+        parts.append(
+            f"Character reference: {subject}, {tok}, alone, standing front facing "
+            f"in a neutral pose on a plain solid light-gray studio background, even "
+            f"soft lighting, full body visible, simple flat background, no props, "
+            f"no other characters."
+        )
+        prompt = " ".join(parts)
+        neg = ("blurry, low quality, deformed, extra limbs, distorted, watermark, text, "
+               "grid, collage, contact sheet, multiple characters, two characters, "
+               "group, crowd, duplicate")
+        if non_human:
+            neg += ", human, person, boy, girl, man, woman, human face, human skin"
+        try:
+            p = backend.generate(
+                prompt=prompt, negative_prompt=neg, aspect_ratio="1:1",
+                output_filename=f"{script_id}/_cast_{_char_slug(name)}.png",
+                seed=CAST_SHEET_SEED + i, style=script.get("style"),
+            )
+            sheets[name] = Path(p)
+            log.info(f"Character sheet for {name}: {p}")
+        except Exception as e:
+            log.warning(f"Character sheet for {name} failed: {e}")
+    # Combined montage for the dashboard (best-effort).
+    if sheets:
+        try:
+            _composite_refs(list(sheets.values()),
+                            STORYBOARDS_DIR / script_id / "_cast_sheet.png")
+        except Exception as e:
+            log.warning(f"Combined cast montage failed: {e}")
+    return sheets
+
+
+def _composite_refs(paths: list, out_path: Path) -> Path:
+    """Stitch per-character solo references side-by-side on a light-gray canvas.
+    Used as the IP-Adapter reference for a multi-character shot — both species
+    are already rendered correctly, so IP-Adapter conditions on both distinctly
+    instead of SDXL collapsing them."""
+    from PIL import Image
+    imgs = [Image.open(p).convert("RGB") for p in paths if Path(p).exists()]
+    if not imgs:
+        raise RuntimeError("no reference images to composite")
+    if len(imgs) == 1:
+        imgs[0].save(out_path)
+        return out_path
+    h = min(im.height for im in imgs)
+    resized = [im.resize((int(im.width * h / im.height), h)) for im in imgs]
+    gap = 16
+    w = sum(im.width for im in resized) + gap * (len(resized) - 1)
+    canvas = Image.new("RGB", (w, h), (228, 228, 230))
+    x = 0
+    for im in resized:
+        canvas.paste(im, (x, 0))
+        x += im.width + gap
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path)
+    return out_path
+
+
+def _shot_present_chars(script: dict, shot: dict) -> list:
+    """Names of cast members referenced in this shot (narration + speaker + prompt)."""
+    corpus = (f"{shot.get('narration','')} {shot.get('speaker','')} "
+              f"{shot.get('first_frame_prompt','')}").lower()
+    out = []
+    for c in script.get("characters", []):
+        if isinstance(c, dict):
+            n = (c.get("name") or "").strip()
+            if n and n.lower() in corpus:
+                out.append(n)
+    return out
+
+
+def _shot_reference(script: dict, shot: dict, sheets: dict, story_dir: Path):
+    """Pick the IP-Adapter reference for ONE shot from the per-character sheets.
+    1 character present -> its solo sheet. 2+ -> composite their solos. A
+    character-focused shot that named no one falls back to the whole cast."""
+    if not sheets:
+        return None
+    present = [n for n in _shot_present_chars(script, shot) if n in sheets]
+    if not present:
+        if (shot.get("shot_type") or "").strip().lower() in ("closeup", "medium", "insert"):
+            present = list(sheets.keys())
+        else:
+            return None
+    paths = [sheets[n] for n in present]
+    if len(paths) == 1:
+        return paths[0]
+    try:
+        return _composite_refs(paths, story_dir / f"_ref_shot{shot.get('shot_number')}.png")
+    except Exception as e:
+        log.warning(f"Composite reference failed ({e}); using first character sheet.")
+        return paths[0]
+
+
 def _generate_environment_sheet(script: dict, script_id: str, backend, aspect_ratio: str):
     """Generate ONE reference image of the setting."""
     setting = script.get("setting", "").strip()
@@ -387,14 +514,14 @@ def generate_storyboard(
     story_dir = STORYBOARDS_DIR / script_id
     story_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cast sheet & Environment sheet: anchoring characters and backgrounds
-    reference_image = None
+    # Per-character cast sheets (one clean solo reference each) + environment.
+    # Per-shot we pick/compose the right character references — see _shot_reference.
+    char_sheets: dict = {}
     environment_image = None
     if rs.get_reference_mode_enabled():
         if progress_callback:
-            progress_callback("Generating character cast sheet...", 0, len(shots))
-        reference_image = _generate_cast_sheet(script, script_id, backend, aspect_ratio)
-        
+            progress_callback("Generating per-character reference sheets...", 0, len(shots))
+        char_sheets = _generate_character_sheets(script, script_id, backend)
         if progress_callback:
             progress_callback("Generating environment sheet...", 0, len(shots))
         environment_image = _generate_environment_sheet(script, script_id, backend, aspect_ratio)
@@ -406,6 +533,8 @@ def generate_storyboard(
     try:
         for shot in shots:
             shot_num = shot.get("shot_number", current + 1)
+            # Per-shot IP-Adapter reference: this shot's character(s) only.
+            reference_image = _shot_reference(script, shot, char_sheets, story_dir)
             for frame_type in ("first",):
                 current += 1
                 prompt_key = f"{frame_type}_frame_prompt"
@@ -661,10 +790,24 @@ def regenerate_shot(
             gpu_utils.ensure_vram_free(min_gb=5.0, force_ollama_unload=True)
         except Exception:
             pass
-        ref_path = STORYBOARDS_DIR / script_id / "_cast_sheet.png"
-        env_path = STORYBOARDS_DIR / script_id / "_env_sheet.png"
-        if rs.get_reference_mode_enabled() and ref_path.exists():
-            c_ref = ref_path if ref_path.exists() else None
+        story_dir = STORYBOARDS_DIR / script_id
+        env_path = story_dir / "_env_sheet.png"
+        # Rebuild the per-character sheet map from disk (_cast_<slug>.png); pick
+        # this shot's reference. Fall back to the combined sheet if solos absent.
+        c_ref = None
+        if rs.get_reference_mode_enabled():
+            sheets = {}
+            for c in script.get("characters", []):
+                if isinstance(c, dict) and c.get("name"):
+                    p = story_dir / f"_cast_{_char_slug(c['name'])}.png"
+                    if p.exists():
+                        sheets[c["name"]] = p
+            if sheets:
+                c_ref = _shot_reference(script, shot, sheets, story_dir)
+            else:
+                combined = story_dir / "_cast_sheet.png"
+                c_ref = combined if combined.exists() else None
+        if c_ref is not None:
             e_ref = env_path if env_path.exists() else None
             try:
                 saved_path = backend.generate(reference_image=c_ref, environment_image=e_ref, **_gen_kwargs)
