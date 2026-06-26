@@ -66,6 +66,21 @@ def _prompt_has_character(script: dict, prompt_text: str) -> bool:
                 return True
     return False
 
+
+def _is_empty_frame(script: dict, shot: dict, formatted: str) -> bool:
+    """Decide if a shot is a legitimately character-FREE establishing frame.
+
+    Only a `wide` shot may be empty (a location/atmosphere establishing beat).
+    closeup/medium/insert are inherently character shots — never assert emptiness
+    on them (doing so on a closeup-of-faces made flux render a bare room). Even a
+    wide is only empty when NEITHER the rendered prompt NOR the narration names a
+    cast member.
+    """
+    if (shot.get("shot_type") or "").strip().lower() != "wide":
+        return False
+    return not (_prompt_has_character(script, formatted)
+                or _prompt_has_character(script, shot.get("narration", "")))
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 SCRIPTS_DIR = PROJECT_ROOT / "04_Outputs" / "scripts"
 STORYBOARDS_DIR = PROJECT_ROOT / "04_Outputs" / "storyboards"
@@ -173,6 +188,14 @@ def _rewrite_as_paragraph(raw_prompt: str, script: dict, shot: dict) -> str:
     # locked token injected — prevents the protagonist rendering as a stranger.
     match_text = f"{shot.get('narration', '')} {shot.get('speaker', '')}"
     char_para = _characters_description(script, raw_prompt=cleaned, match_text=match_text)
+    # Character-focused shot (closeup/medium/insert) but nobody matched by name —
+    # the prompt/narration referred to them as "the twins"/"they" or is a subject-
+    # less continuation fragment. Inject the FULL cast so the right beings still
+    # render (otherwise flux invents strangers or, flagged as empty, draws a bare
+    # room on a closeup-of-faces).
+    _stype = (shot.get("shot_type") or "").strip().lower()
+    if not char_para and _stype in ("closeup", "medium", "insert"):
+        char_para = _characters_description(script)
     setting = script.get("setting", "")
     style_suffix = _style_suffix(script)
 
@@ -399,10 +422,11 @@ def generate_storyboard(
                     getattr(backend, "cfg", model_registry.get_active("image_backend").get("cfg", 1.0))
                 )
                 effective_cfg = bp.image_cfg_for(beat, backend_default_cfg)
-                # Anti-ghost: no character in the actual image prompt → empty frame.
-                # Negative terms alone are weak (esp. at atmosphere's lowered cfg), so
-                # assert emptiness POSITIVELY and raise cfg for stronger adherence.
-                no_char_frame = not _prompt_has_character(script, formatted)
+                # Anti-ghost: only a WIDE establishing frame with no character in
+                # prompt OR narration is treated as empty. Negative terms alone are
+                # weak (esp. at atmosphere's lowered cfg), so assert emptiness
+                # POSITIVELY and raise cfg. Never on a closeup/medium/insert.
+                no_char_frame = _is_empty_frame(script, shot, formatted)
                 if no_char_frame:
                     negative = bp.merge_negative(negative, "atmosphere")
                     if "empty" not in formatted.lower():
@@ -569,9 +593,9 @@ def regenerate_shot(
             getattr(backend, "cfg", model_registry.get_active("image_backend").get("cfg", 1.0))
         )
         effective_cfg = bp.image_cfg_for(beat, backend_default_cfg)
-        # Anti-ghost: empty frame (no character in prompt) → assert emptiness
-        # positively + suppress humans + raise cfg for stronger adherence.
-        no_char_frame = not _prompt_has_character(script, formatted)
+        # Anti-ghost: only a WIDE establishing frame with no character in prompt
+        # OR narration is empty — never a closeup/medium/insert.
+        no_char_frame = _is_empty_frame(script, shot, formatted)
         if no_char_frame:
             negative = bp.merge_negative(negative, "atmosphere")
             if "empty" not in formatted.lower():
