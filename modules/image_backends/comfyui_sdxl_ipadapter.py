@@ -80,6 +80,7 @@ class Backend(ImageBackend):
         if not WORKFLOW_PATH.exists():
             raise FileNotFoundError(f"SDXL+IPA workflow not found: {WORKFLOW_PATH}.")
         self._template = json.loads(WORKFLOW_PATH.read_text(encoding="utf-8-sig"))
+        self._mask_cache: dict = {}
         log.info("SDXL+IP-Adapter adapter initialized "
                  f"(ckpt={self.checkpoint}, preset={self.ipa_preset}, "
                  f"{len(self.style_loras)} style LoRAs).")
@@ -121,15 +122,24 @@ class Backend(ImageBackend):
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
 
-        use_ref = reference_image is not None and Path(reference_image).exists()
-        ref_name = None
-        if use_ref:
+        # Accept either a single reference_image or a list reference_images (the
+        # per-character solo sheets). Multiple refs are fed as an IMAGE BATCH into
+        # IP-Adapter (combine_embeds=concat) — conditions on BOTH identities
+        # without imposing a side-by-side layout (a composited diptych made the
+        # output a split-screen).
+        refs = kwargs.get("reference_images")
+        if not refs:
+            refs = [reference_image] if reference_image is not None else []
+        ref_paths = [Path(r) for r in refs if r is not None and Path(r).exists()]
+        ref_names = []
+        for rp in ref_paths:
             try:
-                ref_name = self._upload_image(Path(reference_image))
-                log.info(f"IP-Adapter reference uploaded: {ref_name}")
+                ref_names.append(self._upload_image(rp))
             except Exception as e:
-                log.warning(f"Reference upload failed, rendering without IP-Adapter: {e}")
-                use_ref = False
+                log.warning(f"Reference upload failed for {rp.name}: {e}")
+        use_ref = bool(ref_names)
+        if use_ref:
+            log.info(f"IP-Adapter references uploaded: {ref_names}")
 
         width, height = model_registry.get_resolution(aspect_ratio)
         rs_steps = rs.get_steps_override()
@@ -155,7 +165,7 @@ class Backend(ImageBackend):
         wf = self._build_workflow(
             pos=pos, neg=neg, width=width, height=height, seed=seed,
             steps=effective_steps, cfg=effective_cfg, lora=lora,
-            ref_name=ref_name if use_ref else None,
+            ref_names=ref_names if use_ref else [],
             output_filename=output_filename,
         )
 
@@ -180,7 +190,7 @@ class Backend(ImageBackend):
 
     def _build_workflow(self, pos: str, neg: str, width: int, height: int,
                         seed: int, steps: int, cfg: float, lora: dict,
-                        ref_name: Optional[str], output_filename: Optional[str]) -> dict:
+                        ref_names: list, output_filename: Optional[str]) -> dict:
         wf = json.loads(json.dumps(self._template))
 
         wf["1"]["inputs"]["ckpt_name"] = self.checkpoint
@@ -198,15 +208,74 @@ class Backend(ImageBackend):
         if output_filename:
             wf["11"]["inputs"]["filename_prefix"] = Path(output_filename).stem
 
-        if ref_name:
-            wf["4"]["inputs"]["image"] = ref_name
-        else:
+        ref_names = ref_names or []
+        if not ref_names:
             # No reference → drop the IP-Adapter chain (nodes 3,4,5) and feed the
             # sampler straight from the LoRA model output.
             wf["9"]["inputs"]["model"] = ["2", 0]
             for nid in ("3", "4", "5"):
                 wf.pop(nid, None)
+            return wf
+
+        if len(ref_names) == 1:
+            # Single character → the one IP-Adapter node (template node 5).
+            wf["4"]["inputs"]["image"] = ref_names[0]
+            wf["5"]["inputs"]["image"] = ["4", 0]
+            return wf
+
+        # MULTIPLE different characters → REGIONAL masking. One IPAdapterAdvanced
+        # per character, each masked to its vertical slice of the frame (char 0 =
+        # left, char 1 = right, ...). The KSampler still paints ONE coherent scene;
+        # the masks only steer each character's IDENTITY to its region. This keeps
+        # both species distinct and in one frame — a combined sheet collapses them
+        # to one species, a batch/concat blends them into a hybrid, a side-by-side
+        # composite reproduces a split-screen seam.
+        masks = self._region_masks(len(ref_names), width, height)
+        wf.pop("4", None)
+        wf.pop("5", None)
+        prev_model = ["3", 0]          # model out of the unified loader
+        ipadapter = ["3", 1]
+        for i, name in enumerate(ref_names):
+            img_id = f"ipa_img_{i}"
+            wf[img_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
+            mimg_id = f"ipa_mimg_{i}"
+            wf[mimg_id] = {"class_type": "LoadImage", "inputs": {"image": masks[i]}}
+            mask_id = f"ipa_mask_{i}"
+            wf[mask_id] = {"class_type": "ImageToMask",
+                           "inputs": {"image": [mimg_id, 0], "channel": "red"}}
+            ipa_id = f"ipa_node_{i}"
+            wf[ipa_id] = {"class_type": "IPAdapterAdvanced", "inputs": {
+                "model": prev_model, "ipadapter": ipadapter, "image": [img_id, 0],
+                "attn_mask": [mask_id, 0], "weight": self.ipa_weight,
+                "weight_type": "linear", "combine_embeds": "concat",
+                "start_at": 0.0, "end_at": 1.0, "embeds_scaling": "V only"}}
+            prev_model = [ipa_id, 0]
+        wf["9"]["inputs"]["model"] = prev_model
         return wf
+
+    def _region_masks(self, n: int, width: int, height: int) -> list:
+        """One uploaded mask image per character: a white vertical band over that
+        character's slice of the frame, black elsewhere. ImageToMask(red) turns it
+        into the IP-Adapter attn_mask. Cached per (n,width,height)."""
+        key = (n, width, height)
+        if key in self._mask_cache:
+            return self._mask_cache[key]
+        from PIL import Image
+        import tempfile, os
+        names = []
+        tmpdir = Path(tempfile.gettempdir()) / "claw_ipa_masks"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            img = Image.new("RGB", (width, height), (0, 0, 0))
+            x0 = int(round(width * i / n))
+            x1 = int(round(width * (i + 1) / n))
+            band = Image.new("RGB", (max(1, x1 - x0), height), (255, 255, 255))
+            img.paste(band, (x0, 0))
+            fp = tmpdir / f"mask_{n}_{i}_{width}x{height}.png"
+            img.save(fp)
+            names.append(self._upload_image(fp))
+        self._mask_cache[key] = names
+        return names
 
     def _submit_prompt(self, workflow: dict, client_id: str) -> str:
         r = requests.post(f"{self.server_url}/prompt",

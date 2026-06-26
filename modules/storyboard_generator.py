@@ -440,26 +440,21 @@ def _shot_present_chars(script: dict, shot: dict) -> list:
     return out
 
 
-def _shot_reference(script: dict, shot: dict, sheets: dict, story_dir: Path):
-    """Pick the IP-Adapter reference for ONE shot from the per-character sheets.
-    1 character present -> its solo sheet. 2+ -> composite their solos. A
-    character-focused shot that named no one falls back to the whole cast."""
+def _shot_reference(script: dict, shot: dict, sheets: dict, story_dir: Path) -> list:
+    """Per-shot IP-Adapter reference set — a LIST of this shot's character solo
+    sheets. The backend feeds 2+ as an image BATCH (combine_embeds=concat) so
+    both identities are held WITHOUT a side-by-side layout (compositing them into
+    one image made the output a split-screen). 1 char present -> [its sheet];
+    2+ -> [each sheet]; a character-focused shot naming no one -> the whole cast."""
     if not sheets:
-        return None
+        return []
     present = [n for n in _shot_present_chars(script, shot) if n in sheets]
     if not present:
         if (shot.get("shot_type") or "").strip().lower() in ("closeup", "medium", "insert"):
             present = list(sheets.keys())
         else:
-            return None
-    paths = [sheets[n] for n in present]
-    if len(paths) == 1:
-        return paths[0]
-    try:
-        return _composite_refs(paths, story_dir / f"_ref_shot{shot.get('shot_number')}.png")
-    except Exception as e:
-        log.warning(f"Composite reference failed ({e}); using first character sheet.")
-        return paths[0]
+            return []
+    return [sheets[n] for n in present]
 
 
 def _generate_environment_sheet(script: dict, script_id: str, backend, aspect_ratio: str):
@@ -535,8 +530,9 @@ def generate_storyboard(
     try:
         for shot in shots:
             shot_num = shot.get("shot_number", current + 1)
-            # Per-shot IP-Adapter reference: this shot's character(s) only.
-            reference_image = _shot_reference(script, shot, char_sheets, story_dir)
+            # Per-shot IP-Adapter references: this shot's character solo sheets.
+            shot_refs = _shot_reference(script, shot, char_sheets, story_dir)
+            reference_image = shot_refs[0] if shot_refs else None
             for frame_type in ("first",):
                 current += 1
                 prompt_key = f"{frame_type}_frame_prompt"
@@ -640,6 +636,7 @@ def generate_storyboard(
                             try:
                                 saved_path = backend.generate(
                                     reference_image=reference_image,
+                                    reference_images=shot_refs,
                                     environment_image=environment_image,
                                     **_gen_kwargs
                                 )
@@ -796,7 +793,7 @@ def regenerate_shot(
         env_path = story_dir / "_env_sheet.png"
         # Rebuild the per-character sheet map from disk (_cast_<slug>.png); pick
         # this shot's reference. Fall back to the combined sheet if solos absent.
-        c_ref = None
+        shot_refs = []
         if rs.get_reference_mode_enabled():
             sheets = {}
             for c in script.get("characters", []):
@@ -805,14 +802,16 @@ def regenerate_shot(
                     if p.exists():
                         sheets[c["name"]] = p
             if sheets:
-                c_ref = _shot_reference(script, shot, sheets, story_dir)
+                shot_refs = _shot_reference(script, shot, sheets, story_dir)
             else:
                 combined = story_dir / "_cast_sheet.png"
-                c_ref = combined if combined.exists() else None
+                shot_refs = [combined] if combined.exists() else []
+        c_ref = shot_refs[0] if shot_refs else None
         if c_ref is not None:
             e_ref = env_path if env_path.exists() else None
             try:
-                saved_path = backend.generate(reference_image=c_ref, environment_image=e_ref, **_gen_kwargs)
+                saved_path = backend.generate(reference_image=c_ref, reference_images=shot_refs,
+                                              environment_image=e_ref, **_gen_kwargs)
             except TypeError:
                 try:
                     saved_path = backend.generate(reference_image=c_ref, **_gen_kwargs)
