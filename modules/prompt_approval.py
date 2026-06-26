@@ -138,6 +138,17 @@ def backfill_from_disk(script_id: str, script: Optional[dict] = None) -> Optiona
             or (sh.get("first_frame_prompt") or "").strip()
             or (sh.get("visual_description") or "").strip()
         )
+        # The bare shot prompt carries NO style anchor or character token, so the
+        # render path (which trusts an approved prompt verbatim) would draw the
+        # wrong thing — a generic human instead of the cast. Enrich it the same
+        # deterministic, no-LLM way the live render fallback does, so the stored
+        # prompt is complete: style + locked character sheet + scene + setting.
+        if img_p and script:
+            try:
+                from modules import storyboard_generator as _sgen
+                img_p = _sgen._rewrite_as_paragraph(img_p, script, sh)
+            except Exception as e:
+                log.warning(f"backfill: could not enrich image prompt for shot {sn}: {e}")
         img_seed = fr.get("seed", -1)
         if not isinstance(img_seed, int):
             img_seed = -1
