@@ -368,15 +368,17 @@ def _generate_character_sheets(script: dict, script_id: str, backend) -> dict:
         if style_suffix:
             parts.append(f"Art style: {style_suffix}.")
         parts.append(
-            f"Character reference: {subject}, {tok}, alone, standing front facing "
-            f"in a neutral pose on a plain solid light-gray studio background, even "
-            f"soft lighting, full body visible, simple flat background, no props, "
-            f"no other characters."
+            f"Solo character reference of EXACTLY ONE character: {subject}, {tok}, "
+            f"completely alone, single subject centered in frame, standing front "
+            f"facing in a neutral pose on a plain solid light-gray studio background, "
+            f"even soft lighting, full body visible, simple flat background, no props, "
+            f"no other characters, only one character in the entire image."
         )
         prompt = " ".join(parts)
         neg = ("blurry, low quality, deformed, extra limbs, distorted, watermark, text, "
                "grid, collage, contact sheet, multiple characters, two characters, "
-               "group, crowd, duplicate")
+               "two animals, pair, couple, group, crowd, duplicate, clone, twin, "
+               "second character, reflection")
         if non_human:
             neg += ", human, person, boy, girl, man, woman, human face, human skin"
         try:

@@ -197,6 +197,28 @@ def test_stamp_gender_skips_when_already_present():
     assert script["characters"][0]["locked_visual_token"] == "a female robin"
 
 
+def test_style_guard_switches_humanoid_style_for_animal_cast():
+    sc = {"style": "cartoon_saloon", "characters": [
+        {"name": "Pip", "type": "animal", "locked_visual_token": "a white rabbit"},
+        {"name": "Terry", "type": "animal", "locked_visual_token": "a green tortoise"}]}
+    afp._guard_style_for_cast(sc)
+    assert sc["style"] == "pixar"            # humanoid style swapped out
+
+
+def test_style_guard_keeps_style_for_human_cast():
+    sc = {"style": "cartoon_saloon", "characters": [
+        {"name": "Tom", "type": "human", "locked_visual_token": "a 7-year-old boy"}]}
+    afp._guard_style_for_cast(sc)
+    assert sc["style"] == "cartoon_saloon"   # humans are fine in humanoid styles
+
+
+def test_style_guard_leaves_animal_safe_style():
+    sc = {"style": "pixar", "characters": [
+        {"name": "Pip", "type": "animal", "locked_visual_token": "a white rabbit"}]}
+    afp._guard_style_for_cast(sc)
+    assert sc["style"] == "pixar"            # already animal-safe, untouched
+
+
 def test_normalize_char_types_animal_over_human():
     """A talking mouse the LLM mislabeled 'human' must be corrected to 'animal'
     from the species word in its token; a robot -> creature; a real boy stays."""

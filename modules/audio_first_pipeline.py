@@ -438,6 +438,29 @@ _CREATURE_WORDS = {
 }
 
 
+# Styles whose LoRA renders human-shaped figures — wrong for an animal cast.
+_HUMANOID_ONLY_STYLES = {"cartoon_saloon", "stickman"}
+_ANIMAL_SAFE_STYLE = "pixar"
+
+
+def _guard_style_for_cast(script: dict) -> None:
+    """A humanoid-art style (cartoon_saloon = Kells folk humans, stickman = stick
+    figures) forces human-shaped characters, so an all-animal/creature cast
+    renders as humanoids (the rabbit/tortoise became green-cloaked people). When
+    the cast has NO humans and the picked style is humanoid-only, switch to an
+    animal-safe style so the species survives."""
+    chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
+    if not chars:
+        return
+    types = {(c.get("type") or "").strip().lower() for c in chars}
+    has_human = "human" in types
+    style = (script.get("style") or "").strip().lower()
+    if not has_human and style in _HUMANOID_ONLY_STYLES:
+        log.info(f"Style guard: non-human cast but style={style} (humanoid-only) — "
+                 f"switching to {_ANIMAL_SAFE_STYLE} so species survives.")
+        script["style"] = _ANIMAL_SAFE_STYLE
+
+
 def _normalize_char_types(script: dict) -> None:
     """Deterministic backstop for the structurer's `type` field. An animal that
     talks/wears clothes is still an ANIMAL — the LLM sometimes mislabels it
@@ -671,6 +694,8 @@ def _structure_segments(
 
     # Deterministic type backstop: a talking mouse is still an animal, not a human.
     _normalize_char_types(script)
+    # Style guard: humanoid-art styles render animals as humanoids.
+    _guard_style_for_cast(script)
 
     # AUDIO-FIRST INVARIANT: the master VO already voiced each segment VERBATIM.
     # The validator's attribution scrub is for the per-character lip-sync path —
