@@ -250,6 +250,27 @@ def _save_manifest(result: StoryboardResult):
 # MAIN API
 # ==============================================================================
 
+def _kids_backend():
+    """Kids storytelling renders on SDXL + style-LoRA + IP-Adapter for character
+    consistency (cast-sheet anchored). This is pinned HERE rather than via the
+    global `active` backend so the other modes are untouched — horror pins
+    flux_lora itself, music keeps the active backend. Falls back to the active
+    backend if SDXL+IPA is unavailable/unhealthy."""
+    try:
+        import importlib
+        cfg = model_registry.get_available("image_backend", "comfyui_sdxl_ipadapter")
+        if cfg:
+            mod = importlib.import_module(cfg["module_path"])
+            b = mod.Backend(cfg)
+            ok, _msg = b.health_check()
+            if ok:
+                return b
+            log.warning(f"SDXL+IPA backend unhealthy ({_msg}); using active backend.")
+    except Exception as e:
+        log.warning(f"SDXL+IPA backend unavailable ({e}); using active backend.")
+    return ib.get_active_backend()
+
+
 def _generate_cast_sheet(script: dict, script_id: str, backend, aspect_ratio: str):
     """Generate ONE reference image of all main characters (front-facing, neutral,
     plain background, fixed seed). Returns its Path, or None on failure / no chars.
@@ -355,7 +376,7 @@ def generate_storyboard(
     if len(shots) == 0:
         raise ValueError(f"Script {script_id} has no shots")
 
-    backend = ib.get_active_backend()
+    backend = _kids_backend()
     backend_id = backend.backend_id
     style_used = script.get("style", "pixar")
     log.info(
@@ -579,7 +600,7 @@ def regenerate_shot(
 
     frames_to_redo = ["first", "last"] if which_frame == "both" else [which_frame]
 
-    backend = ib.get_active_backend()
+    backend = _kids_backend()
     story_dir = STORYBOARDS_DIR / script_id
     story_dir.mkdir(parents=True, exist_ok=True)
 
