@@ -63,10 +63,52 @@ AUDIO_DIR = PROJECT_ROOT / "04_Outputs" / "audio"
 # TTS SELECTION — ElevenLabs primary, local fallback
 # ==============================================================================
 
+_OPEN_Q = '"“'        # straight + curly opening double-quote
+_CLOSE_Q = '"”’\')'  # close double/single quote + bracket
+
+
 def _split_sentences(prose: str) -> list[str]:
-    """Rough sentence split for the silence-fallback path (text → chunk map)."""
-    parts = re.split(r"(?<=[.!?])\s+", prose.strip())
-    return [p.strip() for p in parts if p.strip()]
+    """Dialogue-aware sentence split.
+
+    A naive split on `[.!?]\\s+` breaks DIALOGUE in two places:
+      - it splits on a `!`/`?` that sits INSIDE a quote ("I win! You'll see!")
+      - it does NOT split after a closing-quote terminator (`."`) because the
+        punctuation is followed by `"`, not whitespace.
+    Both produced dangling fragments and two-speaker shots in audio-first.
+
+    This walker treats author newlines as hard breaks (each dialogue turn is on
+    its own line in the prose), and within a line splits only on `.!?` that are
+    NOT inside an open quote, keeping any trailing close-quote with the sentence.
+    """
+    out: list[str] = []
+    for line in prose.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        buf = ""
+        in_quote = False
+        i = 0
+        n = len(line)
+        while i < n:
+            ch = line[i]
+            buf += ch
+            if ch in _OPEN_Q:
+                in_quote = not in_quote          # straight quotes toggle; curly pair toggles too
+            elif ch in ".!?" and not in_quote:
+                j = i + 1
+                while j < n and line[j] in ".!?":   # run of terminators (?!, ...)
+                    buf += line[j]; j += 1
+                if j < n and line[j] in _CLOSE_Q:   # keep trailing close-quote/bracket
+                    buf += line[j]; j += 1
+                if j >= n or line[j].isspace():      # real boundary
+                    out.append(buf.strip())
+                    buf = ""
+                    i = j
+                    continue
+            i += 1
+        if buf.strip():
+            out.append(buf.strip())
+    return [s.strip() for s in out if s.strip()]
 
 
 # Chars per breath-group ceiling. VoxCPM voices ≈ 0.075s/char, so ~70 chars
@@ -87,7 +129,13 @@ def _breath_groups(prose: str, max_chars: int = _GROUP_MAX_CHARS) -> list[str]:
         if len(sent) <= max_chars:
             groups.append(sent)
             continue
-        # split long sentence at clause punctuation, greedily packing to max_chars
+        # Keep a dialogue line whole even if long — splitting at commas inside a
+        # quote would cut one spoken line across two shots/voices. Assembly
+        # freeze-pads the overlong tail.
+        if '"' in sent or "“" in sent:
+            groups.append(sent)
+            continue
+        # split long NARRATION sentence at clause punctuation, greedily packing
         clauses = re.split(r"(?<=[,;:])\s+", sent)
         buf = ""
         for cl in clauses:
@@ -486,6 +534,8 @@ The story's narration has ALREADY been written, voiced, and split into {n} numbe
    - `motion_prompt`: ~25-45 words, physical motion + ONE camera move. No speech.
 4. Extract every named character into `characters` with `name` (short proper name, no species), `type` (EXACTLY ONE of: human|animal|creature — never combine), `gender` (male|female — MUST match the pronouns you use for them in the story; if you wrote "he/his" they are male, if "she/her" they are female), `appearance` (one sentence, MUST start with gender + explicit age — e.g. "a male 7-year-old boy" / "a female young fox" — then species/colors/clothing/feature; NO poses/actions), and `locked_visual_token` (tight 15-30 words starting with gender + age, pasteable verbatim into every shot).
 5. Pick `style` from: {styles}. Pick `culture` from indian|western|japanese|mixed|animal-kingdom|fantasy. Pick `music_mood` from cheerful|calm|adventurous|tender|magical|energetic. Write a one-line `moral` (for parents, never spoken).
+6. CONTINUATION SEGMENTS: a long sentence may be split across two adjacent segments, so a segment can begin lower-case or have no subject (e.g. "moving steadily forward without pause." or "his white fur flashing against the grass."). When a segment is a continuation of the previous one, its visual MUST stay on the SAME subject, same place, same moment as the previous segment — describe the SAME action continuing. NEVER introduce a new character action, new location, or later plot event into a continuation segment.
+7. STORY ORDER IS FIXED: annotate only what THIS segment shows, using the full story for context. Do not pull a later event (a nap, a finish line, a result) into an earlier segment. The visual must match where we are in the story right now.
 
 # OUTPUT FORMAT
 {{

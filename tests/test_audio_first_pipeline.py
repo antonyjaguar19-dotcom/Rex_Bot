@@ -202,6 +202,37 @@ def test_split_sentences():
     assert out == ["Hello there.", "How are you?", "Run!"]
 
 
+def test_split_sentences_keeps_dialogue_whole():
+    """A spoken line with internal !/? inside the quotes must stay ONE unit,
+    not split mid-quote into dangling fragments (the rabbit/tortoise bug)."""
+    out = afp._split_sentences('"Tess," he boasted, "I\'ll win this race! You\'ll see!"')
+    assert out == ['"Tess," he boasted, "I\'ll win this race! You\'ll see!"']
+
+
+def test_split_sentences_breaks_after_close_quote():
+    """Narrator sentence + a separate dialogue line on the same line must split
+    after the closing-quote terminator (`."`), not merge two speakers."""
+    line = 'Tess looked up with her steady gaze. "We\'ll start when you\'re ready."'
+    out = afp._split_sentences(line)
+    assert out == [
+        "Tess looked up with her steady gaze.",
+        '"We\'ll start when you\'re ready."',
+    ]
+
+
+def test_split_sentences_attribution_stays_with_dialogue():
+    out = afp._split_sentences('"Watch me, I\'ll win for sure!" Pip said confidently.')
+    assert out == ['"Watch me, I\'ll win for sure!" Pip said confidently.']
+
+
+def test_breath_groups_keep_dialogue_line_whole_even_when_long():
+    """A long quoted line is NOT clause-split (would cut one voice across two
+    shots); it stays one group and freeze-pads at assembly."""
+    long_quote = '"I will run faster than the wind, faster than any creature in this whole green forest!" he cried.'
+    out = afp._breath_groups(long_quote, max_chars=40)
+    assert out == [long_quote]
+
+
 def test_breath_groups_short_sentences_pass_through():
     out = afp._breath_groups("Hi there. Run fast.")
     assert out == ["Hi there.", "Run fast."]
