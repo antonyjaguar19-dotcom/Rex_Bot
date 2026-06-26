@@ -252,36 +252,59 @@ def _save_manifest(result: StoryboardResult):
 
 def _generate_cast_sheet(script: dict, script_id: str, backend, aspect_ratio: str):
     """Generate ONE reference image of all main characters (front-facing, neutral,
-    plain background, fixed seed). Returns its Path, or None on failure / no chars."""
-    chars = script.get("characters", [])
+    plain background, fixed seed). Returns its Path, or None on failure / no chars.
+
+    This image is the IP-Adapter character anchor, so it MUST render the right
+    SPECIES (SDXL+Pixar LoRA is heavily human-biased — animal tokens alone draw a
+    human) and MUST be a clean lineup, NOT a contact-sheet collage (the "reference
+    sheet" wording + wide aspect triggers grids). Hardened accordingly.
+    """
+    chars = [c for c in script.get("characters", []) if isinstance(c, dict)]
     tokens = []
     for c in chars:
-        if isinstance(c, dict):
-            name = c.get("name", "").strip()
-            tok = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
-            if tok:
-                tokens.append(f"{name}: {tok}" if name else tok)
+        name = c.get("name", "").strip()
+        tok = (c.get("locked_visual_token") or c.get("appearance") or "").strip()
+        if tok:
+            tokens.append(f"{name}, {tok}" if name else tok)
     if not tokens:
         return None
+
+    types = {(c.get("type") or "").strip().lower() for c in chars}
+    non_human = types and types <= {"animal", "creature"}
+    n = len(tokens)
+    subject = "anthropomorphic cartoon characters" if non_human else "characters"
 
     style_suffix = _style_suffix(script)
     parts = []
     if style_suffix:
         parts.append(f"Art style: {style_suffix}.")
+    lineup = "a single full-body character" if n == 1 else \
+        f"{n} full-body {subject} standing side by side in a row"
     parts.append(
-        "Character reference sheet. Full body, front facing, neutral standing pose, "
-        "arms relaxed at sides, plain solid light-gray studio background, even soft lighting, "
-        "no props, no scenery, characters clearly separated side by side. "
-        + "Characters: " + "; ".join(tokens) + "."
+        f"Character reference lineup: {lineup} on a plain solid light-gray studio "
+        f"background, front facing, neutral standing pose, even soft lighting, clear "
+        f"separation between characters, full body visible, simple flat background, "
+        f"no props, no scenery. " + "; ".join(tokens) + "."
     )
     cast_prompt = " ".join(parts)
-    log.info(f"Generating cast sheet for {script_id} ({len(tokens)} character(s))")
+
+    # Always block the collage/grid failure; block humans when the cast is animals.
+    neg = ("blurry, low quality, deformed, extra limbs, distorted, watermark, text, "
+           "grid, collage, contact sheet, multiple panels, split screen, montage, "
+           "tiled layout, picture frames")
+    if non_human:
+        neg += ", human, person, boy, girl, man, woman, human face, human skin, realistic human"
+
+    log.info(f"Generating cast sheet for {script_id} ({n} character(s), "
+             f"{'non-human' if non_human else 'human'} cast)")
     try:
         ref_path = backend.generate(
             prompt=cast_prompt,
-            aspect_ratio=aspect_ratio,
+            negative_prompt=neg,
+            aspect_ratio="1:1",          # square avoids the wide contact-sheet grid
             output_filename=f"{script_id}/_cast_sheet.png",
             seed=CAST_SHEET_SEED,
+            style=script.get("style"),
         )
         log.info(f"Cast sheet saved: {ref_path}")
         return ref_path
@@ -311,6 +334,7 @@ def _generate_environment_sheet(script: dict, script_id: str, backend, aspect_ra
             aspect_ratio=aspect_ratio,
             output_filename=f"{script_id}/_env_sheet.png",
             seed=CAST_SHEET_SEED + 1,
+            style=script.get("style"),
         )
         log.info(f"Environment sheet saved: {ref_path}")
         return ref_path
@@ -451,6 +475,7 @@ def generate_storyboard(
                     aspect_ratio=aspect_ratio,
                     output_filename=f"{script_id}/shot{shot_num}_{frame_type}.png",
                     cfg_override=effective_cfg,
+                    style=script.get("style"),   # SDXL+IPA picks the per-style LoRA; others ignore
                 )
                 # Pass user-approved seed (if any). -1 = random (let backend pick).
                 if isinstance(approved_img_seed, int) and approved_img_seed > 0:
@@ -476,7 +501,7 @@ def generate_storyboard(
                                     # negative_prompt — drop the optional extras (mirrors
                                     # the no-reference path below).
                                     fallback = {k: v for k, v in _gen_kwargs.items()
-                                                if k not in ("cfg_override", "negative_prompt")}
+                                                if k not in ("cfg_override", "negative_prompt", "style")}
                                     saved_path = backend.generate(**fallback)
                         else:
                             try:
@@ -484,7 +509,7 @@ def generate_storyboard(
                             except TypeError:
                                 # Backend doesn't accept cfg_override / negative_prompt — drop them
                                 fallback = {k: v for k, v in _gen_kwargs.items()
-                                            if k not in ("cfg_override", "negative_prompt")}
+                                            if k not in ("cfg_override", "negative_prompt", "style")}
                                 saved_path = backend.generate(**fallback)
                         break  # success
                     except Exception as e:
@@ -607,6 +632,7 @@ def regenerate_shot(
             aspect_ratio=aspect_ratio,
             output_filename=f"{script_id}/shot{shot_number}_{frame_type}.png",
             cfg_override=effective_cfg,
+            style=script.get("style"),
         )
         if isinstance(approved_img_seed, int) and approved_img_seed > 0:
             _gen_kwargs["seed"] = approved_img_seed
@@ -631,7 +657,7 @@ def regenerate_shot(
                 saved_path = backend.generate(**_gen_kwargs)
             except TypeError:
                 fallback = {k: v for k, v in _gen_kwargs.items()
-                            if k not in ("cfg_override", "negative_prompt")}
+                            if k not in ("cfg_override", "negative_prompt", "style")}
                 saved_path = backend.generate(**fallback)
         used_seed = int(getattr(backend, "_last_seed", -1) or -1)
         results.append(FrameResult(
