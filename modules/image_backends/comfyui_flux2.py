@@ -360,6 +360,9 @@ class Backend(ImageBackend):
             ext = Path(filename).suffix or ".png"
             target = OUTPUT_DIR / f"img_flux2_{prompt_id[:12]}{ext}"
 
+        # output_filename usually carries a per-script subdir ("<id>/shot1.png");
+        # create it so the write doesn't fail with FileNotFoundError.
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(r.content)
         return target
 
