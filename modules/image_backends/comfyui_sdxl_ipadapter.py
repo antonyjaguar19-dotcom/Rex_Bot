@@ -57,9 +57,9 @@ STYLE_LORAS = {
     "pixar":          {"file": "disneyPixarCartoon_v10.safetensors",       "trigger": "Disney Pixar style 3D animation", "strength": 0.85},
     "cartoon_saloon": {"file": "Cartoon_Saloon_Style_XL_kk-000009.safetensors", "trigger": "cartoon saloon style, hand-drawn 2D", "strength": 0.9},
     "claymation":     {"file": "CLAYMATE_V2.03_.safetensors",              "trigger": "claymation, stop-motion clay model", "strength": 0.9},
-    "stickman":       {"file": "Stickman_stick_figure-000006.safetensors",
-                       "trigger": "stickman, classic xkcd stick figure, circle head on a single thin line body, single line arms and single line legs, thin black pen on white paper, extremely minimal, no body outline, no torso shape",
-                       "strength": 1.15,
+    "stickman":       {"file": "Stickfigures-000005.safetensors",
+                       "trigger": "Flipchartvisu, Stick figure, classic stick figure line drawing, circle head on a single thin line body, single line arms and legs, thin black pen on white, extremely minimal",
+                       "strength": 1.0,
                        "negative": "photo, photorealistic, realistic, 3d, render, detailed, coloring book, "
                                    "silhouette, solid black fill, filled body, body outline, torso shape, "
                                    "muscular, realistic proportions, detailed anatomy, human body shape, "
