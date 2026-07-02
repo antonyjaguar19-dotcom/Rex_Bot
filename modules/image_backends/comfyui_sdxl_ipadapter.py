@@ -58,12 +58,14 @@ STYLE_LORAS = {
     "cartoon_saloon": {"file": "Cartoon_Saloon_Style_XL_kk-000009.safetensors", "trigger": "cartoon saloon style, hand-drawn 2D", "strength": 0.9},
     "claymation":     {"file": "CLAYMATE_V2.03_.safetensors",              "trigger": "claymation, stop-motion clay model", "strength": 0.9},
     "stickman":       {"file": "Stickman_stick_figure-000006.safetensors",
-                       "trigger": "stickman, classic xkcd stick figure, circle head on a single line body, line arms and legs, thin black pen on white paper, extremely minimal",
-                       "strength": 1.0,
+                       "trigger": "stickman, classic xkcd stick figure, circle head on a single thin line body, single line arms and single line legs, thin black pen on white paper, extremely minimal, no body outline, no torso shape",
+                       "strength": 1.15,
                        "negative": "photo, photorealistic, realistic, 3d, render, detailed, coloring book, "
-                                   "silhouette, solid black fill, filled body, muscular, ornate, intricate, "
-                                   "decorative, patterns, shading, gradient, color, clothing, clothes, "
-                                   "human face, hair, mandala, floral, background scenery"},
+                                   "silhouette, solid black fill, filled body, body outline, torso shape, "
+                                   "muscular, realistic proportions, detailed anatomy, human body shape, "
+                                   "ornate, intricate, decorative, patterns, shading, gradient, color, "
+                                   "clothing, clothes, shirt, shorts, dress, backpack, human face, hair, "
+                                   "mandala, floral, closeup, portrait"},
 }
 
 # Flat/minimal styles: stick figures etc. have no distinctive identity, so the

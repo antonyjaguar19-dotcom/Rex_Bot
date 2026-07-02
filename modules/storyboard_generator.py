@@ -196,18 +196,40 @@ def _rewrite_as_paragraph(raw_prompt: str, script: dict, shot: dict) -> str:
     _stype = (shot.get("shot_type") or "").strip().lower()
     if not char_para and _stype in ("closeup", "medium", "insert"):
         char_para = _characters_description(script)
-    # MINIMAL styles (stickman doodle): the detailed character tokens ("in a
-    # floral dress") fight the stick-figure simplification — drop the character
-    # sheet so the LoRA renders generic stick figures. Names in the scene line
-    # still drive who's present.
+    setting = script.get("setting", "")
+    style_suffix = _style_suffix(script)
+
+    # MINIMAL styles (stickman doodle): the detailed scene/pose prompt ("closeup
+    # of his face", "digging with shovels") pulls SDXL toward body detail →
+    # outline humanoids, not single-line stick figures. For UNIFORM stick figures
+    # we IGNORE the detailed prompt and rebuild a minimal directive: just the
+    # stick-figure style + how many + a short action + setting, forced to a wide
+    # full-body view (stick figures don't survive closeups). The anti-detail
+    # negative (backend, per-style) does the rest.
     try:
         from modules.image_backends.comfyui_sdxl_ipadapter import MINIMAL_STYLES
     except Exception:
         MINIMAL_STYLES = {"stickman"}
     if (script.get("style") or "").strip().lower() in MINIMAL_STYLES:
-        char_para = ""
-    setting = script.get("setting", "")
-    style_suffix = _style_suffix(script)
+        present = _shot_present_chars(script, shot)
+        if not present:
+            present = [c.get("name") for c in script.get("characters", [])
+                       if isinstance(c, dict) and c.get("name")]
+        n = max(1, len(present))
+        who = "one stick figure" if n == 1 else f"{n} stick figures"
+        vis = re.sub(r"\b(close ?up|closeup|medium shot|wide shot|insert|shot of|"
+                     r"camera|frame[sd]?)\b", "", (shot.get("visual_description") or ""),
+                     flags=re.IGNORECASE).strip(" .,:")
+        mp = [f"Art style: {style_suffix}."]
+        mp.append(f"A simple hand-drawn stick-figure line drawing, wide full-body view "
+                  f"showing the whole bodies: {who}.")
+        if vis:
+            mp.append(f"They are: {vis[:90]}.")
+        if setting:
+            s = re.sub(r"^(in|at|on|inside|within)\s+", "", setting.strip().rstrip("."),
+                       flags=re.IGNORECASE)
+            mp.append(f"Simple line-drawn background of {s.lower()}.")
+        return " ".join(mp)
 
     parts = []
     # 1. Style anchor — Flux.2 weights early tokens most. Style first.
