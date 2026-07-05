@@ -167,7 +167,7 @@ def distribute_lines_over_windows(lines: list, windows: list,
 
 
 def align_lines_to_words(lines: list, words: list, min_coverage: float = 0.4,
-                         min_line_sec: float = 0.6):
+                         min_line_sec: float = 0.6, max_line_sec: float = 6.0):
     """Time each lyric line to the ACTUAL sung word timestamps.
 
     `words` = [(word, t_start, t_end), ...] from ASR (real singing times).
@@ -207,8 +207,12 @@ def align_lines_to_words(lines: list, words: list, min_coverage: float = 0.4,
             if cur is None:
                 span[li] = [s, e]
             else:
-                cur[0] = min(cur[0], s)
-                cur[1] = max(cur[1], e)
+                # Only extend within a plausible single-line duration. A word
+                # matched far from the line's start is a stray hit on a repeated
+                # word (e.g. a chorus "day"/"way") — ignore it so the line's span
+                # doesn't balloon across an instrumental section.
+                if e - cur[0] <= max_line_sec:
+                    cur[1] = max(cur[1], e)
 
     matched = len(span)
     if matched < max(1, int(min_coverage * len(lines))):
@@ -233,6 +237,8 @@ def align_lines_to_words(lines: list, words: list, min_coverage: float = 0.4,
                 continue
         if e - s < min_line_sec:
             e = s + min_line_sec
+        elif e - s > max_line_sec:
+            e = s + max_line_sec        # cap an over-long span (stray match)
         events.append((round(s, 3), round(e, 3), lines[li]))
 
     # enforce non-overlap / monotonic (a later line can't start before the prev ends)

@@ -289,3 +289,20 @@ def test_validate_trims_scene_excess():
             "lyrics": "", "title": "X", "theme": "t"}
     out = sg._validate_and_default(dict(song), 120, 15)
     assert len(out["scenes"]) == 15
+
+
+def test_align_lines_caps_ballooned_span():
+    """A repeated word matching a distant chorus occurrence must NOT balloon a
+    line's caption across an instrumental section."""
+    from modules import subtitles as subs
+    lines = ["find light in a different way", "hand in hand we chase the day"]
+    # 'way' also appears far later (chorus repeat) at 40s
+    words = [("find", 26.0, 26.3), ("light", 26.3, 26.7), ("in", 26.7, 26.8),
+             ("a", 26.8, 26.9), ("different", 26.9, 27.5), ("way", 27.5, 28.0),
+             ("hand", 29.0, 29.3), ("in", 29.3, 29.4), ("hand", 29.4, 29.7),
+             ("we", 29.7, 29.9), ("chase", 29.9, 30.3), ("the", 30.3, 30.4),
+             ("day", 30.4, 31.0), ("way", 40.0, 40.5)]
+    ev = subs.align_lines_to_words(lines, words, max_line_sec=6.0)
+    assert ev
+    for s, e, _ in ev:
+        assert e - s <= 6.0 + 1e-6, f"line span {e-s:.1f}s exceeds cap"
