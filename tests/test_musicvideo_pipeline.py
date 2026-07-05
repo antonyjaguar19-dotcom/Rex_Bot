@@ -191,6 +191,24 @@ def test_lyric_caption_events_uses_vocal_windows(monkeypatch):
     assert events[-1][1] <= 28.0 + 1e-6
 
 
+def test_lyric_caption_events_guards_sparse_detection(monkeypatch):
+    """Whisper barely heard the vocals (0.3s window) on a 17-line song ->
+    detection is unreliable, must fall back to proportional spread across the
+    whole song, NOT cram every line into 0.3s."""
+    from modules import musicvideo_assembly as mva
+    from modules import lyric_aligner
+
+    monkeypatch.setattr(lyric_aligner, "get_vocal_windows",
+                        lambda audio: [(37.5, 37.8)])
+    lyr = "[Verse]\n" + "\n".join(f"line number {i}" for i in range(17))
+    events = mva._lyric_caption_events(song_dur=40.0, lyrics=lyr,
+                                       song_audio=Path("fake.wav"))
+    assert events
+    # fallback spans the whole song, not the 0.3s window
+    assert events[0][0] == 0.0
+    assert abs(events[-1][1] - 40.0) < 0.01
+
+
 def test_lyric_caption_events_fallback_when_no_vocals(monkeypatch):
     """No vocal windows detected -> proportional char-length spread across the
     whole song, never a crash or empty captions."""

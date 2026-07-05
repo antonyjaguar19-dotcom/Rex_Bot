@@ -98,6 +98,14 @@ def _concat_segments(segments: list[Path], out_path: Path, tag: str) -> Path:
 
 WATERMARK_TEXT = "Rexjaw"
 
+# Each lyric line needs at least this long on screen to be readable. If the
+# detected singing windows can't give every line this much (e.g. whisper barely
+# heard the vocals on a heavily-produced electronic track and returned a 0.3s
+# window for a 17-line song), the detection is unreliable — fall back to the
+# proportional spread rather than cramming every line into a fraction of a
+# second.
+MIN_SEC_PER_LINE = 0.7
+
 
 def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Path]) -> list:
     """Lyric caption timing. ACE-Step has instrumental intros/outros/breaks and
@@ -105,14 +113,19 @@ def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Pat
     + VAD, isolated venv) detects the REAL singing windows from the rendered
     audio; the clean known lyrics are then placed only inside those windows
     (instrumental stays empty). Falls back to a proportional char-length spread
-    across the whole song if the aligner isn't installed / no vocals detected.
+    across the whole song when the aligner isn't installed, finds no vocals, or
+    finds implausibly little singing (unreliable on some electronic vocals).
     Call ONCE per song (not per aspect) — transcription is real CPU work."""
     lines = lyric_lines(lyrics)
     if not lines:
         return []
     windows = lyric_aligner.get_vocal_windows(song_audio) if song_audio else None
     if windows:
-        return distribute_lines_over_windows(lines, windows)
+        total_sing = sum(b - a for a, b in windows)
+        if total_sing >= MIN_SEC_PER_LINE * len(lines):
+            return distribute_lines_over_windows(lines, windows)
+        log.warning(f"Detected singing ({total_sing:.1f}s) too sparse for "
+                    f"{len(lines)} lines; using proportional caption spread.")
     return windows_to_events([(0.0, song_dur, lyrics)], chunk_fn=lyric_chunks)
 
 

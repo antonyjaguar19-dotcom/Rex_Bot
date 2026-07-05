@@ -74,8 +74,8 @@ def main():
            f"dur_match={'OK' if dur_ok else 'FAIL'}")
 
     # captions: check the .ass the assembler wrote actually has Cap events, and
-    # that the timings match a real alignment (not the 0..song_dur proportional
-    # spread — real alignment starts after 0 and ends before song_dur).
+    # that they sit inside the detected singing windows — NOT on the intro
+    # music (the bug: captions started at ~0s during the instrumental intro).
     from modules.musicvideo_assembly import TEMP_DIR
     song_id = song.get("song_id") or song.get("_id")
     ass = TEMP_DIR / f"overlay_{song_id}_16x9.ass"
@@ -83,26 +83,45 @@ def main():
         fails.append("caption .ass not found")
     else:
         txt = ass.read_text(encoding="utf-8")
-        n_caps = txt.count("Style: Cap") + txt.count(",Cap,,")
         has_caps = ",Cap,," in txt
         _p(f"captions: .ass has Cap events={has_caps} ({txt.count(',Cap,,')} lines)")
         if lines and not has_caps:
             fails.append("no burned caption events in .ass despite having lyrics")
 
-        # Re-run the aligner directly to confirm real timestamps were produced
-        # (proves the sync path, independent of what got written).
+        # captions must be readable — not all crammed into a fraction of a second
+        import re as _re2
+        _caps = _re2.findall(r"Dialogue: 0,(\d):(\d\d):(\d\d\.\d\d),(\d):(\d\d):(\d\d\.\d\d),Cap,,", txt)
+        if _caps:
+            def _s(h, m, sec):
+                return int(h) * 3600 + int(m) * 60 + float(sec)
+            span = _s(*_caps[-1][3:]) - _s(*_caps[0][:3])
+            avg = span / max(1, len(_caps))
+            _p(f"caption span {span:.1f}s over {len(_caps)} lines (avg {avg:.2f}s/line)")
+            if avg < 0.4:
+                fails.append(f"captions crammed: avg {avg:.2f}s/line (<0.4s) — unreadable")
+
+        # Re-detect the singing windows and confirm captions land inside them —
+        # proves instrumental intro/outro stay empty (the actual sync fix).
         if ok and lines and song_audio:
-            spans = lyric_aligner.align_lyrics(Path(song_audio), lines)
-            if spans:
-                first_start = spans[0][1]
-                last_end = spans[-1][2]
-                _p(f"alignment: {len(spans)} lines, first_start={first_start:.2f}s, "
-                   f"last_end={last_end:.2f}s (song {song_dur:.2f}s)")
-                real = first_start > 0.01 or last_end < song_dur - 0.5
+            windows = lyric_aligner.get_vocal_windows(Path(song_audio))
+            if windows:
+                v_start = windows[0][0]
+                v_end = windows[-1][1]
+                _p(f"vocal windows: {[(round(a,1), round(b,1)) for a,b in windows]} "
+                   f"(song {song_dur:.2f}s)")
+                # first caption must not begin before singing starts (0.3s slack)
+                import re as _re
+                first_cap = _re.search(r"Dialogue: 0,(\d):(\d\d):(\d\d\.\d\d),0:.*?,Cap,,", txt)
+                if first_cap:
+                    fc = int(first_cap[1])*3600 + int(first_cap[2])*60 + float(first_cap[3])
+                    _p(f"first caption at {fc:.2f}s, singing starts {v_start:.2f}s")
+                    if fc < v_start - 0.3:
+                        fails.append(f"caption at {fc:.2f}s begins before vocals ({v_start:.2f}s) — on intro music")
+                real = v_start > 0.5 or v_end < song_dur - 0.5
                 if not real:
-                    fails.append("alignment looks like proportional fallback, not real timing")
+                    _p("note: vocals span nearly the whole song (no intro/outro to skip)")
             else:
-                fails.append("aligner returned no spans on re-run")
+                _p("note: no vocal windows detected — captions used proportional fallback")
 
     mins = (time.time() - t0) / 60
     _p(f"\n{'✅ PASS' if not fails else '❌ FAIL'} — music e2e in {mins:.1f} min")
