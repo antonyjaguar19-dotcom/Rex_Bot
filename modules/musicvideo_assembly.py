@@ -24,7 +24,10 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from modules.assembly import FFMPEG_EXE, FFPROBE_EXE, ASPECTS, FINAL_DIR, _probe_duration
-from modules.subtitles import lyric_chunks, lyric_lines, merge_events, windows_to_events, write_captions_ass
+from modules.subtitles import (
+    lyric_chunks, lyric_lines, windows_to_events, write_captions_ass,
+    distribute_lines_over_windows,
+)
 from modules import lyric_aligner
 
 log = logging.getLogger("claw_bot.musicvideo_assembly")
@@ -97,20 +100,19 @@ WATERMARK_TEXT = "Rexjaw"
 
 
 def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Path]) -> list:
-    """Real per-line timestamps via forced alignment (lyric_aligner, WhisperX
-    in an isolated venv) against the actual rendered audio, when available.
-    Falls back to a proportional char-length spread across the whole song —
-    ACE-Step gives no per-line timing at all, so that's the best guess when the
-    aligner isn't installed or alignment fails. Call ONCE per song (not per
-    aspect) — alignment is real CPU work, not free."""
+    """Lyric caption timing. ACE-Step has instrumental intros/outros/breaks and
+    doesn't sing the lyrics 1:1 across the file, so lyric_aligner (WhisperX ASR
+    + VAD, isolated venv) detects the REAL singing windows from the rendered
+    audio; the clean known lyrics are then placed only inside those windows
+    (instrumental stays empty). Falls back to a proportional char-length spread
+    across the whole song if the aligner isn't installed / no vocals detected.
+    Call ONCE per song (not per aspect) — transcription is real CPU work."""
     lines = lyric_lines(lyrics)
     if not lines:
         return []
-    aligned = lyric_aligner.align_lyrics(song_audio, lines) if song_audio else None
-    if aligned:
-        # align_lyrics returns (text, t_start, t_end) — the TTS-span convention;
-        # events are (t_start, t_end, text). Reorder before merging.
-        return merge_events([(a, b, t) for (t, a, b) in aligned])
+    windows = lyric_aligner.get_vocal_windows(song_audio) if song_audio else None
+    if windows:
+        return distribute_lines_over_windows(lines, windows)
     return windows_to_events([(0.0, song_dur, lyrics)], chunk_fn=lyric_chunks)
 
 

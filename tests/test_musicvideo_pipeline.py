@@ -172,36 +172,32 @@ def test_safety_filter_accepts_song_dict():
 
 
 # ------------------------------------------------- lyric caption sync (WhisperX)
-def test_lyric_caption_events_from_aligner(monkeypatch):
-    """align_lyrics returns (text, start, end) spans; _lyric_caption_events must
-    reorder to (start, end, text) events without crashing (regression: a float
-    was passed where text was expected -> AttributeError)."""
+def test_lyric_caption_events_uses_vocal_windows(monkeypatch):
+    """Detected vocal windows (real singing regions, intro excluded) -> lyrics
+    placed only inside them, NOT starting at 0 during instrumental intro."""
     from modules import musicvideo_assembly as mva
     from modules import lyric_aligner
 
-    monkeypatch.setattr(
-        lyric_aligner, "align_lyrics",
-        lambda audio, lines: [("first line", 0.5, 2.0), ("second line", 2.3, 4.1)],
-    )
+    # song is 30s but vocals only 12..28s (12s instrumental intro)
+    monkeypatch.setattr(lyric_aligner, "get_vocal_windows",
+                        lambda audio: [(12.0, 28.0)])
     events = mva._lyric_caption_events(
-        song_dur=5.0, lyrics="[Verse]\nfirst line\nsecond line",
+        song_dur=30.0, lyrics="[Verse]\nfirst line here\nsecond line here",
         song_audio=Path("fake.wav"),
     )
-    assert events, "expected caption events from aligned spans"
-    for t0, t1, text in events:
-        assert isinstance(t0, float) and isinstance(t1, float)
-        assert isinstance(text, str) and text
-    # real alignment kept (starts after 0), not the 0..song_dur fallback spread
-    assert events[0][0] == 0.5
+    assert events
+    # nothing before the vocals start (no captions on the intro music)
+    assert events[0][0] >= 12.0 - 1e-6
+    assert events[-1][1] <= 28.0 + 1e-6
 
 
-def test_lyric_caption_events_fallback_when_no_alignment(monkeypatch):
-    """No aligner result -> proportional char-length spread across the song
-    (0..song_dur), never a crash or empty captions."""
+def test_lyric_caption_events_fallback_when_no_vocals(monkeypatch):
+    """No vocal windows detected -> proportional char-length spread across the
+    whole song, never a crash or empty captions."""
     from modules import musicvideo_assembly as mva
     from modules import lyric_aligner
 
-    monkeypatch.setattr(lyric_aligner, "align_lyrics", lambda audio, lines: None)
+    monkeypatch.setattr(lyric_aligner, "get_vocal_windows", lambda audio: None)
     events = mva._lyric_caption_events(
         song_dur=6.0, lyrics="[Chorus]\nla la la\nsing along",
         song_audio=Path("fake.wav"),
@@ -209,3 +205,25 @@ def test_lyric_caption_events_fallback_when_no_alignment(monkeypatch):
     assert events
     assert events[0][0] == 0.0
     assert abs(events[-1][1] - 6.0) < 0.01
+
+
+def test_group_windows_splits_on_instrumental_gap():
+    from modules import lyric_aligner
+    # words: a cluster 12-14, then a 5s instrumental gap, then 19-21
+    words = [["a", 12.0, 12.5], ["b", 13.0, 14.0], ["c", 19.0, 19.5], ["d", 20.5, 21.0]]
+    wins = lyric_aligner.group_windows(words, gap_sec=1.2)
+    assert wins == [(12.0, 14.0), (19.0, 21.0)]
+
+
+def test_distribute_lines_over_windows_stays_inside_and_skips_gaps():
+    from modules import subtitles as subs
+    lines = ["one", "two", "three", "four"]
+    windows = [(12.0, 16.0), (20.0, 24.0)]      # two singing spans, 4s gap
+    events = subs.distribute_lines_over_windows(lines, windows)
+    assert len(events) == 4
+    # every event must fall entirely inside one of the singing windows (never
+    # in the 16-20s instrumental gap)
+    for t0, t1, _ in events:
+        in_a = 12.0 - 1e-6 <= t0 and t1 <= 16.0 + 1e-6
+        in_b = 20.0 - 1e-6 <= t0 and t1 <= 24.0 + 1e-6
+        assert in_a or in_b, f"event {t0}-{t1} leaked into the instrumental gap"

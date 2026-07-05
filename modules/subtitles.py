@@ -118,6 +118,48 @@ def windows_to_events(
     return events
 
 
+def distribute_lines_over_windows(lines: list, windows: list,
+                                  min_line_sec: float = 0.5) -> list:
+    """Place lyric `lines` (in order) inside real singing `windows`
+    [(t_start, t_end), ...], leaving instrumental gaps between windows EMPTY.
+
+    Lines are laid on a virtual timeline = the windows concatenated (their total
+    singing time), each line getting a slice proportional to its char length,
+    then mapped back to real time through the windows. A line that would straddle
+    a window boundary is clamped to end at its start window's end, so no caption
+    is ever shown during an instrumental gap. Returns [(t0, t1, text), ...]."""
+    lines = [l.strip() for l in lines if (l or "").strip()]
+    windows = [(float(a), float(b)) for a, b in windows if float(b) > float(a)]
+    if not lines or not windows:
+        return []
+    total = sum(b - a for a, b in windows)
+    total_chars = sum(len(l) for l in lines) or 1
+
+    def _v2r(v):
+        """virtual time -> (real time, window index)"""
+        acc = 0.0
+        for idx, (a, b) in enumerate(windows):
+            d = b - a
+            if v <= acc + d + 1e-9:
+                return a + (v - acc), idx
+            acc += d
+        return windows[-1][1], len(windows) - 1
+
+    events = []
+    vt = 0.0
+    for l in lines:
+        share = (len(l) / total_chars) * total
+        r0, i0 = _v2r(vt)
+        r1, i1 = _v2r(vt + share)
+        vt += share
+        if i1 != i0:                       # straddles a gap — clamp to this window
+            r1 = windows[i0][1]
+        if r1 <= r0:
+            r1 = min(windows[i0][1], r0 + min_line_sec)
+        events.append((round(r0, 3), round(r1, 3), l))
+    return events
+
+
 def write_captions_ass(
     total_dur: float,
     w: int,
