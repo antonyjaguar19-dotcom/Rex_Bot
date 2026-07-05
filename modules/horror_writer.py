@@ -42,10 +42,13 @@ OUTPUTS_DIR = PROJECT_ROOT / "04_Outputs" / "horror"
 # Pacing: narration ~150 wpm. Default target is SHORT + punchy (5 min ≈ 750 words).
 WORDS_PER_MINUTE = 150
 DEFAULT_MINUTES = 2        # max ~2-min horror videos (tight, scary, animated)
-# Per-shot beat sizing: ~45-60 words ≈ ~20-26s of narration per shot.
-WORDS_PER_BEAT = 52
-MERGE_MIN_WORDS = 30       # merge consecutive beats below this into one
-MAX_BEATS = 10             # ~2-min cap (each beat -> a Wan clip, so keep it tight)
+# Per-shot beat sizing: shorter beats = MORE cuts. Each beat animates one Wan clip
+# (~5s), so a shorter narration window means that motion covers more of the shot
+# (less frozen tail) → the video tracks the story instead of feeling like a
+# slideshow. ~28 words ≈ ~11s window; Wan 5s then covers ~45% (was ~25% at 52w).
+WORDS_PER_BEAT = 28
+MERGE_MIN_WORDS = 16       # merge consecutive beats below this into one
+MAX_BEATS = 14             # ~2-min cap at the shorter beat size (more, tighter cuts)
 MIN_BEAT_WORDS = 8         # drop empty/too-short fragments
 
 # One designed deep narrator voice, reused for the whole story (VoxCPM2).
@@ -83,7 +86,7 @@ Output:
 
 Rules:
 - 1 to 2 recurring named characters (tiny cast = scarier + consistent visuals).
-- 2 to 4 distinct locations.
+- 3 to 4 distinct locations. The FIRST location MUST be ORDINARY and everyday (e.g. a kitchen at night, a car on a quiet road, a suburban hallway, an office after hours) — this is where the story cold-opens in normalcy BEFORE the horror. The remaining locations are the frightening ones.
 - Genuinely scary psychological/supernatural horror: fear, dread, death, monsters, ghosts, body-horror, blood, fictional violence are ALL allowed and encouraged for real scares.
 - Keep it ORIGINAL fiction — invent the people and events; never depict real, named, living people.
 - FORBIDDEN: sexual content, sexualizing minors, real self-harm/suicide how-to, glorifying real drugs.
@@ -102,11 +105,20 @@ Given a horror premise + cast, plot the CHAPTERS of a SHORT, intense ~5-minute h
 
 Rules:
 - Exactly {n_chapters} chapters, ordered: ordinary-but-wrong opening → first scare → escalation → horrifying revelation → bleak/gut-punch ending. Tight and relentless — every chapter raises the fear.
+- CHAPTER 1 grounds us in NORMAL life first: the character in their ordinary world (the everyday location), doing something mundane, with only a faint thread of unease. The reader must feel the "before" so the turn lands. Do NOT open inside the main horror setting or with a scare already underway.
 - Use the given character + location names.
 - Output ONLY the JSON object."""
 
 
-def _chapter_system(cast: str, locs: str, lo: int, hi: int) -> str:
+def _chapter_system(cast: str, locs: str, lo: int, hi: int, opening: bool = False) -> str:
+    cold_open = ""
+    if opening:
+        cold_open = (
+            "\n- COLD OPEN: the FIRST beat establishes ORDINARY life — the character in the "
+            "everyday location doing a mundane thing (making tea, locking up, checking a phone), "
+            "with only ONE faint wrong detail. Ground the normal world before ANY supernatural "
+            "event. The horror location does NOT appear until a later beat. Ease the viewer in — "
+            "no scare in beat 1.")
     return f"""You output ONLY valid JSON. No prose, no preamble, no markdown fences. Start with {{ end with }}.
 
 You are writing ONE chapter of a narrated horror story, broken into IMAGE BEATS for a video. A narrator reads the `narration`; each beat shows ONE photorealistic still.
@@ -118,7 +130,7 @@ Output:
 {{
   "beats": [
     {{
-      "narration": "<{WORDS_PER_BEAT-12}-{WORDS_PER_BEAT+13} words of vivid, atmospheric horror narration: 2-4 COMPLETE flowing sentences, third person, no dialogue tags. Read ALOUD by one narrator — smooth and clear, never a choppy fragment.>",
+      "narration": "<{WORDS_PER_BEAT-8}-{WORDS_PER_BEAT+8} words: 1-2 COMPLETE flowing sentences of vivid horror narration, third person, no dialogue tags. Read ALOUD by one narrator — smooth and clear, never a choppy fragment.>",
       "characters": ["<names of cast members visible in this beat, [] if none>"],
       "location": "<exactly one location NAME from the list above>",
       "image_prompt": "<25-45 words: which CHARACTER (by exact name) is present and what they do + what we see + camera + lighting/mood. No on-screen text. Do NOT name an art style — handled downstream.>",
@@ -127,13 +139,18 @@ Output:
   ]
 }}
 
+NARRATION CRAFT (this is what makes it good):
+- Show dread through CONCRETE sensory detail — a specific sound, smell, temperature, texture — never vague adjectives like "creepy" or "scary".
+- Use strong, precise verbs. Vary sentence length: a long uneasy sentence, then a short one that lands.
+- Imply the horror; trust the viewer. Restraint early, escalate later. End each beat on a small hook that pulls into the next.
+
 Rules:
-- {lo} to {hi} beats for this chapter — this is a SHORT, punchy ~5-minute story, so keep it tight.
+- {lo} to {hi} beats for this chapter — SHORT, punchy beats (each ≈ {WORDS_PER_BEAT} words) so the video cuts often.
 - Each beat's narration continues smoothly from the previous; together they fully narrate this chapter.
 - Make it genuinely scary: build dread, then hit hard. Real fear, threat, disturbing imagery.
 - Refer to characters by their EXACT cast name in narration AND image_prompt (identity is locked downstream by name).
 - `location` MUST be one of the given location names.
-- Fictional horror (fear, death, monsters, body-horror, blood) is allowed; NO sexual content, NO real self-harm instructions, NO sexualizing minors.
+- Fictional horror (fear, death, monsters, body-horror, blood) is allowed; NO sexual content, NO real self-harm instructions, NO sexualizing minors.{cold_open}
 - Output ONLY the JSON object."""
 
 
@@ -180,7 +197,8 @@ def _gen_outline(theme: str, n_chapters: int = 5) -> dict:
 
 def _gen_chapter_beats(theme: str, logline: str, setting: str, prev_summary: str,
                        chapter: dict, cast: list, locations: list,
-                       beats_lo: int = 2, beats_hi: int = 3) -> list[dict]:
+                       beats_lo: int = 2, beats_hi: int = 3,
+                       opening: bool = False) -> list[dict]:
     cast_str = ", ".join(c["name"] for c in cast) or "(none — atmospheric)"
     loc_str = ", ".join(lc["name"] for lc in locations) or "(unnamed)"
     user = (
@@ -191,7 +209,8 @@ def _gen_chapter_beats(theme: str, logline: str, setting: str, prev_summary: str
         f"THIS chapter — {chapter.get('title','')}: {chapter.get('summary','')}\n\n"
         f"Write this chapter's beats JSON now."
     )
-    raw = _call_llm(user, _chapter_system(cast_str, loc_str, beats_lo, beats_hi), role="creative")
+    raw = _call_llm(user, _chapter_system(cast_str, loc_str, beats_lo, beats_hi, opening),
+                    role="creative")
     data = _extract_json(raw)
     valid_locs = {lc["name"] for lc in locations}
     beats = []
@@ -266,7 +285,7 @@ def generate_horror_story(
         try:
             ch_beats = _gen_chapter_beats(
                 theme, outline["logline"], outline["setting"], prev, ch,
-                cast, locations, beats_lo, beats_hi,
+                cast, locations, beats_lo, beats_hi, opening=(i == 0),
             )
         except Exception as e:
             log.warning(f"Chapter {i+1} failed ({e}); skipping.")
