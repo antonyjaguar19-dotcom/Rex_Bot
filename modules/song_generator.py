@@ -146,9 +146,20 @@ def _validate_and_default(song: dict, duration_sec: int, n_scenes: int) -> dict:
             })
     if not clean:
         raise ValueError("Song has no usable scenes (need at least one image_prompt).")
-    # Pad/trim toward n_scenes so timing maths is stable.
+    # Trim excess, and PAD a shortfall. The LLM sometimes ignores the scene count
+    # and returns 1-2 scenes for a long song — without padding that renders as a
+    # single static image held for the whole track (looks "incomplete"). Pad by
+    # cycling the prompts we do have so a 120s song still gets ~n_scenes stills
+    # (varied by seed + Ken Burns), keeping per-scene duration sane (~8s).
     if len(clean) > n_scenes:
         clean = clean[:n_scenes]
+    elif len(clean) < n_scenes:
+        base = list(clean)
+        i = 0
+        while len(clean) < n_scenes:
+            src = base[i % len(base)]
+            clean.append({"section": src["section"], "image_prompt": src["image_prompt"]})
+            i += 1
     song["scenes"] = clean
 
     # Even per-scene seconds; remainder padded onto the last scene.
@@ -186,6 +197,28 @@ def generate_song(theme: str, duration_sec: Optional[int] = None) -> dict:
     log.info(f"Generating song for theme: '{theme[:80]}' ({duration_sec}s, {n_scenes} scenes)")
     raw = _call_llm(user_prompt, system_prompt, role="creative")
     song = _extract_json(raw)
+
+    # The LLM sometimes badly under-delivers scenes (e.g. 1 scene for a 15-scene
+    # song → one static image for the whole track). Retry ONCE with an explicit
+    # count demand; keep whichever response has more usable scenes. Padding in
+    # _validate_and_default is the final safety net, but a real re-gen gives
+    # VARIED images, not cycled duplicates.
+    def _n_scenes(s):
+        return len([sc for sc in (s.get("scenes") or [])
+                    if isinstance(sc, dict) and (sc.get("image_prompt") or "").strip()])
+    if _n_scenes(song) < max(4, n_scenes // 2):
+        log.warning(f"Song returned only {_n_scenes(song)} scenes (wanted {n_scenes}); retrying.")
+        retry_prompt = (user_prompt + f"\n\nIMPORTANT: the scenes array MUST contain "
+                        f"EXACTLY {n_scenes} distinct scene objects, one per ~"
+                        f"{SECONDS_PER_SCENE:.0f}s of the song. Do not return fewer.")
+        try:
+            song2 = _extract_json(_call_llm(retry_prompt, system_prompt, role="creative"))
+            if _n_scenes(song2) > _n_scenes(song):
+                log.info(f"Retry improved scenes: {_n_scenes(song)} → {_n_scenes(song2)}")
+                song = song2
+        except Exception as e:
+            log.warning(f"Scene-count retry failed ({e}); keeping first response.")
+
     song = _validate_and_default(song, duration_sec, n_scenes)
 
     # Apply hard overrides post-hoc (user choice wins over LLM pick).

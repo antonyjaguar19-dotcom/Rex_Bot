@@ -114,6 +114,16 @@ def group_windows(words: list, gap_sec: float = DEFAULT_GAP_SEC) -> list:
     return windows
 
 
+def get_word_timings(audio_path: Path) -> Optional[list]:
+    """Raw ASR word timestamps [(word, t_start, t_end), ...] for the actual sung
+    vocals, or None if unavailable. Used to time each lyric line to real singing
+    (subtitles.align_lines_to_words)."""
+    words = _words_from_audio(audio_path)
+    if not words:
+        return None
+    return [(w, float(s), float(e)) for w, s, e in words]
+
+
 def get_vocal_windows(audio_path: Path, gap_sec: float = DEFAULT_GAP_SEC) -> Optional[list]:
     """Real singing spans [(t_start, t_end), ...] for the song, with
     instrumental intros/outros/breaks excluded. None if the aligner isn't

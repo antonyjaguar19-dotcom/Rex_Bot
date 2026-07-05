@@ -8,12 +8,18 @@ data the pipelines already produce (narration spans / scene windows) — no
 forced-alignment / ASR involved.
 """
 
+import difflib
 import re
 from pathlib import Path
 from typing import Callable, Optional
 
 _SPLIT_SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _SECTION_TAG = re.compile(r"^\[.*?\]$")
+_WORD_NORM = re.compile(r"[^a-z0-9]")
+
+
+def _norm_word(w: str) -> str:
+    return _WORD_NORM.sub("", (w or "").lower())
 
 
 def ass_time(t: float) -> str:
@@ -158,6 +164,87 @@ def distribute_lines_over_windows(lines: list, windows: list,
             r1 = min(windows[i0][1], r0 + min_line_sec)
         events.append((round(r0, 3), round(r1, 3), l))
     return events
+
+
+def align_lines_to_words(lines: list, words: list, min_coverage: float = 0.4,
+                         min_line_sec: float = 0.6):
+    """Time each lyric line to the ACTUAL sung word timestamps.
+
+    `words` = [(word, t_start, t_end), ...] from ASR (real singing times).
+    Sequence-matches the known lyric words against the ASR words (same song, so
+    they largely agree) and gives each lyric LINE the [start, end] of the ASR
+    words it matched. Lines the ASR missed are interpolated between their timed
+    neighbours. This is true per-line sync (vs the proportional guess).
+
+    Returns [(t0, t1, text), ...] or None when too few lines matched
+    (`min_coverage`) — e.g. ASR barely heard the vocals — so the caller can fall
+    back to the window/proportional path."""
+    lines = [l.strip() for l in lines if (l or "").strip()]
+    if not lines or not words:
+        return None
+
+    # flatten known lyric words, remembering which line each belongs to
+    known, owner = [], []
+    for li, line in enumerate(lines):
+        for w in line.split():
+            nw = _norm_word(w)
+            if nw:
+                known.append(nw)
+                owner.append(li)
+    asr = [(_norm_word(w), float(s), float(e)) for (w, s, e) in words if _norm_word(w)]
+    if not known or not asr:
+        return None
+
+    sm = difflib.SequenceMatcher(None, known, [a[0] for a in asr], autojunk=False)
+    span = {}  # line_idx -> [start, end]
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag != "equal":
+            continue
+        for k in range(i2 - i1):
+            li = owner[i1 + k]
+            s, e = asr[j1 + k][1], asr[j1 + k][2]
+            cur = span.get(li)
+            if cur is None:
+                span[li] = [s, e]
+            else:
+                cur[0] = min(cur[0], s)
+                cur[1] = max(cur[1], e)
+
+    matched = len(span)
+    if matched < max(1, int(min_coverage * len(lines))):
+        return None
+
+    # interpolate lines with no matched words from timed neighbours
+    total_end = asr[-1][2]
+    events = []
+    for li in range(len(lines)):
+        if li in span:
+            s, e = span[li]
+        else:
+            prev = next((span[k][1] for k in range(li - 1, -1, -1) if k in span), None)
+            nxt = next((span[k][0] for k in range(li + 1, len(lines)) if k in span), None)
+            if prev is not None and nxt is not None:
+                s, e = prev, nxt
+            elif prev is not None:
+                s, e = prev, min(total_end, prev + min_line_sec)
+            elif nxt is not None:
+                s, e = max(0.0, nxt - min_line_sec), nxt
+            else:
+                continue
+        if e - s < min_line_sec:
+            e = s + min_line_sec
+        events.append((round(s, 3), round(e, 3), lines[li]))
+
+    # enforce non-overlap / monotonic (a later line can't start before the prev ends)
+    events.sort(key=lambda x: x[0])
+    fixed = []
+    for s, e, t in events:
+        if fixed and s < fixed[-1][1]:
+            s = fixed[-1][1]
+            if e < s + min_line_sec:
+                e = s + min_line_sec
+        fixed.append((round(s, 3), round(e, 3), t))
+    return fixed or None
 
 
 def write_captions_ass(

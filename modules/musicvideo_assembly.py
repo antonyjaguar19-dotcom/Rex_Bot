@@ -26,7 +26,7 @@ if str(_HERE) not in sys.path:
 from modules.assembly import FFMPEG_EXE, FFPROBE_EXE, ASPECTS, FINAL_DIR, _probe_duration
 from modules.subtitles import (
     lyric_chunks, lyric_lines, windows_to_events, write_captions_ass,
-    distribute_lines_over_windows,
+    distribute_lines_over_windows, align_lines_to_words,
 )
 from modules import lyric_aligner
 
@@ -108,21 +108,34 @@ MIN_SEC_PER_LINE = 0.7
 
 
 def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Path]) -> list:
-    """Lyric caption timing. ACE-Step has instrumental intros/outros/breaks and
-    doesn't sing the lyrics 1:1 across the file, so lyric_aligner (WhisperX ASR
-    + VAD, isolated venv) detects the REAL singing windows from the rendered
-    audio; the clean known lyrics are then placed only inside those windows
-    (instrumental stays empty). Falls back to a proportional char-length spread
-    across the whole song when the aligner isn't installed, finds no vocals, or
-    finds implausibly little singing (unreliable on some electronic vocals).
-    Call ONCE per song (not per aspect) — transcription is real CPU work."""
+    """Lyric caption timing, best method first (ONE ASR pass, reused):
+
+      1. WORD ALIGNMENT — time each lyric line to the actual sung word
+         timestamps (subtitles.align_lines_to_words). True per-line sync.
+      2. VOCAL WINDOWS — if word coverage is poor, place lines inside detected
+         singing windows (instrumental gaps stay empty).
+      3. PROPORTIONAL — if singing is too sparse/undetected (e.g. heavily
+         produced electronic vocals ASR can't parse), spread lines across the
+         whole song so captions stay readable.
+
+    ACE-Step has instrumental intros/outros/breaks and doesn't sing the lyrics
+    1:1, which is why (1) beats a blind spread. Call ONCE per song (not per
+    aspect) — transcription is real CPU work."""
     lines = lyric_lines(lyrics)
     if not lines:
         return []
-    windows = lyric_aligner.get_vocal_windows(song_audio) if song_audio else None
-    if windows:
+    words = lyric_aligner.get_word_timings(song_audio) if song_audio else None
+    if words:
+        # 1) real per-line sync from the sung word times
+        aligned = align_lines_to_words(lines, words)
+        if aligned:
+            log.info(f"Lyric captions: word-aligned {len(aligned)}/{len(lines)} lines.")
+            return aligned
+        # 2) place lines inside detected singing windows (if enough singing)
+        windows = lyric_aligner.group_windows(words)
         total_sing = sum(b - a for a, b in windows)
-        if total_sing >= MIN_SEC_PER_LINE * len(lines):
+        if windows and total_sing >= MIN_SEC_PER_LINE * len(lines):
+            log.info(f"Lyric captions: distributed over {len(windows)} vocal windows.")
             return distribute_lines_over_windows(lines, windows)
         log.warning(f"Detected singing ({total_sing:.1f}s) too sparse for "
                     f"{len(lines)} lines; using proportional caption spread.")

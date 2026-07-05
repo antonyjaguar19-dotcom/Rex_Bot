@@ -72,7 +72,8 @@ def test_validate_and_default_scene_timing():
     # scene seconds sum ~= duration
     total = sum(s["seconds"] for s in song["scenes"])
     assert abs(total - 120) < 0.05
-    assert len(song["scenes"]) == 3
+    # 3 scenes for a 15-scene song are padded up (no single static image)
+    assert len(song["scenes"]) == 15
 
 
 def test_validate_trims_scene_overflow():
@@ -172,50 +173,66 @@ def test_safety_filter_accepts_song_dict():
 
 
 # ------------------------------------------------- lyric caption sync (WhisperX)
-def test_lyric_caption_events_uses_vocal_windows(monkeypatch):
-    """Detected vocal windows (real singing regions, intro excluded) -> lyrics
-    placed only inside them, NOT starting at 0 during instrumental intro."""
+def test_lyric_caption_events_word_aligned(monkeypatch):
+    """Primary path: each lyric line timed to the ACTUAL sung word timestamps,
+    so captions sit exactly on the vocals and the instrumental intro is empty."""
     from modules import musicvideo_assembly as mva
     from modules import lyric_aligner
 
-    # song is 30s but vocals only 12..28s (12s instrumental intro)
-    monkeypatch.setattr(lyric_aligner, "get_vocal_windows",
-                        lambda audio: [(12.0, 28.0)])
+    # 5s instrumental intro, then the two lines sung 5-7s and 8-10s
+    words = [("first", 5.0, 5.4), ("line", 5.4, 5.8), ("here", 5.8, 7.0),
+             ("second", 8.0, 8.5), ("line", 8.5, 8.9), ("here", 8.9, 10.0)]
+    monkeypatch.setattr(lyric_aligner, "get_word_timings", lambda audio: words)
     events = mva._lyric_caption_events(
         song_dur=30.0, lyrics="[Verse]\nfirst line here\nsecond line here",
         song_audio=Path("fake.wav"),
     )
-    assert events
-    # nothing before the vocals start (no captions on the intro music)
-    assert events[0][0] >= 12.0 - 1e-6
-    assert events[-1][1] <= 28.0 + 1e-6
+    assert len(events) == 2
+    assert abs(events[0][0] - 5.0) < 0.2      # first caption on first sung word
+    assert events[0][0] >= 5.0 - 1e-6          # nothing during the 0-5s intro
+    assert abs(events[1][0] - 8.0) < 0.2
 
 
-def test_lyric_caption_events_guards_sparse_detection(monkeypatch):
-    """Whisper barely heard the vocals (0.3s window) on a 17-line song ->
-    detection is unreliable, must fall back to proportional spread across the
-    whole song, NOT cram every line into 0.3s."""
+def test_lyric_caption_events_windows_when_words_dont_align(monkeypatch):
+    """Word coverage too low to align, but enough singing detected -> distribute
+    lines inside the vocal windows (intro/gaps stay empty)."""
     from modules import musicvideo_assembly as mva
     from modules import lyric_aligner
 
-    monkeypatch.setattr(lyric_aligner, "get_vocal_windows",
-                        lambda audio: [(37.5, 37.8)])
+    # ASR words don't match the lyrics (align returns None) but span 12-28s
+    words = [("zzz", 12.0 + i, 12.5 + i) for i in range(0, 16, 2)]
+    monkeypatch.setattr(lyric_aligner, "get_word_timings", lambda audio: words)
+    events = mva._lyric_caption_events(
+        song_dur=30.0, lyrics="[Verse]\nalpha beta gamma\ndelta epsilon zeta",
+        song_audio=Path("fake.wav"),
+    )
+    assert events
+    assert events[0][0] >= 12.0 - 1e-6         # no captions before singing
+
+
+def test_lyric_caption_events_guards_sparse_detection(monkeypatch):
+    """Whisper barely heard the vocals (one 0.3s word) on a 17-line song ->
+    can't align, singing too sparse -> proportional spread, not crammed."""
+    from modules import musicvideo_assembly as mva
+    from modules import lyric_aligner
+
+    monkeypatch.setattr(lyric_aligner, "get_word_timings",
+                        lambda audio: [("zzz", 37.5, 37.8)])
     lyr = "[Verse]\n" + "\n".join(f"line number {i}" for i in range(17))
     events = mva._lyric_caption_events(song_dur=40.0, lyrics=lyr,
                                        song_audio=Path("fake.wav"))
     assert events
-    # fallback spans the whole song, not the 0.3s window
     assert events[0][0] == 0.0
     assert abs(events[-1][1] - 40.0) < 0.01
 
 
 def test_lyric_caption_events_fallback_when_no_vocals(monkeypatch):
-    """No vocal windows detected -> proportional char-length spread across the
-    whole song, never a crash or empty captions."""
+    """No ASR words at all -> proportional char-length spread across the whole
+    song, never a crash or empty captions."""
     from modules import musicvideo_assembly as mva
     from modules import lyric_aligner
 
-    monkeypatch.setattr(lyric_aligner, "get_vocal_windows", lambda audio: None)
+    monkeypatch.setattr(lyric_aligner, "get_word_timings", lambda audio: None)
     events = mva._lyric_caption_events(
         song_dur=6.0, lyrics="[Chorus]\nla la la\nsing along",
         song_audio=Path("fake.wav"),
@@ -223,6 +240,13 @@ def test_lyric_caption_events_fallback_when_no_vocals(monkeypatch):
     assert events
     assert events[0][0] == 0.0
     assert abs(events[-1][1] - 6.0) < 0.01
+
+
+def test_align_lines_to_words_low_coverage_returns_none():
+    from modules import subtitles as subs
+    lines = ["alpha beta", "gamma delta"]
+    words = [("xxx", 1.0, 1.5), ("yyy", 2.0, 2.5)]   # nothing matches
+    assert subs.align_lines_to_words(lines, words) is None
 
 
 def test_group_windows_splits_on_instrumental_gap():
@@ -245,3 +269,23 @@ def test_distribute_lines_over_windows_stays_inside_and_skips_gaps():
         in_a = 12.0 - 1e-6 <= t0 and t1 <= 16.0 + 1e-6
         in_b = 20.0 - 1e-6 <= t0 and t1 <= 24.0 + 1e-6
         assert in_a or in_b, f"event {t0}-{t1} leaked into the instrumental gap"
+
+
+# ------------------------------------------------- scene-count floor (long song)
+def test_validate_pads_scene_shortfall():
+    """LLM under-delivered scenes (1 for a 15-scene song) -> pad so the video
+    isn't one static image held for the whole track."""
+    from modules import song_generator as sg
+    song = {"scenes": [{"section": "intro", "image_prompt": "a street at dawn"}],
+            "lyrics": "[Verse]\nla", "title": "X", "theme": "t"}
+    out = sg._validate_and_default(dict(song), 120, 15)
+    assert len(out["scenes"]) == 15
+    assert abs(sum(s["seconds"] for s in out["scenes"]) - 120) < 0.1
+
+
+def test_validate_trims_scene_excess():
+    from modules import song_generator as sg
+    song = {"scenes": [{"section": "s", "image_prompt": f"p{i}"} for i in range(20)],
+            "lyrics": "", "title": "X", "theme": "t"}
+    out = sg._validate_and_default(dict(song), 120, 15)
+    assert len(out["scenes"]) == 15
