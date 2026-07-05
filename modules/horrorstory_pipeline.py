@@ -79,6 +79,40 @@ def _make_image_backend(use_flux: bool):
     return image_backend.get_active_backend()
 
 
+def _char_portrait(img_backend, char: dict, out_dir: Path, idx: int) -> Optional[Path]:
+    """Render a neutral, photoreal head-and-shoulders reference of ONE character
+    on a plain background (fixed seed = stable). USO copies IDENTITY from this
+    ref while each BEAT's own prompt drives pose/action/camera. Anchoring to this
+    (not a full scene still) is what stops every shot inheriting the anchor's
+    pose — a scene anchor drags its composition into every beat."""
+    name = (char.get("name") or "").strip()
+    tok = (char.get("locked_token") or char.get("appearance") or "").strip()
+    if not name:
+        return None
+    style_suffix = (get_style_description(PHOTO_STYLE_ID) or {}).get("prompt_suffix", "")
+    prompt = (
+        f"Photorealistic neutral character reference portrait of {name}: {tok}. "
+        f"Single person alone, front-facing, calm neutral expression, head and "
+        f"shoulders centered, plain solid dark-gray studio background, even soft "
+        f"lighting, no props, no scene, no other people."
+    )
+    if style_suffix:
+        prompt += f" {style_suffix}"
+    try:
+        p = img_backend.generate(
+            prompt=prompt,
+            negative_prompt=("full body, action pose, scene, landscape, multiple "
+                             "people, crowd, text, watermark, blurry, deformed"),
+            aspect_ratio="1:1",
+            seed=90210 + idx,
+            output_filename=str(out_dir / f"_ref_{name.lower().replace(' ', '_')}.png"),
+        )
+        return Path(p)
+    except Exception as e:
+        log.warning(f"Horror char portrait for {name} failed: {e}")
+        return None
+
+
 def _scene_durations(spans: list, total_dur: float) -> list[float]:
     """Tile the whole narration timeline across beats: beat i covers from its
     own start to the next beat's start (last beat runs to the end). spans items
@@ -269,8 +303,27 @@ def render_horror(
     #         per-character LoRA (dropped: costly + unstable training faces). The
     #         lora_autotrain setup stays in the repo for later reuse. ----
     use_flux = _flux_ckpt_ready()
+    # USO mode (default): lock each recurring character with a neutral photoreal
+    # PORTRAIT ref (built once), then reference the cast present in each beat so
+    # identity stays consistent while the beat's OWN prompt drives pose/action/
+    # camera. (Anchoring to a full scene still instead drags that pose into every
+    # shot.) USO off / unhealthy -> Flux + Horrorstyle LoRA (or the active
+    # Z-Image backend), prompt-token consistency only. Falls back cleanly.
+    use_uso = rs.get_uso_mode_enabled()
+    img = None
+    if use_uso:
+        try:
+            img = image_backend.get_named_backend("comfyui_uso")
+            ok, _msg = img.health_check()
+            if not ok:
+                _p(f"USO unhealthy ({_msg}); horror stills use Flux/active backend.")
+                use_uso = False
+        except Exception as e:
+            _p(f"USO unavailable ({e}); horror stills use Flux/active backend.")
+            use_uso = False
+
     style_kw = {}
-    if use_flux:
+    if not use_uso and use_flux:
         style = rs.get_horror_style_lora()
         if style:
             style_kw = {
@@ -278,11 +331,16 @@ def render_horror(
                 "extra_loras": [{"lora_file": style,
                                  "weight": rs.get_horror_style_lora_weight()}],
             }
-    _p(f"🖼️ rendering {len(beats)} stills "
-       f"({'flux + Horrorstyle LoRA' if use_flux else 'active backend (Z-Image)'}, "
-       f"prompt-token consistency)...")
+    if use_uso:
+        _mode_label = "USO Flux.1-dev + USO LoRA, anchor consistency"
+    elif use_flux:
+        _mode_label = "flux + Horrorstyle LoRA, prompt-token consistency"
+    else:
+        _mode_label = "active backend (Z-Image), prompt-token consistency"
+    _p(f"🖼️ rendering {len(beats)} stills ({_mode_label})...")
     gpu_utils.free_comfyui_vram()
-    img = _make_image_backend(use_flux)
+    if not use_uso:
+        img = _make_image_backend(use_flux)
     loc_map = {lc.get("name", ""): lc.get("description", "")
                for lc in story.get("locations", [])}
     char_look = {c.get("name", ""): c.get("locked_token", "")
@@ -290,16 +348,39 @@ def render_horror(
     out_dir = STILLS_DIR / f"horror_{horror_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build one neutral portrait ref per recurring character (USO identity lock).
+    char_refs: dict[str, Path] = {}
+    if use_uso:
+        _p("🎭 building character reference portraits...")
+        for idx, c in enumerate(story.get("characters", [])):
+            ref = _char_portrait(img, c, out_dir, idx)
+            if ref is not None:
+                char_refs[(c.get("name") or "").strip()] = ref
+
     scene_images: list[Path] = []
     for i, b in enumerate(beats):
         _p(f"🖼️ still {i+1}/{len(beats)}...")
-        path = img.generate(
+        gen_kwargs = dict(
             prompt=_scene_prompt(b, loc_map, char_look),
             aspect_ratio="16:9",
             seed=random.randint(1, 2**31 - 1),
             output_filename=str(out_dir / f"beat_{i:04d}.png"),
-            **style_kw,
         )
+        if use_uso:
+            # Reference only the cast present in THIS beat; fall back to the
+            # protagonist portrait when the beat names no known character.
+            refs = [char_refs[n] for n in b.get("characters", []) if n in char_refs]
+            if not refs and char_refs:
+                refs = list(char_refs.values())[:1]
+            if len(refs) >= 2:
+                path = img.generate(reference_image=refs[0],
+                                    reference_images=refs, **gen_kwargs)
+            elif len(refs) == 1:
+                path = img.generate(reference_image=refs[0], **gen_kwargs)
+            else:
+                path = img.generate(**gen_kwargs)  # no cast -> pure text2img
+        else:
+            path = img.generate(**gen_kwargs, **style_kw)
         scene_images.append(Path(path))
 
     # ---- 3. Visuals: animated Wan clips per shot, or Ken Burns stills ----
