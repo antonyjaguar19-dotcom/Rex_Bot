@@ -24,6 +24,8 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from modules.assembly import FFMPEG_EXE, FFPROBE_EXE, ASPECTS, FINAL_DIR, _probe_duration
+from modules.subtitles import lyric_chunks, lyric_lines, merge_events, windows_to_events, write_captions_ass
+from modules import lyric_aligner
 
 log = logging.getLogger("claw_bot.musicvideo_assembly")
 
@@ -94,39 +96,27 @@ def _concat_segments(segments: list[Path], out_path: Path, tag: str) -> Path:
 WATERMARK_TEXT = "Rexjaw"
 
 
-def _ass_time(t: float) -> str:
-    t = max(0.0, t)
-    h = int(t // 3600); m = int((t % 3600) // 60)
-    s = int(t % 60); cs = int(round((t - int(t)) * 100))
-    if cs == 100:
-        s += 1; cs = 0
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Path]) -> list:
+    """Real per-line timestamps via forced alignment (lyric_aligner, WhisperX
+    in an isolated venv) against the actual rendered audio, when available.
+    Falls back to a proportional char-length spread across the whole song —
+    ACE-Step gives no per-line timing at all, so that's the best guess when the
+    aligner isn't installed or alignment fails. Call ONCE per song (not per
+    aspect) — alignment is real CPU work, not free."""
+    lines = lyric_lines(lyrics)
+    if not lines:
+        return []
+    aligned = lyric_aligner.align_lyrics(song_audio, lines) if song_audio else None
+    if aligned:
+        return merge_events(aligned)
+    return windows_to_events([(0.0, song_dur, lyrics)], chunk_fn=lyric_chunks)
 
 
-def _write_overlay_ass(song_dur: float, w: int, h: int, path: Path) -> Path:
-    """Write an .ass file with the 'Rexjaw' watermark only — small, middle-right,
-    semi-transparent, spanning the whole song. libass resolves the 'Arial' family
-    by name (no font path needed)."""
-    wm_size = max(14, round(h * 0.024))
-    wm_margin = max(12, round(w * 0.012))
-
-    header = (
-        "[Script Info]\n"
-        "ScriptType: v4.00+\n"
-        f"PlayResX: {w}\nPlayResY: {h}\n"
-        "ScaledBorderAndShadow: yes\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
-        "Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        # Watermark: semi-transparent white (&H80 alpha), middle-right (Alignment 6).
-        f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
-        f"0,0,1,1,1,6,40,{wm_margin},40\n\n"
-        "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-        f"Dialogue: 0,{_ass_time(0)},{_ass_time(song_dur)},Mark,,0,0,0,,{WATERMARK_TEXT}\n"
-    )
-    path.write_text(header, encoding="utf-8")
-    return path
+def _write_overlay_ass(song_dur: float, w: int, h: int, path: Path,
+                       events: Optional[list] = None) -> Path:
+    """Write an .ass file with the 'Rexjaw' watermark AND the given (already
+    computed — see _lyric_caption_events) lyric caption events, if any."""
+    return write_captions_ass(song_dur, w, h, path, events=events, watermark_text=WATERMARK_TEXT)
 
 
 def _mux_song(video_path: Path, song_path: Path, song_dur: float,
@@ -202,6 +192,10 @@ def assemble_musicvideo(
 
     outputs: dict = {"song_id": song_id, "scene_count": len(scenes), "song_dur": song_dur}
 
+    if progress_cb:
+        progress_cb("aligning lyrics to song audio...")
+    caption_events = _lyric_caption_events(song_dur, song.get("lyrics", ""), song_audio)
+
     for aspect_key in ("9x16", "16x9", "1x1"):
         w, h = ASPECTS[aspect_key]
         if progress_cb:
@@ -219,9 +213,9 @@ def assemble_musicvideo(
         concat_path = TEMP_DIR / f"concat_{song_id}_{aspect_key}.mp4"
         _concat_segments(segments, concat_path, f"{song_id}_{aspect_key}")
 
-        # Per-aspect overlay .ass (watermark only; PlayRes matches dims).
+        # Per-aspect overlay .ass (watermark + lyric captions; PlayRes matches dims).
         subs_path = TEMP_DIR / f"overlay_{song_id}_{aspect_key}.ass"
-        _write_overlay_ass(song_dur, w, h, subs_path)
+        _write_overlay_ass(song_dur, w, h, subs_path, events=caption_events)
 
         out_path = FINAL_DIR / f"song_{song_id}_{aspect_key}.mp4"
         _mux_song(concat_path, song_audio, song_dur, out_path, subs_path)

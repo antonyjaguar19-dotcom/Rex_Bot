@@ -11,7 +11,6 @@ ffmpeg (no model) and mixed quietly under the voice.
 """
 
 import logging
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,93 +22,40 @@ if str(_HERE) not in sys.path:
 
 from modules.assembly import FFMPEG_EXE, FINAL_DIR, _probe_duration
 from modules.musicvideo_assembly import (
-    ASPECTS, TEMP_DIR, WATERMARK_TEXT, _ass_time, _ken_burns_segment,
-    _concat_segments, _write_overlay_ass,
+    ASPECTS, TEMP_DIR, WATERMARK_TEXT, _ken_burns_segment,
+    _concat_segments,
 )
+from modules.subtitles import sentence_chunks, windows_to_events, merge_events, write_captions_ass
+from modules import audio_segmenter
 
 log = logging.getLogger("claw_bot.horror_assembly")
 
 ASPECT_KEY = "16x9"
 DRONE_VOLUME = 0.18   # ambient bed level under narration (narration stays front)
-CAP_MAX_CHARS = 84    # max chars per on-screen subtitle chunk (sentence-level)
-
-
-def _sentence_chunks(text: str) -> list[str]:
-    """Split a beat's narration into short on-screen cues: sentence boundaries,
-    with tiny sentences merged up to ~CAP_MAX_CHARS so captions stay readable."""
-    parts = re.split(r"(?<=[.!?])\s+", (text or "").strip())
-    chunks, cur = [], ""
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        if cur and len(cur) + 1 + len(p) > CAP_MAX_CHARS:
-            chunks.append(cur)
-            cur = p
-        else:
-            cur = f"{cur} {p}".strip()
-    if cur:
-        chunks.append(cur)
-    return chunks or [(text or "").strip()]
-
-
-def _ass_escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace("\n", " ").replace("{", "(").replace("}", ")")
-
-
-def _caption_events(beats: list, spans: list) -> list:
-    """Turn per-beat (start,end) windows into sentence-level (start,end,text)
-    caption cues, distributing each beat's window by chunk length."""
-    events = []
-    for b, (t0, t1) in zip(beats, spans):
-        text = (b.get("narration") or "").strip()
-        if not text or t1 <= t0:
-            continue
-        chunks = _sentence_chunks(text)
-        total = sum(len(c) for c in chunks) or 1
-        cur = t0
-        for c in chunks:
-            dur = (t1 - t0) * (len(c) / total)
-            events.append((cur, min(cur + dur, t1), c))
-            cur += dur
-    return events
 
 
 def _write_captions_ass(total_dur: float, w: int, h: int, path: Path,
                         beats: Optional[list] = None,
-                        spans: Optional[list] = None) -> Path:
+                        spans: Optional[list] = None,
+                        narration_audio: Optional[Path] = None) -> Path:
     """Write an .ass with the Rexjaw watermark AND burned-in narration subtitles
     (bottom-center, white with a black outline + drop shadow). Falls back to a
-    watermark-only file when no beats/spans are supplied."""
-    wm_size = max(14, round(h * 0.024))
-    wm_margin = max(12, round(w * 0.012))
-    cap_size = max(22, round(h * 0.045))
-    cap_marginv = max(28, round(h * 0.06))
-    cap_side = max(40, round(w * 0.08))
-    header = (
-        "[Script Info]\n"
-        "ScriptType: v4.00+\n"
-        f"PlayResX: {w}\nPlayResY: {h}\n"
-        "ScaledBorderAndShadow: yes\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
-        "Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
-        f"0,0,1,1,1,6,40,{wm_margin},40\n"
-        # Captions: opaque white, black outline (2px) + shadow (1px), bottom-center.
-        f"Style: Cap,Arial,{cap_size},&H00FFFFFF,&H00000000,&H90000000,"
-        f"0,0,1,2,1,2,{cap_side},{cap_side},{cap_marginv}\n\n"
-        "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-        f"Dialogue: 0,{_ass_time(0)},{_ass_time(total_dur)},Mark,,0,0,0,,{WATERMARK_TEXT}\n"
-    )
-    lines = [header]
-    if beats and spans:
-        for t0, t1, txt in _caption_events(beats, spans):
-            lines.append(
-                f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},Cap,,0,0,0,,{_ass_escape(txt)}\n")
-    path.write_text("".join(lines), encoding="utf-8")
-    return path
+    watermark-only file when no beats/spans are supplied.
+
+    Each beat's window is already exact (real silence-snapped boundary). When a
+    beat's narration is multiple sentences, `narration_audio` lets us slice that
+    beat's real audio and re-detect the internal split on real silence instead
+    of guessing by character length (audio_segmenter.refine_windows_to_sentences).
+    Omit narration_audio to fall back to the old proportional guess."""
+    windows = [(t0, t1, b.get("narration") or "") for b, (t0, t1) in zip(beats or [], spans or [])]
+    if not windows:
+        events = []
+    elif narration_audio is not None:
+        refined = audio_segmenter.refine_windows_to_sentences(narration_audio, windows)
+        events = merge_events(refined)
+    else:
+        events = windows_to_events(windows, chunk_fn=sentence_chunks)
+    return write_captions_ass(total_dur, w, h, path, events=events, watermark_text=WATERMARK_TEXT)
 
 
 def _spans_from_durations(durations: list) -> list:
@@ -216,7 +162,8 @@ def assemble_horror_clips(
     clip_durs = [max(0.1, _probe_duration(c)) for c in clip_paths]
     _write_captions_ass(total_dur, w, h, subs_path,
                         beats=story.get("beats", []),
-                        spans=_spans_from_durations(clip_durs))
+                        spans=_spans_from_durations(clip_durs),
+                        narration_audio=narration_audio)
 
     _p("muxing...")
     out_path = FINAL_DIR / f"horror_{horror_id}_{ASPECT_KEY}.mp4"
@@ -281,7 +228,8 @@ def assemble_horror(
     subs_path = TEMP_DIR / f"overlay_horror_{horror_id}.ass"
     _write_captions_ass(total_dur, w, h, subs_path,
                         beats=story.get("beats", []),
-                        spans=_spans_from_durations(scene_durations))
+                        spans=_spans_from_durations(scene_durations),
+                        narration_audio=narration_audio)
 
     _p("muxing...")
     out_path = FINAL_DIR / f"horror_{horror_id}_{ASPECT_KEY}.mp4"

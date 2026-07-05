@@ -13,6 +13,7 @@ import logging
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _HERE = Path(__file__).parent.parent.resolve()
@@ -109,3 +110,72 @@ def plan_windows_from_silence(
         durs[-1] = max(0.3, round(durs[-1] + drift, 3))
     log.info(f"planned {n} windows from silence (sum={sum(durs):.1f}s vs {total:.1f}s)")
     return durs
+
+
+def _extract_slice(wav_path: Path, t0: float, t1: float, out_path: Path) -> Path:
+    """Cut [t0, t1) out of wav_path into out_path (output-side seek = sample
+    accurate, cheap for the few-second slices this is used on)."""
+    cmd = [
+        str(FFMPEG_EXE), "-y", "-loglevel", "error",
+        "-i", str(Path(wav_path).resolve()),
+        "-ss", f"{max(0.0, t0):.3f}", "-to", f"{t1:.3f}",
+        "-c", "copy", str(out_path),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"slice extract failed ({t0}-{t1}): {r.stderr.strip()}")
+    return out_path
+
+
+def refine_windows_to_sentences(
+    wav_path: Path,
+    windows: list,
+    tmp_dir: "Path | None" = None,
+) -> list:
+    """Upgrade beat/shot-level (t0, t1, text) windows to real per-sentence
+    timing for burned-in captions.
+
+    A window whose text is ONE sentence already has exact timing — passed
+    through unchanged. A window with 2+ sentences currently only has an exact
+    OUTER boundary; where the sentences split inside it was previously a
+    char-length guess. This slices that window's real audio out of wav_path
+    and re-runs plan_windows_from_silence on JUST that slice (same mechanism
+    used for the beat/shot boundaries themselves) — snapping the internal
+    split to the real pause instead of guessing. Falls back to a proportional
+    char-length split if ffmpeg/detection fails for a window.
+
+    Returns a flat list of (t0, t1, text) events, one per sentence.
+    """
+    from modules.subtitles import raw_sentences
+
+    out: list = []
+    tmp_dir = Path(tmp_dir) if tmp_dir else Path(tempfile.mkdtemp(prefix="capref_"))
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    for t0, t1, text in windows:
+        text = (text or "").strip()
+        if not text or t1 <= t0:
+            continue
+        sentences = raw_sentences(text)
+        if len(sentences) <= 1:
+            out.append((t0, t1, sentences[0] if sentences else text))
+            continue
+        try:
+            slice_wav = tmp_dir / f"slice_{round(t0, 3)}_{round(t1, 3)}.wav"
+            _extract_slice(wav_path, t0, t1, slice_wav)
+            weights = [max(1, len(s.split())) for s in sentences]
+            durs = plan_windows_from_silence(slice_wav, weights)
+            cur = t0
+            for s, d in zip(sentences, durs):
+                out.append((cur, min(t1, cur + d), s))
+                cur += d
+        except Exception as e:
+            log.warning(f"caption refine failed for window {t0}-{t1} ({e}); "
+                       f"falling back to proportional split.")
+            total_chars = sum(len(s) for s in sentences) or 1
+            cur = t0
+            for s in sentences:
+                dur = (t1 - t0) * (len(s) / total_chars)
+                out.append((cur, min(t1, cur + dur), s))
+                cur += dur
+    return out

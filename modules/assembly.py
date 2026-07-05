@@ -26,6 +26,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from modules import runtime_settings as rs
+from modules import subtitles as subs_mod
 
 log = logging.getLogger("claw_bot.assembly")
 
@@ -649,10 +650,13 @@ def assemble_final(
 # AUDIO-FIRST ASSEMBLY (Phase 3)
 # ==============================================================================
 
-def _build_audio_first_vfilter(clip_count: int, target_w: int, target_h: int) -> str:
+def _build_audio_first_vfilter(clip_count: int, target_w: int, target_h: int,
+                                subs_name: Optional[str] = None) -> str:
     """Scale+pad each silent clip to the canvas, then hard-concat them. No
     crossfade — the cuts ARE the speech pauses. Audio comes from a separate
-    master input mapped in by the caller. Output video label: [vout]."""
+    master input mapped in by the caller. `subs_name` (relative .ass filename,
+    caller runs ffmpeg with cwd=its folder) burns captions in; None = no
+    captions. Output video label: [vout]."""
     parts = []
     for i in range(clip_count):
         parts.append(
@@ -661,10 +665,15 @@ def _build_audio_first_vfilter(clip_count: int, target_w: int, target_h: int) ->
             f"setsar=1,fps={FPS},format=yuv420p[v{i}]"
         )
     if clip_count == 1:
-        parts.append("[v0]null[vout]")
-        return ";".join(parts)
-    concat_inputs = "".join(f"[v{i}]" for i in range(clip_count))
-    parts.append(f"{concat_inputs}concat=n={clip_count}:v=1:a=0[vout]")
+        base_label = "v0"
+    else:
+        concat_inputs = "".join(f"[v{i}]" for i in range(clip_count))
+        parts.append(f"{concat_inputs}concat=n={clip_count}:v=1:a=0[vcat]")
+        base_label = "vcat"
+    if subs_name:
+        parts.append(f"[{base_label}]subtitles={subs_name}[vout]")
+    else:
+        parts.append(f"[{base_label}]null[vout]")
     return ";".join(parts)
 
 
@@ -695,31 +704,38 @@ def _concat_av(parts: list[Path], out_path: Path, target_w: int, target_h: int) 
 
 def _assemble_audio_first_aspect(
     clips: list[Path], master_audio: Path, aspect_key: str, output_path: Path,
+    subs_path: Optional[Path] = None,
     progress_cb: Optional[Callable] = None,
 ) -> Path:
     """One aspect: concat silent clips → lay the single master VO over the top.
 
     sum(clip durations) == master audio duration by construction (the segmenter
     tiles the timeline), so video and audio are the same length. NO -shortest
-    (Core Rule #5) — both streams already match."""
+    (Core Rule #5) — both streams already match.
+
+    `subs_path`, if given, burns captions in. ffmpeg runs with cwd=its parent
+    folder so the subtitles filter can use a relative name (dodges Windows
+    drive-letter ':' escaping in the filter graph, same trick horror mode uses)."""
     target_w, target_h = ASPECTS[aspect_key]
     if progress_cb:
         progress_cb(f"rendering {aspect_key} (audio-first)...")
     cmd = [str(FFMPEG_EXE), "-y", "-loglevel", "error"]
     for c in clips:
-        cmd += ["-i", str(c)]
-    cmd += ["-i", str(master_audio)]            # audio is the LAST input
+        cmd += ["-i", str(Path(c).resolve())]
+    cmd += ["-i", str(Path(master_audio).resolve())]     # audio is the LAST input
     audio_idx = len(clips)
+    subs_name = subs_path.name if subs_path else None
     cmd += [
-        "-filter_complex", _build_audio_first_vfilter(len(clips), target_w, target_h),
+        "-filter_complex", _build_audio_first_vfilter(len(clips), target_w, target_h, subs_name),
         "-map", "[vout]",
         "-map", f"{audio_idx}:a:0",
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
-        str(output_path),
+        str(Path(output_path).resolve()),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    cwd = str(subs_path.parent) if subs_path else None
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900, cwd=cwd)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg audio-first assembly failed ({aspect_key}):\n"
                            f"{result.stderr.strip()}")
@@ -758,10 +774,35 @@ def assemble_audio_first(script_id: str, progress_cb: Optional[Callable] = None)
     log.info(f"Audio-first assemble: {len(clips)} silent clips, "
              f"master VO {total_dur:.2f}s")
 
+    # Burned-in captions: each shot's narration already carries exact
+    # audio_t_start/audio_t_end (set by the segmenter when it tiled the master
+    # VO). Most shots are already one sentence (exact as-is); shots merged from
+    # several short breath-groups get their internal split re-detected on the
+    # real audio (audio_segmenter.refine_windows_to_sentences) instead of
+    # guessed by character length.
+    shots = script.get("shots", [])
+    windows = [
+        (float(s.get("audio_t_start", 0.0)), float(s.get("audio_t_end", 0.0)),
+         s.get("narration") or "")
+        for s in shots
+    ]
+    if windows:
+        from modules import audio_segmenter
+        refined = audio_segmenter.refine_windows_to_sentences(master_audio, windows)
+        caption_events = subs_mod.merge_events(refined)
+    else:
+        caption_events = []
+    subs_dir = CLIPS_DIR / "_af_subs"
+    subs_dir.mkdir(parents=True, exist_ok=True)
+
     outputs = {}
     for aspect_key in ("9x16", "16x9", "1x1"):
         out_path = FINAL_DIR / f"final_{script_id}_{aspect_key}.mp4"
-        _assemble_audio_first_aspect(clips, master_audio, aspect_key, out_path, progress_cb)
+        subs_path = subs_dir / f"{script_id}_{aspect_key}.ass"
+        subs_mod.write_captions_ass(total_dur, *ASPECTS[aspect_key], subs_path,
+                                    events=caption_events, watermark_text=None)
+        _assemble_audio_first_aspect(clips, master_audio, aspect_key, out_path,
+                                     subs_path=subs_path, progress_cb=progress_cb)
         outputs[aspect_key] = out_path
         log.info(f"✅ {aspect_key} audio-first ready: {out_path.name}")
 

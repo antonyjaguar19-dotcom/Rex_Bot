@@ -112,6 +112,54 @@ def test_continuous_narration_engine_default():
     assert rs.get_horror_voice_engine() in ("kokoro", "voxcpm", "qwen")
 
 
+def test_refine_windows_passes_through_single_sentence(monkeypatch):
+    """A window with exactly one sentence already has exact timing — no slicing
+    or silence re-detection should happen for it."""
+    from modules import audio_segmenter as seg
+
+    def _boom(*a, **k):
+        raise AssertionError("should not slice a single-sentence window")
+    monkeypatch.setattr(seg, "_extract_slice", _boom)
+
+    events = seg.refine_windows_to_sentences(Path("x.wav"), [(0.0, 3.0, "Just one sentence.")])
+    assert events == [(0.0, 3.0, "Just one sentence.")]
+
+
+def test_refine_windows_splits_multi_sentence_on_real_silence(monkeypatch):
+    """A 2-sentence window gets sliced and its internal split snapped to a real
+    detected pause instead of guessed by character length."""
+    from modules import audio_segmenter as seg
+
+    monkeypatch.setattr(seg, "_extract_slice", lambda wav, t0, t1, out: out)
+    # First sentence is much longer text but the REAL audio split (mocked) is 1:1 —
+    # proves the refine path uses silence detection, not char-length proportion.
+    monkeypatch.setattr(seg, "plan_windows_from_silence", lambda *a, **k: [1.0, 1.0])
+
+    events = seg.refine_windows_to_sentences(
+        Path("x.wav"), [(0.0, 2.0, "A very very long first sentence here. Short.")]
+    )
+    assert len(events) == 2
+    assert events[0] == (0.0, 1.0, "A very very long first sentence here.")
+    assert events[1] == (1.0, 2.0, "Short.")
+
+
+def test_refine_windows_falls_back_on_slice_failure(monkeypatch):
+    """If ffmpeg slicing/detection fails, fall back to the proportional
+    char-length guess rather than dropping the window."""
+    from modules import audio_segmenter as seg
+
+    def _boom(*a, **k):
+        raise RuntimeError("ffmpeg exploded")
+    monkeypatch.setattr(seg, "_extract_slice", _boom)
+
+    events = seg.refine_windows_to_sentences(Path("x.wav"), [(0.0, 10.0, "Hi. Bye.")])
+    assert len(events) == 2
+    assert events[0][2] == "Hi."
+    assert events[1][2] == "Bye."
+    assert events[0][0] == 0.0
+    assert events[-1][1] == 10.0
+
+
 def test_writer_constants_bounded():
     from modules import horror_writer as hw
     assert hw.MAX_BEATS <= 200
