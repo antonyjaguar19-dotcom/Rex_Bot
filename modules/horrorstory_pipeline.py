@@ -34,6 +34,26 @@ NARRATION_DIR = PROJECT_ROOT / "04_Outputs" / "audio"
 
 PHOTO_STYLE_ID = "photoreal"
 
+# The LLM writes camera-framing cues into image_prompt, but USO/Flux under-weight
+# them (esp. against a full-body character ref). Amplify: a forceful prompt prefix
+# + matching negatives when a close-up is asked for; other beats keep their
+# natural wide/medium framing untouched.
+_CLOSEUP_NEG = ("full body, full figure, whole body, wide shot, long shot, "
+                "distant framing, small in frame, environment dominates frame")
+
+
+def _framing_hint(beat: dict) -> tuple[str, str]:
+    """Return (prompt_prefix, extra_negatives) from the beat's framing cue.
+    Empty when no strong cue is present."""
+    ip = (beat.get("image_prompt") or "").lower()
+    if "extreme close" in ip:
+        return ("Extreme close-up on the character's face filling the frame, "
+                "shallow depth of field. ", _CLOSEUP_NEG)
+    if any(c in ip for c in ("close-up", "closeup", "close up", "close on")):
+        return ("Tight close-up shot: the character's face and shoulders fill "
+                "most of the frame, shallow depth of field. ", _CLOSEUP_NEG)
+    return ("", "")
+
 
 def _scene_prompt(beat: dict, loc_map: dict, char_look: dict) -> str:
     """Beat prompt: scene + location + character look tokens + photoreal suffix.
@@ -360,8 +380,10 @@ def render_horror(
     scene_images: list[Path] = []
     for i, b in enumerate(beats):
         _p(f"🖼️ still {i+1}/{len(beats)}...")
+        _fpref, _fneg = _framing_hint(b)
         gen_kwargs = dict(
-            prompt=_scene_prompt(b, loc_map, char_look),
+            prompt=_fpref + _scene_prompt(b, loc_map, char_look),
+            negative_prompt=(_fneg or None),
             aspect_ratio="16:9",
             seed=random.randint(1, 2**31 - 1),
             output_filename=str(out_dir / f"beat_{i:04d}.png"),
