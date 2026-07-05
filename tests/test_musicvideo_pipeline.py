@@ -169,3 +169,43 @@ def test_safety_filter_accepts_song_dict():
     })
     assert ok is True
     assert blocked == []
+
+
+# ------------------------------------------------- lyric caption sync (WhisperX)
+def test_lyric_caption_events_from_aligner(monkeypatch):
+    """align_lyrics returns (text, start, end) spans; _lyric_caption_events must
+    reorder to (start, end, text) events without crashing (regression: a float
+    was passed where text was expected -> AttributeError)."""
+    from modules import musicvideo_assembly as mva
+    from modules import lyric_aligner
+
+    monkeypatch.setattr(
+        lyric_aligner, "align_lyrics",
+        lambda audio, lines: [("first line", 0.5, 2.0), ("second line", 2.3, 4.1)],
+    )
+    events = mva._lyric_caption_events(
+        song_dur=5.0, lyrics="[Verse]\nfirst line\nsecond line",
+        song_audio=Path("fake.wav"),
+    )
+    assert events, "expected caption events from aligned spans"
+    for t0, t1, text in events:
+        assert isinstance(t0, float) and isinstance(t1, float)
+        assert isinstance(text, str) and text
+    # real alignment kept (starts after 0), not the 0..song_dur fallback spread
+    assert events[0][0] == 0.5
+
+
+def test_lyric_caption_events_fallback_when_no_alignment(monkeypatch):
+    """No aligner result -> proportional char-length spread across the song
+    (0..song_dur), never a crash or empty captions."""
+    from modules import musicvideo_assembly as mva
+    from modules import lyric_aligner
+
+    monkeypatch.setattr(lyric_aligner, "align_lyrics", lambda audio, lines: None)
+    events = mva._lyric_caption_events(
+        song_dur=6.0, lyrics="[Chorus]\nla la la\nsing along",
+        song_audio=Path("fake.wav"),
+    )
+    assert events
+    assert events[0][0] == 0.0
+    assert abs(events[-1][1] - 6.0) < 0.01

@@ -108,7 +108,9 @@ def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Pat
         return []
     aligned = lyric_aligner.align_lyrics(song_audio, lines) if song_audio else None
     if aligned:
-        return merge_events(aligned)
+        # align_lyrics returns (text, t_start, t_end) — the TTS-span convention;
+        # events are (t_start, t_end, text). Reorder before merging.
+        return merge_events([(a, b, t) for (t, a, b) in aligned])
     return windows_to_events([(0.0, song_dur, lyrics)], chunk_fn=lyric_chunks)
 
 
