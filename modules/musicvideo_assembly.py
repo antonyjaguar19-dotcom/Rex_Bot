@@ -122,7 +122,7 @@ def logo_overlay_filter(in_label: str, out_label: str, logo_idx: int, w: int) ->
     m = max(24, int(w * WM_MARGIN_FRAC))
     return (f"[{logo_idx}:v]scale={lw}:-1,format=rgba,"
             f"colorchannelmixer=aa={WM_OPACITY}[wmlogo];"
-            f"[{in_label}][wmlogo]overlay=W-w-{m}:H-h-{m}[{out_label}]")
+            f"[{in_label}][wmlogo]overlay=W-w-{m}:(H-h)/2[{out_label}]")
 
 # Each lyric line needs at least this long on screen to be readable. If the
 # detected singing windows can't give every line this much (e.g. whisper barely
