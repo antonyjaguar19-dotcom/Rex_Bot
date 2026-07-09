@@ -1197,7 +1197,6 @@ def main_page():
             tab_music = ui.tab("Music", icon="music_note")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
-            tab_tools = ui.tab("Tools", icon="build")
 
     # Empty panels — section cards are built below at page level and then
     # .move()'d into the right panel (avoids re-indenting the whole UI; a single
@@ -1210,7 +1209,6 @@ def main_page():
         music_panel = ui.tab_panel(tab_music).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
-        tools_panel = ui.tab_panel(tab_tools).classes("w-full")
 
     # ============== STAGE STEPPER ==============
     stepper_row = ui.row().classes("w-full items-center justify-between") \
@@ -1769,7 +1767,7 @@ def main_page():
     card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
     card_models.move(models_panel)
     card_queue.move(queue_panel)
-    card_tools.move(tools_panel)
+    card_tools.move(pipeline_panel)   # story-specific tools → inside Story
 
     # --- Mode-aware visibility: show ONLY the active mode's cards ---
     _story_cards = [stepper_row, card_script, card_prompts, card_storyboard,
