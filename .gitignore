@@ -69,3 +69,8 @@ dist/
 
 # FFmpeg shared libs for torchcodec (binary, ~100MB; download via BtbN)
 00_Tools/ffmpeg_shared/
+
+# rendered outputs (large, regenerated) + caveman backup
+04_Outputs/
+CLAUDE.original.md
+config_snapshot/*.bak
