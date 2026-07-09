@@ -1,5 +1,11 @@
 # Claw Bot Agent (Rex VFX Bot)
 
+> **Rebuilding on a new / broken PC?** Read **[RESTORE.md](RESTORE.md)** (full
+> step-by-step) and **[MODELS.md](MODELS.md)** (every model weight + where it
+> goes). Config (models.json, styles, workflows, voice refs, secrets template)
+> is snapshotted in **`config_snapshot/`**. Modes: **Facts · Music · Story ·
+> Horror** — details in `CLAUDE.md`.
+
 A locally-run AI animation pipeline that turns a theme into a narrated, multi-aspect
 video for YouTube — driven by an **audio-first** workflow where the voiceover is
 rendered first and its natural pauses decide where every scene cuts.

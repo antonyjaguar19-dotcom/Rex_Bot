@@ -1,0 +1,22 @@
+{
+  "voice": "af_sky",
+  "aspect_ratio": "9:16",
+  "clip_length": 10.0,
+  "reference_mode": true,
+  "transition_mode": "cut",
+  "music_mood": "calm",
+  "video_resolution": "480p",
+  "pipeline_mode": "music_video",
+  "horror_ambient": true,
+  "horror_voice_engine": "kokoro",
+  "horror_cb_exaggeration": 0.6,
+  "horror_qwen_speaker": "eric",
+  "horror_qwen_pitch": 0.9,
+  "horror_video_mode": "kenburns",
+  "facts_voice": "af_bella",
+  "facts_voice_speed": 1.2,
+  "facts_video_mode": "wan",
+  "tempo_bpm": 160,
+  "vocal_type": "male",
+  "music_image_backend": "zturbo"
+}

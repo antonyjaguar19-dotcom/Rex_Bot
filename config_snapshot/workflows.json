@@ -1,0 +1,141 @@
+{
+  "9": {
+    "inputs": {
+      "filename_prefix": "z-image",
+      "images": [
+        "76:65",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "76:68": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "EmptySD3LatentImage"
+    }
+  },
+  "76:63": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "76:62": {
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "76:65": {
+    "inputs": {
+      "samples": [
+        "76:69",
+        0
+      ],
+      "vae": [
+        "76:63",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "76:70": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "76:66",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "76:66": {
+    "inputs": {
+      "unet_name": "z_image_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "76:69": {
+    "inputs": {
+      "seed": 763335419532396,
+      "steps": 20,
+      "cfg": 4,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "76:70",
+        0
+      ],
+      "positive": [
+        "76:67",
+        0
+      ],
+      "negative": [
+        "76:71",
+        0
+      ],
+      "latent_image": [
+        "76:68",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "76:67": {
+    "inputs": {
+      "text": "A warm, hand-painted storybook illustration in the style of a beloved children's picture book, using a gentle eye-level composition focused on a small boy and his favorite toy, with soft afternoon light as the atmospheric backdrop, and the visual focus concentrated on the warmth between the child and the object he's hugging.\n\nThe scene is set in a cozy Indian home, on a woven jute rug with earthy brown and beige threads. The afternoon sunlight pours through a window with light blue curtains behind him, casting a soft golden glow across the rug and his face. The textures of the jute rug are tactile and detailed, the curtain fabric is semi-translucent, and dust motes dance gently in the beam of light.\n\nA happy 5-year-old Indian boy with short neatly-combed black hair and warm brown eyes sits cross-legged on the rug. He wears a traditional mustard yellow kurta with small embroidered details at the collar. Clutched tightly to his chest is a bright red toy fire truck with silver ladders and black rubber wheels, and his small fingers curl around it protectively. His cheeks are slightly rounded with a soft proud smile, and his eyes sparkle with quiet joy.\n\nThe entire scene, with its tender colors and Pixar-inspired character design, exudes the intimate warmth of a treasured bedtime story page, rendered with the patient charm of classic storybook art.",
+      "clip": [
+        "76:62",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "76:71": {
+    "inputs": {
+      "text": "blurry, distorted, photorealistic, 3d render, extra limbs, deformed, ugly, watermark, text, realistic photo, scary, adult",
+      "clip": [
+        "76:62",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+FROM E:/Rexjaw_VFX/03_Models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf
+
+PARAMETER temperature 0.8
+PARAMETER top_p 0.95
+PARAMETER num_ctx 8192
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
+PARAMETER stop "<|im_start|>"

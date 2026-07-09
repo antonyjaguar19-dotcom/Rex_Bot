@@ -1,0 +1,164 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 31,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "78",
+        0
+      ],
+      "positive": [
+        "94",
+        0
+      ],
+      "negative": [
+        "47",
+        0
+      ],
+      "latent_image": [
+        "98",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "18": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "106",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "47": {
+    "inputs": {
+      "conditioning": [
+        "94",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    }
+  },
+  "78": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "104",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "94": {
+    "inputs": {
+      "tags": "indian classic style: use tabelas",
+      "lyrics": "[Verse 1: Andrew Taggart]\nHey, I was doing just fine before I met you\nI drink too much and that's an issue, but I'm okay\nHey, you tell your friends it was nice to meet them\nBut I hope I never see them again\n\n[Pre-Chorus: Andrew Taggart]\nI know it breaks your heart\nMoved to the city in a broke-down car\nAnd four years, no calls\nNow you're lookin' pretty in a hotel bar\nAnd I-I-I can't stop\nNo, I-I-I can't stop\n\n[Chorus: Andrew Taggart]\nSo, baby, pull me closer\nIn the backseat of your Rover\nThat I know you can't afford\nBite that tattoo on your shoulder\nPull the sheets right off the corner\nOf the mattress that you stole\nFrom your roommate back in Boulder\nWe ain't ever gettin' older\n\n[Drop: Andrew Taggart]\nWe ain't ever gettin' older\nWe ain't ever gettin' older\nSee The Chainsmokers Live\nGet tickets as low as $52\n[Verse 2: Halsey]\nYou look as good as the day I met you\nI forget just why I left you, I was insane\nStay and play that blink-182 song\nThat we beat to death in Tucson, okay\n\n[Pre-Chorus: Halsey, Halsey & Andrew Taggart]\nI know it breaks your heart\nMoved to the city in a broke-down car\nAnd four years, no call\nNow I'm lookin' pretty in a hotel bar\nAnd I-I-I can't stop\nNo, I-I-I can't stop\n\n[Chorus: Andrew Taggart & Halsey]\nSo, baby, pull me closer\nIn the backseat of your Rover\nThat I know you can't afford\nBite that tattoo on your shoulder\nPull the sheets right off the corner\nOf the mattress that you stole\nFrom your roommate back in Boulder\nWe ain't ever gettin' older\n\n[Drop: Andrew Taggart & Halsey]\nWe ain't ever gettin' older\nWe ain't ever gettin' older\n[Chorus: Andrew Taggart]\nSo, baby, pull me closer\nIn the backseat of your Rover\nThat I know you can't afford\nBite that tattoo on your shoulder\nPull the sheets right off the corner\nOf the mattress that you stole\nFrom your roommate back in Boulder\nWe ain't ever gettin' older\n\n[Bridge: Andrew Taggart, Halsey, Andrew Taggart & Halsey]\nWe ain't ever gettin' older\nNo, we ain't ever gettin' older\nWe ain't ever gettin' older\nNo, we ain't ever gettin' older\nWe ain't ever gettin' older\nWe ain't ever gettin' older\nWe ain't ever gettin' older\nNo, we ain't ever gettin' older\n\n[Drop: Halsey, Halsey & Andrew Taggart]\nOlder\nWe ain't ever gettin' older\nOlder\nNo, we ain't ever gettin' older",
+      "seed": 31,
+      "bpm": 40,
+      "duration": 120,
+      "timesignature": "4",
+      "language": "en",
+      "keyscale": "E minor",
+      "generate_audio_codes": true,
+      "cfg_scale": 2,
+      "temperature": 0.85,
+      "top_p": 0.9,
+      "top_k": 0,
+      "min_p": 0,
+      "clip": [
+        "105",
+        0
+      ]
+    },
+    "class_type": "TextEncodeAceStepAudio1.5",
+    "_meta": {
+      "title": "TextEncodeAceStepAudio1.5"
+    }
+  },
+  "98": {
+    "inputs": {
+      "seconds": 120,
+      "batch_size": 1
+    },
+    "class_type": "EmptyAceStep1.5LatentAudio",
+    "_meta": {
+      "title": "Empty Ace Step 1.5 Latent Audio"
+    }
+  },
+  "104": {
+    "inputs": {
+      "unet_name": "acestep_v1.5_turbo.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "105": {
+    "inputs": {
+      "clip_name1": "qwen_0.6b_ace15.safetensors",
+      "clip_name2": "qwen_1.7b_ace15.safetensors",
+      "type": "ace",
+      "device": "default"
+    },
+    "class_type": "DualCLIPLoader",
+    "_meta": {
+      "title": "DualCLIPLoader"
+    }
+  },
+  "106": {
+    "inputs": {
+      "vae_name": "ace_1.5_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "107": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "quality": "V0",
+      "audioUI": "",
+      "audio": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "SaveAudioMP3",
+    "_meta": {
+      "title": "Save Audio (MP3)"
+    }
+  },
+  "109": {
+    "inputs": {
+      "text": ""
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  }
+}

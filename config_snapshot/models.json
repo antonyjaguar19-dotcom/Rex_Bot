@@ -1,0 +1,291 @@
+{
+  "_comment": "Central registry for all pluggable AI models used by Claw Bot. Change 'active' to swap models.",
+  "llm_backend": {
+    "active": "ollama_qwen25_14b",
+    "_roles_comment": "Per-stage model routing. creative=prose storytelling + dialogue, prompt=image/motion prompt craft (both reasoning-heavy → stronger model), structurer=reliable JSON schema (keep on the reliable instruct model). Missing role falls back to active.",
+    "roles": {
+      "creative": "ollama_qwen25_14b",
+      "prompt": "ollama_qwen25_14b",
+      "structurer": "ollama_qwen25_14b",
+      "default": "ollama_qwen25_14b"
+    },
+    "available": {
+      "ollama_llama31_8b": {
+        "type": "ollama",
+        "model_id": "llama3.1:8b-instruct-q8_0",
+        "description": "Llama 3.1 8B Instruct — local, VRAM ~6GB",
+        "server_url": "http://127.0.0.1:11434"
+      },
+      "ollama_qwen3_30b_a3b": {
+        "type": "ollama",
+        "model_id": "qwen3story",
+        "description": "Qwen3 30B-A3B IQ3_XXS — MoE 3.3B active, better creative writing, ~12GB VRAM",
+        "server_url": "http://127.0.0.1:11434"
+      },
+      "ollama_qwen25_14b": {
+        "type": "ollama",
+        "model_id": "qwen2.5:14b-instruct-q6_K",
+        "description": "Qwen 2.5 14B Instruct Q6_K — pure instruction model, reliable JSON, ~12GB VRAM",
+        "server_url": "http://127.0.0.1:11434"
+      }
+    }
+  },
+  "image_backend": {
+    "active": "comfyui_uso",
+    "available": {
+      "comfyui_zimage_turbo": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_zimage_base",
+        "description": "Z-Image Turbo — 8-step distilled, ~2min/image on 8GB VRAM, paragraph prompts",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "z_image",
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "clip_name": "qwen_3_4b.safetensors",
+        "vae_name": "ae.safetensors",
+        "clip_type": "z_image",
+        "lora": null,
+        "lora_trigger_words": null,
+        "lora_strength": 0,
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "prompt_style": "paragraph"
+      },
+      "comfyui_zimage_base": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_zimage_base",
+        "description": "Z-Image Base — 25-step quality mode, ~6min/image on 8GB (slow, fallback only)",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "z_image",
+        "unet_name": "z_image_bf16.safetensors",
+        "clip_name": "qwen_3_4b.safetensors",
+        "vae_name": "ae.safetensors",
+        "clip_type": "z_image",
+        "lora": null,
+        "lora_trigger_words": null,
+        "lora_strength": 0,
+        "steps": 25,
+        "cfg": 4.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "prompt_style": "paragraph"
+      },
+      "comfyui_flux2_klein": {
+        "description": "Flux.2 Klein 9B fp8 â€” best-in-class quality, ~3-6s/frame",
+        "module_path": "modules.image_backends.comfyui_flux2",
+        "server_url": "http://127.0.0.1:8188",
+        "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "vae_name": "full_encoder_small_decoder.safetensors",
+        "clip_type": "flux2",
+        "steps": 20,
+        "cfg": 5.0,
+        "sampler": "euler"
+      },
+      "comfyui_flux_lora": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_flux_lora",
+        "description": "Flux.1-dev + character-LoRA stacking — production character-shot backend. Auto-loads trained per-character LoRAs (face+outfit+accessories) by prompt name match.",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "flux_dev",
+        "ckpt_name": "flux1-dev-fp8.safetensors",
+        "steps": 20,
+        "guidance": 3.5,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "prompt_style": "paragraph"
+      },
+      "comfyui_kontext": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_kontext_base",
+        "description": "Flux.1 Kontext Dev fp8 â€” character-consistent generation with reference image (shot 1 anchors shots 2+)",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "flux_kontext",
+        "unet_name": "flux1-dev-kontext_fp8_scaled.safetensors",
+        "clip_l_name": "clip_l.safetensors",
+        "t5_name": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae_name": "ae.safetensors",
+        "steps": 20,
+        "cfg": 1.0,
+        "guidance": 2.5,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "prompt_style": "paragraph",
+        "supports_reference_image": true
+      },
+      "comfyui_sdxl_turbo": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_sdxl_turbo",
+        "description": "SDXL Turbo + StoryBookRedmond LoRA — FAST fallback, less accurate",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "sdxl",
+        "checkpoint": "sd_xl_turbo_1.0_fp16.safetensors",
+        "lora": "StorybookRedmondV2-KidsBook-KidsRedmAF.safetensors",
+        "lora_trigger_words": "KidsRedmAF, storybook illustration",
+        "lora_strength": 0.75,
+        "steps": 6,
+        "cfg": 2.0,
+        "sampler": "dpmpp_sde",
+        "scheduler": "karras",
+        "prompt_style": "tags"
+      },
+      "comfyui_uso": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_uso",
+        "description": "ByteDance USO (Flux.1-dev + USO LoRA) — single-image character consistency. One reference image -> same subject in any new scene/pose/lighting. Full-subject (works for humans/animals/robots), not face-only. Non-commercial (Flux.1-dev license).",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "flux_dev_uso",
+        "ckpt_name": "flux1-dev-fp8.safetensors",
+        "uso_lora_name": "uso-flux1-dit-lora-v1.safetensors",
+        "steps": 20,
+        "guidance": 3.5,
+        "cfg": 1.0,
+        "lora_strength": 1.0,
+        "ref_size": 512,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "prompt_style": "paragraph",
+        "supports_reference_image": true
+      },
+      "comfyui_sdxl_ipadapter": {
+        "type": "comfyui",
+        "module_path": "modules.image_backends.comfyui_sdxl_ipadapter",
+        "description": "SDXL + per-style LoRA + IP-Adapter PLUS (cast-sheet reference) — KIDS character-consistency backend. Same-species characters stay on-model across shots.",
+        "server_url": "http://127.0.0.1:8188",
+        "architecture": "sdxl",
+        "checkpoint": "sd_xl_base_1.0.safetensors",
+        "steps": 28,
+        "cfg": 6.5,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "ipadapter_preset": "PLUS (high strength)",
+        "ipadapter_weight": 0.75,
+        "default_style": "pixar",
+        "prompt_style": "paragraph",
+        "supports_reference_image": true
+      }
+    }
+  },
+  "video_backend": {
+    "active": "comfyui_wan22_14B",
+    "available": {
+      "comfyui_ltx2": {
+        "description": "LTX-2 19B Dev Q4_K_M (GGUF, ~12GB) — fits 16GB VRAM with no offload — image-to-video via ComfyUI",
+        "module_path": "modules.video_backends.comfyui_ltx_video",
+        "server_url": "http://127.0.0.1:8188",
+        "unet_name": "ltx-2-19b-dev-Q4_K_M.gguf",
+        "clip_name1": "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf",
+        "clip_name2": "ltx-2-19b-embeddings_connector_dev_bf16.safetensors",
+        "vae_name": "LTX2_video_vae_bf16.safetensors",
+        "steps": 20,
+        "cfg": 4.5,
+        "sampler": "euler_ancestral",
+        "default_width": 1280,
+        "default_height": 720,
+        "default_frames": 81,
+        "default_fps": 24,
+        "max_clip_seconds": 20.0,
+        "img_compression": 15,
+        "sigmas": "1.0, 0.9970, 0.9940, 0.9910, 0.988, 0.982, 0.974, 0.965, 0.955, 0.940, 0.918, 0.890, 0.852, 0.802, 0.732, 0.638, 0.518, 0.378, 0.230, 0.098, 0.0"
+      },
+      "comfyui_wan22": {
+        "description": "Wan 2.2 ti2v 5B (fp16) — image-to-video, slow but high quality",
+        "module_path": "modules.video_backends.comfyui_wan22",
+        "server_url": "http://127.0.0.1:8188",
+        "unet_name": "wan2.2_ti2v_5B_fp16.safetensors",
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae_name": "wan2.2_vae.safetensors",
+        "steps": 20,
+        "cfg": 5.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "default_width": 832,
+        "default_height": 480,
+        "default_frames": 81,
+        "default_fps": 24,
+        "max_clip_seconds": 5.0
+      },
+      "comfyui_wan22_14B": {
+        "description": "Wan 2.2 14B I2V fp8 dual-UNet — 4-step lightx2v LoRA ON, ~7min first / 4min rest on RTX 5080",
+        "module_path": "modules.video_backends.comfyui_wan22_14B",
+        "server_url": "http://127.0.0.1:8188",
+        "unet_high_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "unet_low_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "lora_high_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+        "lora_low_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae_name": "wan_2.1_vae.safetensors",
+        "enable_4steps_lora": true,
+        "cfg": 3.5,
+        "steps_full": 20,
+        "steps_lora": 4,
+        "default_width": 832,
+        "default_height": 480,
+        "default_duration": 5.0,
+        "default_fps": 16,
+        "max_clip_seconds": 5.0
+      },
+      "comfyui_wan22_s2v": {
+        "_comment": "Wan 2.2 Sound-to-Video (lip-sync). Used for CHARACTER dialogue shots only; narrator shots stay on the active I2V backend. INERT until: (1) S2V weights + nodes installed in ComfyUI, (2) workflow exported to 05_Config/workflows/video_wan2_2_s2v_api.json, (3) lipsync enabled in runtime_settings. Update the weight filenames below to match your install.",
+        "description": "Wan 2.2 S2V 14B — audio-driven talking-head lip-sync via ComfyUI",
+        "module_path": "modules.video_backends.comfyui_wan_s2v",
+        "server_url": "http://127.0.0.1:8188",
+        "workflow_file": "video_wan2_2_s2v_api.json",
+        "unet_name": "wan2.2_s2v_14B_fp8_scaled.safetensors",
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae_name": "wan_2.1_vae.safetensors",
+        "audio_encoder_name": "wav2vec2_large_english_fp16.safetensors",
+        "comfyui_input_dir": "",
+        "cfg": 4.0,
+        "steps": 20,
+        "default_width": 832,
+        "default_height": 480,
+        "default_fps": 16,
+        "max_clip_seconds": 15.0
+      }
+    }
+  },
+  "audio_backend": {
+    "_comment": "Song/audio generation for the MUSIC VIDEO pipeline only. Story pipeline does not use this.",
+    "active": "comfyui_ace_step",
+    "available": {
+      "comfyui_ace_step": {
+        "type": "comfyui",
+        "module_path": "modules.audio_backends.comfyui_ace_step",
+        "description": "ACE-Step 1.5 turbo — full song (vocals+instrumental) from style tags + lyrics, ~8-step turbo",
+        "server_url": "http://127.0.0.1:8188",
+        "workflow_file": "audio_ace_step_1_5_split.json",
+        "steps": 8,
+        "cfg": 1,
+        "default_duration": 120
+      }
+    }
+  },
+  "image_defaults": {
+    "aspect_ratio": "16:9",
+    "resolutions": {
+      "16:9": {
+        "width": 1280,
+        "height": 720
+      },
+      "9:16": {
+        "width": 720,
+        "height": 1280
+      },
+      "1:1": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "seed_mode": "random",
+    "batch_size": 1
+  },
+  "character_consistency": {
+    "enabled": true,
+    "method": "reference_registry",
+    "refs_dir": "03_Models/character_refs",
+    "_comment": "Auto-detects character names across stories; reuses descriptions and optionally reference images."
+  }
+}

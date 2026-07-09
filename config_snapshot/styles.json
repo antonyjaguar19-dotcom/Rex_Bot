@@ -1,0 +1,53 @@
+{
+  "default": "pixar",
+  "available": {
+    "pixar": {
+      "display_name": "Disney-Pixar 3D",
+      "modes": ["story"],
+      "description": "Polished 3D Disney-Pixar animated movie look. Rounded big-eyed characters, soft skin, warm cinematic lighting, vibrant colors.",
+      "prompt_suffix": "rendered as a polished 3D Disney-Pixar animated movie still, rounded expressive characters with large bright eyes, soft subsurface skin shading, warm cinematic lighting, vibrant saturated colors, smooth detailed CGI, shallow depth of field",
+      "character_medium": "as a rounded big-eyed 3D Disney-Pixar character with soft smooth shading",
+      "best_for": "heartwarming adventures, family comedy, gentle lessons, kids ages 4-10"
+    },
+    "cartoon_saloon": {
+      "display_name": "Cartoon Saloon 2D",
+      "modes": ["story"],
+      "description": "Hand-drawn Cartoon Saloon (Song of the Sea, Wolfwalkers) flat 2D folk-art style. Bold decorative line work, intricate patterns, muted painterly palette.",
+      "prompt_suffix": "rendered in the Cartoon Saloon hand-drawn 2D animation style, flat decorative shapes, bold clean line work, intricate Celtic folk patterns, soft muted folk-art color palette, storybook flatness, painterly textured backgrounds",
+      "character_medium": "as a flat hand-drawn Cartoon-Saloon character with bold simple outlines and decorative patterns",
+      "best_for": "folk tales, myth, gentle wonder, nature and seasons, all ages"
+    },
+    "claymation": {
+      "display_name": "Claymation",
+      "modes": ["story"],
+      "description": "Claymation / plasticine stop-motion. Sculpted clay characters with fingerprint texture, rounded forms, Wallace & Gromit feel.",
+      "prompt_suffix": "a handmade stop-motion claymation frame, every character and prop sculpted from matte modeling clay / plasticine, visible fingerprints, thumb dents and sculpting-tool marks, slightly uneven lumpy handmade surfaces, tiny seams, real miniature physical set with practical studio lighting and shallow depth of field, Aardman Wallace-and-Gromit look — NOT glossy, NOT smooth CGI, NOT a polished 3D Pixar render",
+      "character_medium": "as a lumpy matte modeling-clay puppet with visible fingerprints and tool marks, clearly handmade not CGI",
+      "best_for": "playful comedy, charming creatures, tactile handmade worlds, kids ages 4-10"
+    },
+    "stickman": {
+      "display_name": "Stickman Doodle",
+      "modes": ["story"],
+      "description": "Minimalist hand-drawn stick-figure doodle. Clean black line art on white, simple shapes, whiteboard-explainer feel.",
+      "prompt_suffix": "a classic xkcd-style stick figure line drawing, every person is a plain empty circle head on a single straight vertical line for the body, two straight thin lines for arms and two straight thin lines for legs, thin black pen lines on plain white paper, extremely minimal, no clothing, no facial features, no fill, no shading, no color, hand-drawn doodle",
+      "character_medium": "as a SIMPLE STICK FIGURE — round dot head, thick black outline, single flat color accent only, no shading or fine detail",
+      "best_for": "simple funny explainer/storytelling videos, comedy, all ages"
+    },
+    "spectrum": {
+      "display_name": "Abstract Spectrum",
+      "modes": ["music_video"],
+      "description": "Beautiful abstract music visuals — flowing color spectrums, light trails, particles, no characters. For mood-driven music videos.",
+      "prompt_suffix": "rendered as a beautiful abstract music visual, flowing gradient color spectrum, glowing light trails and bokeh particles, smooth volumetric waves, dreamy cinematic atmosphere, no text, no characters, vivid saturated palette",
+      "character_medium": "as a flowing abstract light form (no literal character)",
+      "best_for": "music videos, mood pieces, ambient/electronic songs, all ages"
+    },
+    "photoreal": {
+      "display_name": "Photorealistic",
+      "modes": ["music_video", "horror_story"],
+      "description": "Cinematic photorealistic footage look. Real lighting, depth of field, film grain. For grounded, mature-feeling music videos and horror.",
+      "prompt_suffix": "photorealistic cinematic still, natural realistic lighting, shallow depth of field, detailed textures, subtle film grain, color-graded, high dynamic range, professional cinematography",
+      "character_medium": "as a photorealistic person with natural skin and realistic clothing",
+      "best_for": "music videos, emotional/romantic songs, grounded real-world scenes, horror, teens and adults"
+    }
+  }
+}
