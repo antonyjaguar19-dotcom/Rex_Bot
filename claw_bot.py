@@ -1336,6 +1336,9 @@ async def daily_auto_generation():
             caption = (f"🗓️ **Daily Facts — {story.get('title', topic)}** · "
                        f"{out.get('duration', 0):.0f}s · 9x16 · ready to post")
             await _post_reel(v_channel, out.get("9x16"), caption)
+            desc = (out.get("description") or story.get("description") or "").strip()
+            if desc:
+                await v_channel.send(f"📝 **Upload description** (copy-paste):\n```\n{desc[:1850]}\n```")
         log.info(f"Daily facts reel done: {story.get('title')}")
     except Exception as e:
         log.exception("Daily facts generation failed")
@@ -4829,6 +4832,10 @@ async def cmd_make_facts(ctx, *, topic: str = None):
     caption = (f"🎬 **{story['title']}** — facts reel · 9x16 · "
                f"{out.get('duration', 0):.0f}s · IG-ready")
     await _post_reel(v_channel, out.get("9x16"), caption)
+    # Upload-ready description (copy-paste for YouTube/TikTok/IG).
+    desc = (out.get("description") or story.get("description") or "").strip()
+    if desc:
+        await v_channel.send(f"📝 **Upload description** (copy-paste):\n```\n{desc[:1850]}\n```")
     try:
         if getattr(v_channel, "id", None) != getattr(ctx.channel, "id", None):
             await ctx.send(f"✅ Done — reel posted in {v_channel.mention}.")

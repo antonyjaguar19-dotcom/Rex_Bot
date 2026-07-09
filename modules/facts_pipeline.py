@@ -225,5 +225,17 @@ def render_facts(
                                   aspect=aspect, music_path=music_path,
                                   progress_cb=progress_cb)
     out["narration_audio"] = narration_path
+    # Save an upload-ready description (title + facts + hashtags) next to the reel.
+    desc = (story.get("description") or "").strip()
+    if desc:
+        try:
+            from modules.assembly import FINAL_DIR
+            dfile = FINAL_DIR / f"facts_{facts_id}_description.txt"
+            dfile.write_text(desc, encoding="utf-8")
+            out["description"] = desc
+            out["description_file"] = str(dfile)
+            _p(f"📝 description saved: {dfile.name}")
+        except Exception as e:
+            log.warning(f"description save failed: {e}")
     _p("✅ facts reel complete")
     return out

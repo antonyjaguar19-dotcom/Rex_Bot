@@ -18,6 +18,7 @@ treat each entry as a `beat` exactly like the horror pipeline does:
 
 import json
 import logging
+import re
 import sys
 import time as _t
 from datetime import datetime
@@ -61,7 +62,8 @@ def _prompt(topic: str, n: int) -> str:
         f'       "caption": "the same fact boiled to a punchy 3-8 word on-screen line",\n'
         f'       "backdrop": "a CREATIVE, eye-catching, playful photographic scene that makes this fact\'s IDEA memorable. Stay on-topic but be imaginative — anthropomorphize or add a fun prop/costume (e.g. intelligence -> an octopus wearing a tiny scholar graduation cap solving a puzzle; venom -> a menacing glowing blue-ringed octopus; camouflage -> an octopus half-vanished into coral). Vivid, whimsical, cinematic. No text/words in the image."}}\n'
         f"  ],\n"
-        f'  "outro": "one spoken call-to-action (e.g. follow for more), max 12 words"\n'
+        f'  "outro": "one spoken call-to-action (e.g. follow for more), max 12 words",\n'
+        f'  "description": "a catchy 2-3 sentence video description for YouTube Shorts / TikTok / Instagram Reels that teases the facts and drives follows. End it with a NEW line containing 10-14 relevant lowercase hashtags separated by spaces (mix topic-specific + broad like #facts #shorts #reels #didyouknow)."\n'
         f"}}\n\n"
         f"Give EXACTLY {n} facts. Order them weakest-to-strongest so the best fact is last. "
         f"Keep every 'caption' SHORT — it is displayed as large centered text. "
@@ -118,6 +120,34 @@ def _to_beats(data: dict, topic: str) -> list[dict]:
     return beats
 
 
+def _hashtags(topic: str) -> str:
+    tags = ["#" + w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) > 2]
+    tags += ["#facts", "#didyouknow", "#shorts", "#reels", "#trivia",
+             "#viral", "#funfacts", "#learnontiktok"]
+    seen, out = set(), []
+    for t in tags:
+        if t not in seen:
+            seen.add(t); out.append(t)
+    return " ".join(out[:14])
+
+
+def _social_description(data: dict, title: str, topic: str, beats: list) -> str:
+    """Ready-to-paste upload description. Uses the LLM's description if given,
+    else builds one from the title/hook/facts + hashtags."""
+    d = (data.get("description") or "").strip()
+    if d:
+        return d
+    hook = next((b.get("narration", "") for b in beats if b.get("kind") == "hook"), "")
+    n = len([b for b in beats if b.get("kind") == "fact"])
+    lines = [title, "",
+             hook or f"{n} surprising facts about {topic} you didn't know!", "",
+             "In this short:"]
+    lines += [f"• {b.get('on_screen') or b.get('narration', '')}"
+              for b in beats if b.get("kind") == "fact"]
+    lines += ["", "Follow for more 🔔", "", _hashtags(topic)]
+    return "\n".join(lines)
+
+
 def generate_facts_short(
     topic: str,
     n_facts: int = DEFAULT_N_FACTS,
@@ -144,14 +174,16 @@ def generate_facts_short(
 
     now = datetime.now()
     facts_id = now.strftime("%Y%m%d_%H%M%S")
+    title = (data.get("title") or f"{topic.title()} Facts").strip()
     story = {
         "facts_id": facts_id,
         "_id": facts_id,
-        "title": (data.get("title") or f"{topic.title()} Facts").strip(),
+        "title": title,
         "topic": topic,
         "beats": beats,
         "characters": [],   # none — that's the whole point
         "locations": [],
+        "description": _social_description(data, title, topic, beats),
         "_generated_at": now.isoformat(),
     }
 
