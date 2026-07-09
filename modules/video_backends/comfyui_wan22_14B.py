@@ -136,9 +136,15 @@ class Backend(VideoBackend):
         self._last_seed = int(seed)
         if fps is None:
             fps = self.default_fps
-        # Resolution: explicit override > backend config default
-        eff_width  = int(width)  if width  else self.default_width
-        eff_height = int(height) if height else self.default_height
+        # Resolution: explicit width/height > aspect-ratio mapping > backend default.
+        # The aspect_ratio arg was previously ignored (always landscape 832x480);
+        # map it so a 9:16 request renders NATIVE vertical (same pixel budget,
+        # just rotated — no extra VRAM/time) instead of landscape.
+        _AR_DIMS = {"16:9": (832, 480), "9:16": (480, 832), "1:1": (640, 640)}
+        _ar = (aspect_ratio or "16:9").replace("x", ":").strip()
+        _aw, _ah = _AR_DIMS.get(_ar, (self.default_width, self.default_height))
+        eff_width  = int(width)  if width  else _aw
+        eff_height = int(height) if height else _ah
         if frame_count is None:
             duration = self.default_duration
         else:

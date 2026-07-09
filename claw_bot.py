@@ -1542,6 +1542,7 @@ async def on_ready():
                     "make_facts":          cmd_make_facts,
                     "set_facts_voice":     cmd_set_facts_voice,
                     "set_facts_speed":     cmd_set_facts_speed,
+                    "set_facts_video":     cmd_set_facts_video,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -4801,6 +4802,23 @@ async def cmd_set_facts_speed(ctx, speed: float = None):
         return
     rs.set_facts_voice_speed(float(speed))
     await ctx.send(f"✅ Facts speed → `{rs.get_facts_voice_speed()}x`.")
+
+
+@bot.command(name="set_facts_video", aliases=["facts_video"])
+async def cmd_set_facts_video(ctx, mode: str = None):
+    """Facts visuals: `kenburns` (pan/zoom stills, fast ~4 min) or `wan`
+    (animate each cut, vertical Wan I2V, ~15-20 min)."""
+    if not mode:
+        await ctx.send(f"🎞️ Facts video: `{rs.get_facts_video_mode()}` (kenburns|wan)")
+        return
+    try:
+        rs.set_facts_video_mode(mode)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    m = rs.get_facts_video_mode()
+    note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
+            else " — Ken Burns stills (fast, ~4 min)")
+    await ctx.send(f"✅ Facts video → `{m}`{note}.")
 
 
 if __name__ == "__main__":

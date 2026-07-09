@@ -95,6 +95,7 @@ def render_facts(
     narration_path: Optional[Path] = None,
     aspect: str = "9x16",
     music_path: Optional[Path] = None,
+    animate: Optional[bool] = None,
 ) -> dict:
     """Full render: kokoro narration -> per-beat spans -> mood backdrops -> 9x16
     Ken Burns + big centered fact text."""
@@ -158,8 +159,14 @@ def render_facts(
 
     _p(f"🖼️ building {len(beats)} backdrops ({'backend' if backend else 'gradient'})...")
     backgrounds: list[Path] = []
+    _reused = 0
     for i, b in enumerate(beats):
         dst = out_dir / f"bg_{i:04d}.png"
+        # Reuse an already-rendered backdrop for this reel (same facts_id) — skips
+        # re-paying image gen and sidesteps occasional USO hangs when iterating on
+        # the video stage. Delete the bg_*.png files to force a fresh render.
+        if dst.exists() and dst.stat().st_size > 0:
+            backgrounds.append(dst); _reused += 1; continue
         if backend is not None:
             try:
                 p = backend.generate(
@@ -171,14 +178,43 @@ def render_facts(
                 )
                 backgrounds.append(Path(p)); continue
             except Exception as e:
-                _p(f"backdrop {i+1} backend failed ({e}); gradient.")
+                # A backend hang/timeout usually means ComfyUI is stuck — don't keep
+                # retrying it for every remaining beat (7×300s); drop to gradients.
+                _p(f"backdrop {i+1} backend failed ({e}); using gradients from here.")
+                backend = None
         backgrounds.append(_gradient_bg(i, w, h, dst))
 
-    _p("🎬 assembling facts reel...")
-    gpu_utils.free_comfyui_vram()
-    out = fasm.assemble_facts(story, narration_path, durations, backgrounds,
-                              aspect=aspect, music_path=music_path,
-                              progress_cb=progress_cb)
+    if _reused:
+        _p(f"♻️ reused {_reused} existing backdrop(s)")
+
+    # ---- assemble: animate each cut (Wan I2V) OR Ken Burns stills ----
+    want_wan = (rs.get_facts_video_mode() == "wan") if animate is None else animate
+    out = None
+    if want_wan:
+        _p("🎞️ animating each cut (Wan I2V)…")
+        try:
+            from modules import horror_video
+            # facts beats carry no motion prompt — give each a gentle, upbeat move.
+            for b in beats:
+                b["motion_prompt"] = (b.get("motion_prompt")
+                                      or "subtle cinematic motion, gentle slow push-in, "
+                                         "the scene softly comes alive, no text")
+            clips = horror_video.render_shot_clips(
+                story, backgrounds, durations, aspect_ratio=ar, progress_cb=progress_cb,
+                fill_mode="retime")
+            gpu_utils.free_comfyui_vram()
+            out = fasm.assemble_facts_clips(story, narration_path, clips, aspect=aspect,
+                                            music_path=music_path, progress_cb=progress_cb)
+        except Exception as e:
+            _p(f"⚠️ Wan animation failed ({e}); falling back to Ken Burns stills.")
+            out = None
+
+    if out is None:
+        _p("🎬 assembling facts reel (Ken Burns)…")
+        gpu_utils.free_comfyui_vram()
+        out = fasm.assemble_facts(story, narration_path, durations, backgrounds,
+                                  aspect=aspect, music_path=music_path,
+                                  progress_cb=progress_cb)
     out["narration_audio"] = narration_path
     _p("✅ facts reel complete")
     return out

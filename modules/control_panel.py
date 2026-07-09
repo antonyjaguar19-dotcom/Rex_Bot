@@ -532,8 +532,15 @@ class FactsHubView(_SubView):
             "set_facts_speed", "speed",
         ))
 
+    @ui.button(label="🎞️ Video", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:fct:video")
+    async def b4(self, i, b):
+        await i.response.send_modal(ValueModal(
+            "Facts Video", "Mode", "kenburns (fast) · wan (animate, slower)",
+            "set_facts_video", "mode",
+        ))
+
     @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=1, custom_id="cp:fct:final")
-    async def b4(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Rendered facts reels appear in 04_Outputs/final.")
+    async def b5(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Rendered facts reels appear in 04_Outputs/final.")
 
 
 class VoiceMusicView(_SubView):

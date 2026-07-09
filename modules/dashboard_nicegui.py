@@ -1373,6 +1373,12 @@ def main_page():
                 .props("outlined dark dense").style("min-width: 120px")
             facts_pace_sel.on("update:model-value",
                               lambda e: rs.set_facts_voice_speed(float(facts_pace_sel.value)))
+            facts_video_sel = ui.select(
+                {"kenburns": "Ken Burns (fast)", "wan": "Animate (slow)"},
+                value=rs.get_facts_video_mode(), label="Video") \
+                .props("outlined dark dense").style("min-width: 150px")
+            facts_video_sel.on("update:model-value",
+                               lambda e: rs.set_facts_video_mode(facts_video_sel.value))
 
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")

@@ -51,15 +51,34 @@ def _freeze_pad(clip: Path, target_dur: float, out: Path) -> Path:
     return out
 
 
+def _retime_fill(clip: Path, target_dur: float, out: Path, fps: int = DEFAULT_FPS) -> Path:
+    """Stretch/squeeze the clip to EXACTLY target_dur by retiming (setpts) — the
+    motion plays for the whole window instead of freezing on the last frame. A
+    short Wan clip covering a longer window becomes gentle slow-motion (no freeze)."""
+    have = max(0.1, _probe_duration(clip))
+    factor = max(0.1, target_dur) / have          # >1 slows down, <1 speeds up
+    cmd = [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(clip),
+           "-vf", f"setpts={factor:.5f}*PTS,fps={fps},format=yuv420p",
+           "-t", f"{target_dur:.3f}", "-an",
+           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if r.returncode != 0 or not out.exists():
+        raise RuntimeError(f"retime-fill failed:\n{r.stderr.strip()}")
+    return out
+
+
 def render_shot_clips(
     story: dict,
     scene_images: list,
     durations: list,
     aspect_ratio: str = "16:9",
     progress_cb: Optional[Callable[[str], None]] = None,
+    fill_mode: str = "freeze",
 ) -> list[Path]:
-    """One Wan I2V clip per beat, freeze-padded to its narration window. Returns
-    the per-beat clip paths (same order/length as beats)."""
+    """One Wan I2V clip per beat, fit to its narration window. Returns per-beat
+    clip paths (same order/length as beats). `fill_mode`: 'freeze' (hold last
+    frame for the window remainder — horror) or 'retime' (stretch the motion to
+    fill the window, no freeze — facts)."""
     beats = story.get("beats", [])
     n = len(scene_images)
     if not (n == len(durations) == len(beats)):
@@ -88,7 +107,10 @@ def render_shot_clips(
         # backend writes into its OUTPUT_DIR; locate the produced file
         produced = _locate_backend_output(raw.name)
         seg = TEMP_DIR / f"hseg_{horror_id}_{i:04d}.mp4"
-        _freeze_pad(produced, float(dur), seg)
+        if fill_mode == "retime":
+            _retime_fill(produced, float(dur), seg, fps)
+        else:
+            _freeze_pad(produced, float(dur), seg)
         clips.append(seg)
     return clips
 

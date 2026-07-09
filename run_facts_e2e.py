@@ -28,6 +28,8 @@ def main():
     from modules import facts_pipeline as fp
 
     args = sys.argv[1:]
+    animate = "--animate" in args
+    args = [a for a in args if a != "--animate"]
     if args and args[0] == "--reuse":
         story = fw.load_facts(args[1])
         if not story:
@@ -41,7 +43,8 @@ def main():
         log(f"story '{story['title']}' — {len(story['beats'])} beats in {time.time()-t0:.0f}s")
 
     t0 = time.time()
-    out = fp.render_facts(story, progress_cb=lambda m: log(m))
+    log(f"render mode: {'WAN animate' if animate else 'Ken Burns'}")
+    out = fp.render_facts(story, progress_cb=lambda m: log(m), animate=animate)
     vid = Path(out.get("9x16") or "")
     size = vid.stat().st_size / 1e6 if vid.exists() else 0
     log(f"DONE in {(time.time()-t0)/60:.1f} min — {vid} ({size:.0f} MB, {out.get('duration',0):.0f}s)")

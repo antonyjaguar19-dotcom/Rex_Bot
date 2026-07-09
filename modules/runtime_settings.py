@@ -435,6 +435,24 @@ def set_facts_voice_speed(speed: float) -> None:
     log.info(f"Facts voice speed: {speed}")
 
 
+def get_facts_video_mode() -> str:
+    """'kenburns' = pan/zoom stills (fast, stable). 'wan' = animate each cut with
+    Wan I2V (cinematic, heavy — can OOM; pipeline falls back to kenburns). Default
+    'kenburns'."""
+    v = _load().get("facts_video_mode")
+    return v if v in ("kenburns", "wan") else "kenburns"
+
+
+def set_facts_video_mode(mode: str) -> None:
+    mode = (mode or "").strip().lower()
+    if mode not in ("kenburns", "wan"):
+        raise ValueError(f"Invalid facts_video_mode: {mode!r} (kenburns|wan).")
+    data = _load()
+    data["facts_video_mode"] = mode
+    _save(data)
+    log.info(f"Facts video mode: {mode}")
+
+
 _HORROR_QWEN_INSTRUCT = (
     "Read this aloud as a serious adult male narrator telling a horror story: "
     "slow, deep, calm and grave, with an unhurried, measured, steady delivery "
