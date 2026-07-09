@@ -1299,18 +1299,48 @@ async def _do_revision(channel, original_script: dict, notes: str, owner_id: int
 # DAILY JOB
 # ============================================================
 
+DAILY_FACTS_TOPICS = [
+    "the deep ocean", "black holes", "the human brain", "volcanoes", "ancient Egypt",
+    "the immune system", "outer space", "dinosaurs", "the Amazon rainforest", "sharks",
+    "the human heart", "Mars", "honeybees", "lightning", "the human eye", "Antarctica",
+    "octopuses", "the moon", "caffeine", "the Great Wall of China", "wolves", "gravity",
+    "the Sahara desert", "DNA", "tornadoes", "the Roman Empire", "whales", "the sun",
+    "spiders", "coffee", "the pyramids", "electricity", "penguins", "the internet",
+]
+
+
+def _daily_facts_topic() -> str:
+    """Rotate through the topic pool by date (stable per day)."""
+    import datetime as _dt
+    return DAILY_FACTS_TOPICS[_dt.date.today().toordinal() % len(DAILY_FACTS_TOPICS)]
+
+
 async def daily_auto_generation():
-    log.info("Daily auto-generation triggered.")
-    theme = get_theme_of_the_day()
-    for guild in bot.guilds:
-        target = get_channel_by_name(guild, "scripts")
-        if target:
-            await _generate_and_post(
-                target, theme,
-                requested_by_id=guild.owner_id,
-                requested_by_mention="daily scheduler",
-                is_auto=True,
-            )
+    """9am IST: auto-generate a Facts Shorts reel, ready to post to #videos."""
+    log.info("Daily facts auto-generation triggered.")
+    topic = _daily_facts_topic()
+    guild = bot.guilds[0] if bot.guilds else None
+    if not guild:
+        log.warning("Daily facts: no guild.")
+        return
+    v_channel = get_channel_by_name(guild, "videos")
+    ann = v_channel or get_channel_by_name(guild, "claw-bot")
+    from modules import facts_writer as fw
+    from modules import facts_pipeline as fp
+    if ann:
+        await ann.send(f"🗓️ **Daily facts reel** — topic: **{topic}**. Generating…")
+    try:
+        story = await asyncio.to_thread(fw.generate_facts_short, topic, 6)
+        out = await asyncio.to_thread(fp.render_facts, story)
+        if v_channel:
+            caption = (f"🗓️ **Daily Facts — {story.get('title', topic)}** · "
+                       f"{out.get('duration', 0):.0f}s · 9x16 · ready to post")
+            await _post_reel(v_channel, out.get("9x16"), caption)
+        log.info(f"Daily facts reel done: {story.get('title')}")
+    except Exception as e:
+        log.exception("Daily facts generation failed")
+        if ann:
+            await ann.send(f"❌ Daily facts failed: `{e}`")
 
 
 # ============================================================
