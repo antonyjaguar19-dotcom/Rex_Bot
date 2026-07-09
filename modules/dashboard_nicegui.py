@@ -109,6 +109,26 @@ try:
     app.add_static_files("/sb_static", str(STORYBOARDS_DIR))
 except Exception as _e:
     logging.getLogger("claw_bot.dashboard").warning(f"sb_static mount failed: {_e}")
+
+# Serve ALL of 04_Outputs as media so ui.video()/downloads work. Passing a raw
+# absolute path to ui.video() makes the browser treat it as a URL (it can't fetch
+# "E:\..."), so videos never played — this route fixes previews everywhere.
+OUTPUTS_DIR = PROJECT_ROOT / "04_Outputs"
+try:
+    app.add_media_files("/media", str(OUTPUTS_DIR))
+except Exception as _e:
+    logging.getLogger("claw_bot.dashboard").warning(f"media mount failed: {_e}")
+
+
+def _media_url(p) -> str:
+    """Map a file under 04_Outputs to its /media URL (with an mtime cache-buster)."""
+    p = Path(p)
+    try:
+        rel = p.resolve().relative_to(OUTPUTS_DIR).as_posix()
+    except Exception:
+        return str(p)
+    mt = int(p.stat().st_mtime) if p.exists() else 0
+    return f"/media/{rel}?v={mt}"
 if not DASHBOARD_PASSWORD:
     log.warning("DASHBOARD_PASSWORD not set — dashboard has NO login gate. "
                 "Do NOT expose it on a public tunnel until you set one.")
@@ -128,6 +148,7 @@ class State:
         self.script: Optional[dict] = None
         self.stage: str = "idle"  # idle | script | prompts | storyboard | video | final
         self.busy: bool = False
+        self.current_action: str = ""   # label of the running job (for the status strip)
         self.log_lines: list[str] = []
         self.song: Optional[dict] = None       # music-video pipeline: current song
         self.horror: Optional[dict] = None     # horror pipeline: current story
@@ -356,12 +377,14 @@ def _try_begin(label: str) -> bool:
                   type="negative")
         return False
     S.busy = True
+    S.current_action = label
     return True
 
 
 def _end():
     """Counterpart of _try_begin — call from the worker's finally block."""
     S.busy = False
+    S.current_action = ""
     job_lock.release()
 
 
@@ -1127,6 +1150,23 @@ def main_page():
                             ui.navigate.to("/login")
                         ui.button(icon="logout", on_click=_logout) \
                             .props("flat round color=white").tooltip("Log out")
+
+    # ============== STATUS STRIP (running / idle — visible in every tab) ==============
+    with ui.row().classes("w-full items-center gap-2") \
+            .style("padding: 6px 16px; background: rgba(0,0,0,0.18); "
+                   "border-bottom: 1px solid rgba(255,255,255,0.06);"):
+        status_spinner = ui.spinner(size="sm")
+        status_label = ui.label("Idle").classes("text-sm font-bold")
+
+    def _refresh_status():
+        if S.busy:
+            status_spinner.set_visibility(True)
+            status_label.text = f"⏳ Running: {S.current_action}…  (watch the log below)"
+            status_label.style("color:#ffcf5c;")
+        else:
+            status_spinner.set_visibility(False)
+            status_label.text = "✓ Idle — ready"
+            status_label.style("color:#6ee7a8;")
 
     # ============== LEFT NAV (vertical tabs) ==============
     # On phones Quasar hides the drawer off-canvas; the header ☰ button toggles
@@ -2058,7 +2098,9 @@ def main_page():
                     shot_n = 0
                 with ui.element("div").classes("rex-shot-card") \
                         .style("width: 320px;"):
-                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.video(_media_url(p)).style("border-radius: 8px; width: 100%;")
+                    ui.link("⬇ Download", _media_url(p)).props("download") \
+                        .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
                     ui.button("🔁 Regen shot",
                               on_click=lambda s=shot_n: regen_video_shot(s, full_refresh)) \
@@ -2082,7 +2124,9 @@ def main_page():
             for p in finals:
                 with ui.element("div").classes("rex-shot-card") \
                         .style("width: 360px;"):
-                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.video(_media_url(p)).style("border-radius: 8px; width: 100%;")
+                    ui.link("⬇ Download", _media_url(p)).props("download") \
+                        .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
     def render_facts_reel():
@@ -2100,7 +2144,9 @@ def main_page():
             else:
                 p = reels[0]
                 with ui.element("div").classes("rex-shot-card").style("width: 300px;"):
-                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.video(_media_url(p)).style("border-radius: 8px; width: 100%;")
+                    ui.link("⬇ Download", _media_url(p)).props("download") \
+                        .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
     def render_music_finals():
@@ -2118,7 +2164,9 @@ def main_page():
             else:
                 p = reels[0]
                 with ui.element("div").classes("rex-shot-card").style("width: 300px;"):
-                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.video(_media_url(p)).style("border-radius: 8px; width: 100%;")
+                    ui.link("⬇ Download", _media_url(p)).props("download") \
+                        .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
     def render_queue():
@@ -2171,6 +2219,7 @@ def main_page():
     def full_refresh():
         try:
             gpu_label.text = gpu_summary()
+            _refresh_status()
             refresh_stepper()
             render_script()
             render_prompts()
