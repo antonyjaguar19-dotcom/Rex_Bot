@@ -170,130 +170,114 @@ STAGES = ["script", "prompts", "storyboard", "video", "final"]
 # ==============================================================================
 
 CUSTOM_CSS = """
-:root {
-    --rex-pink: #ff6f91;
-    --rex-purple: #6c63ff;
-    --rex-mint: #43e8d8;
-    --rex-night: #0e0e1f;
+:root{
+  --rex-orange:#ff6a2b; --rex-orange-2:#ff4d0f;
+  --rex-steel:#c9d1dc; --rex-panel:rgba(255,255,255,0.045);
+  --rex-line:rgba(255,255,255,0.08);
 }
-body {
-    background: radial-gradient(circle at top right, #2a1f4a 0%, #0e0e1f 60%) !important;
-    color: #f1edff !important;
-    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif !important;
+body{
+  background:
+    radial-gradient(1100px 560px at 88% -12%, rgba(255,106,43,0.16), transparent 60%),
+    radial-gradient(820px 480px at -5% 108%, rgba(70,110,200,0.10), transparent 55%),
+    #0b0d12 !important;
+  color:#e9edf5 !important;
+  font-family:'Inter','Segoe UI',system-ui,sans-serif !important;
 }
-.q-page {
-    background: transparent !important;
+.q-page{background:transparent !important;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:rgba(255,106,43,0.35);border-radius:6px;}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,106,43,0.55);}
+::-webkit-scrollbar-track{background:transparent;}
+
+/* HERO with animated sheen */
+.rex-hero{
+  position:relative;overflow:hidden;
+  background:linear-gradient(120deg,#1b1e28 0%,#111319 62%);
+  border:1px solid var(--rex-line);border-radius:18px;padding:18px 26px;color:#fff;
+  box-shadow:0 12px 40px rgba(0,0,0,0.45);
 }
-.rex-hero {
-    background: linear-gradient(110deg, #ff6f91 0%, #6c63ff 55%, #43e8d8 100%);
-    border-radius: 16px;
-    padding: 18px 26px;
-    color: white;
-    box-shadow: 0 6px 22px rgba(108,99,255,0.28);
+.rex-hero:before{
+  content:"";position:absolute;top:0;bottom:0;left:0;width:40%;
+  background:linear-gradient(90deg,transparent,rgba(255,106,43,0.10),transparent);
+  animation:sheen 6.5s linear infinite;
 }
-.rex-card {
-    background: rgba(255,255,255,0.035) !important;
-    border: 1px solid rgba(255,255,255,0.07) !important;
-    border-radius: 14px !important;
-    box-shadow: 0 3px 14px rgba(0,0,0,0.22);
+@keyframes sheen{0%{transform:translateX(-120%);}100%{transform:translateX(360%);}}
+
+/* GLASS CARDS */
+.rex-card{
+  background:var(--rex-panel) !important;border:1px solid var(--rex-line) !important;
+  border-radius:16px !important;box-shadow:0 6px 24px rgba(0,0,0,0.30);
+  backdrop-filter:blur(6px);margin-bottom:14px;
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;
 }
-/* Left-nav drawer + vertical tabs */
-.rex-drawer {
-    background: rgba(14,14,31,0.92) !important;
-    border-right: 1px solid rgba(255,255,255,0.06) !important;
+.rex-card:hover{
+  transform:translateY(-2px);border-color:rgba(255,106,43,0.35) !important;
+  box-shadow:0 12px 32px rgba(255,106,43,0.12);
 }
-.rex-nav .q-tab {
-    justify-content: flex-start !important;
-    min-height: 46px;
-    border-radius: 10px;
-    margin: 2px 6px;
-    color: #c8c3e0 !important;
+
+/* DRAWER + NAV */
+.rex-drawer{
+  background:linear-gradient(180deg,#0f1218,#0b0d12) !important;
+  border-right:1px solid var(--rex-line) !important;
 }
-.rex-nav .q-tab--active {
-    background: linear-gradient(120deg, rgba(255,111,145,0.22), rgba(108,99,255,0.22)) !important;
-    color: #fff !important;
+.rex-nav .q-tab{
+  justify-content:flex-start !important;min-height:48px;border-radius:12px;
+  margin:3px 8px;color:#aab2c2 !important;font-weight:600;transition:all .15s ease;
 }
-.rex-nav .q-tab__indicator { display: none; }
-.rex-section-title {
-    font-size: 20px; font-weight: 700; margin-bottom: 4px;
+.rex-nav .q-tab:hover{background:rgba(255,255,255,0.05) !important;color:#fff !important;}
+.rex-nav .q-tab--active{
+  background:linear-gradient(120deg,rgba(255,106,43,0.24),rgba(255,77,15,0.10)) !important;
+  color:#fff !important;box-shadow:inset 3px 0 0 var(--rex-orange);
 }
-.rex-step {
-    display: flex; align-items: center; justify-content: center;
-    width: 44px; height: 44px; border-radius: 50%;
-    background: rgba(255,255,255,0.08); color: #f1edff;
-    font-weight: 700; font-size: 16px; border: 2px solid rgba(255,255,255,0.12);
-    transition: all 0.4s ease;
+.rex-nav .q-tab__indicator{display:none;}
+
+.rex-section-title{font-size:20px;font-weight:800;margin-bottom:4px;letter-spacing:.2px;}
+
+/* STEPPER */
+.rex-step{display:flex;align-items:center;justify-content:center;width:44px;height:44px;
+  border-radius:50%;background:rgba(255,255,255,0.06);color:#e9edf5;font-weight:800;
+  border:2px solid var(--rex-line);transition:all .4s ease;}
+.rex-step.active{background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2));
+  border-color:#fff;transform:scale(1.15);box-shadow:0 0 22px rgba(255,106,43,0.7);}
+.rex-step.done{background:linear-gradient(120deg,#3ad29c,#1ea97a);border-color:rgba(255,255,255,0.4);}
+.rex-step-line{flex:1;height:3px;background:rgba(255,255,255,0.08);margin:0 4px;border-radius:2px;}
+.rex-step-line.done{background:linear-gradient(90deg,#3ad29c,var(--rex-orange));box-shadow:0 0 10px rgba(255,106,43,0.4);}
+
+/* BUTTONS */
+.rex-btn-primary{
+  background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2)) !important;
+  color:#fff !important;font-weight:700 !important;border-radius:14px !important;
+  padding:12px 24px !important;box-shadow:0 8px 24px rgba(255,106,43,0.35) !important;
+  transition:transform .15s ease,box-shadow .15s ease !important;letter-spacing:.3px;
 }
-.rex-step.active {
-    background: linear-gradient(120deg, #ff6f91, #6c63ff);
-    border-color: white;
-    transform: scale(1.15);
-    box-shadow: 0 0 22px rgba(255,111,145,0.7);
-}
-.rex-step.done {
-    background: linear-gradient(120deg, #43e8d8, #6c63ff);
-    border-color: rgba(255,255,255,0.4);
-}
-.rex-step-line {
-    flex: 1; height: 3px; background: rgba(255,255,255,0.08);
-    margin: 0 4px; border-radius: 2px;
-}
-.rex-step-line.done {
-    background: linear-gradient(90deg, #43e8d8, #6c63ff);
-    box-shadow: 0 0 10px rgba(67,232,216,0.5);
-}
-.rex-btn-primary {
-    background: linear-gradient(120deg, #ff6f91, #6c63ff) !important;
-    color: white !important;
-    font-weight: 600 !important;
-    border-radius: 14px !important;
-    padding: 12px 24px !important;
-    box-shadow: 0 6px 20px rgba(255,111,145,0.4) !important;
-    transition: transform 0.15s ease !important;
-}
-.rex-btn-primary:hover {
-    transform: translateY(-2px) scale(1.03) !important;
-}
-.rex-pulse {
-    animation: pulse 2s infinite;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-.rex-shot-card {
-    background: rgba(255,255,255,0.05) !important;
-    border-radius: 12px !important;
-    padding: 10px !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    transition: all 0.2s ease;
-}
-.rex-shot-card.approved {
-    border-color: rgba(67,232,216,0.5) !important;
-    box-shadow: 0 0 18px rgba(67,232,216,0.25) !important;
-}
-.rex-badge {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 14px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-}
-.rex-badge-pink { background: linear-gradient(120deg, #ff6f91, #ff3d6f); color: white; }
-.rex-badge-purple { background: linear-gradient(120deg, #6c63ff, #4a3dff); color: white; }
-.rex-badge-mint { background: linear-gradient(120deg, #43e8d8, #1ec5b5); color: #0e0e1f; }
-.rex-log {
-    background: rgba(0,0,0,0.35) !important;
-    border-radius: 12px !important;
-    padding: 14px !important;
-    font-family: 'JetBrains Mono', 'Consolas', monospace !important;
-    font-size: 12px !important;
-    color: #b8b3d4 !important;
-    max-height: 280px;
-    overflow-y: auto;
-}
+.rex-btn-primary:hover{transform:translateY(-2px) scale(1.02) !important;
+  box-shadow:0 12px 30px rgba(255,106,43,0.5) !important;}
+
+.rex-pulse{animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
+
+/* MEDIA CARDS */
+.rex-shot-card{background:rgba(255,255,255,0.05) !important;border-radius:14px !important;
+  padding:10px !important;border:1px solid var(--rex-line) !important;transition:all .2s ease;}
+.rex-shot-card:hover{border-color:rgba(255,106,43,0.4) !important;transform:translateY(-1px);}
+.rex-shot-card.approved{border-color:rgba(58,210,156,0.6) !important;box-shadow:0 0 18px rgba(58,210,156,0.22) !important;}
+
+/* BADGES */
+.rex-badge{display:inline-block;padding:4px 12px;border-radius:14px;font-size:11px;
+  font-weight:800;letter-spacing:.6px;text-transform:uppercase;}
+.rex-badge-pink{background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2));color:#fff;}
+.rex-badge-purple{background:linear-gradient(120deg,#5b6cff,#3a3dff);color:#fff;}
+.rex-badge-mint{background:linear-gradient(120deg,#3ad29c,#1ea97a);color:#08130f;}
+
+/* LOG */
+.rex-log{background:rgba(0,0,0,0.4) !important;border:1px solid var(--rex-line) !important;
+  border-radius:12px !important;padding:14px !important;
+  font-family:'JetBrains Mono','Consolas',monospace !important;font-size:12px !important;
+  color:#9fb0c8 !important;max-height:280px;overflow-y:auto;}
+
+/* nicer inputs */
+.q-field--outlined .q-field__control{border-radius:12px !important;}
+.q-field--outlined .q-field__control:before{border-color:var(--rex-line) !important;}
 """
 
 
@@ -1137,9 +1121,13 @@ def main_page():
                     ui.button(icon="menu", on_click=lambda: nav_drawer.toggle()) \
                         .props("flat round color=white").tooltip("Menu")
                     with ui.column().classes("gap-0"):
-                        ui.label("🎬 Rex VFX Bot").classes("text-2xl font-bold")
-                        ui.label("Claw Dashboard — script to short film, all in browser.") \
-                            .classes("text-xs opacity-90")
+                        ui.label("🦖 REXJAW STUDIO") \
+                            .classes("text-2xl font-bold") \
+                            .style("letter-spacing:1.5px;background:linear-gradient("
+                                   "120deg,#ff6a2b,#ffd0a8);-webkit-background-clip:text;"
+                                   "-webkit-text-fill-color:transparent;")
+                        ui.label("AI shorts factory — facts · music · stories, right in your browser.") \
+                            .classes("text-xs opacity-80")
                 with ui.row().classes("items-center gap-2"):
                     gpu_label = ui.label(gpu_summary()).classes("text-sm font-bold").style(
                         "background: rgba(0,0,0,0.25); padding: 8px 14px; border-radius: 12px;"
