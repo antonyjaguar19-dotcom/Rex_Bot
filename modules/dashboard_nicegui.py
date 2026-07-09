@@ -1137,6 +1137,7 @@ def main_page():
         with ui.tabs().props("vertical").classes("rex-nav w-full") as nav_tabs:
             tab_pipeline = ui.tab("Pipeline", icon="movie")
             tab_facts = ui.tab("Facts", icon="lightbulb")
+            tab_music = ui.tab("Music", icon="music_note")
             tab_settings = ui.tab("Settings", icon="tune")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
@@ -1150,6 +1151,7 @@ def main_page():
     with panels:
         pipeline_panel = ui.tab_panel(tab_pipeline).classes("w-full")
         facts_panel = ui.tab_panel(tab_facts).classes("w-full")
+        music_panel = ui.tab_panel(tab_music).classes("w-full")
         settings_panel = ui.tab_panel(tab_settings).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
@@ -1190,14 +1192,14 @@ def main_page():
         .style("margin: 0 0 12px 0; padding: 0 8px;")
     with mode_row:
         ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
-        # Facts has its own left-nav tab, so it's not in this mode toggle.
-        _mode_opts = {"story": "📖 Story", "music_video": "🎵 Music"}
+        # Facts + Music each have their own left-nav tab now; Pipeline = Story.
+        _mode_opts = {"story": "📖 Story"}
         _cur_mode = rs.get_pipeline_mode()
         mode_toggle = ui.toggle(
             _mode_opts,
             value=_cur_mode if _cur_mode in _mode_opts else "story",
         ).props("dense")
-        ui.label("Story = kids story · Music = song + video · (Facts = left-nav tab)") \
+        ui.label("Story pipeline · Music + Facts are in the left nav") \
             .classes("text-xs opacity-60")
 
     # ============== STAGE 1 — SCRIPT ==============
@@ -1269,8 +1271,9 @@ def main_page():
             ui.label("🎵 Music Video").classes("text-xl font-bold")
             ui.element("span").classes("rex-badge rex-badge-purple") \
                 .style("margin-left: 8px;")._props["innerHTML"] = "SONG"
-        ui.label("Set pipeline mode to music_video in Settings. Song style / vocal / "
-                 "visual are picked there (or auto).").classes("text-xs opacity-70")
+        ui.label("ACE-Step song + Ken Burns visuals (9x16/16x9/1x1). Style / vocal / "
+                 "tempo / visual set in Settings or the Discord panel (or auto).") \
+            .classes("text-xs opacity-70")
 
         with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
             song_theme = ui.input(label="Song theme",
@@ -1304,6 +1307,9 @@ def main_page():
         ui.button("✅ Approve Song → Render Music Video",
                   on_click=lambda: render_musicvideo_action(full_refresh)) \
             .classes("rex-btn-primary").style("margin-top: 12px;")
+
+        ui.label("Latest music video:").classes("text-xs opacity-70").style("margin-top: 10px;")
+        music_container = ui.column().classes("w-full")
 
     # ============== HORROR STORY (mode: horror_story) ==============
     with ui.card().classes("rex-card w-full") as card_horror:
@@ -1679,7 +1685,7 @@ def main_page():
     mode_row.move(pipeline_panel)
     stepper_row.move(pipeline_panel)
     card_script.move(pipeline_panel)
-    card_musicvideo.move(pipeline_panel)
+    card_musicvideo.move(music_panel)
     card_horror.move(pipeline_panel)
     card_facts.move(facts_panel)
     card_prompts.move(pipeline_panel)
@@ -1699,9 +1705,8 @@ def main_page():
         m = rs.get_pipeline_mode()
         for c in _story_cards:
             c.set_visibility(m == "story")
-        card_musicvideo.set_visibility(m == "music_video")
         card_horror.set_visibility(m == "horror_story")
-        # Facts has its own left-nav tab (card_facts) — nothing to toggle here.
+        # Music + Facts have their own left-nav tabs — nothing to toggle here.
 
     _MODE_LABEL = {"story": "Story", "music_video": "Music video",
                    "horror_story": "Horror", "facts": "Facts"}
@@ -2098,6 +2103,24 @@ def main_page():
                     ui.video(str(p)).style("border-radius: 8px; width: 100%;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
+    def render_music_finals():
+        fdir = PROJECT_ROOT / "04_Outputs" / "final"
+        reels = (sorted(fdir.glob("song_*_9x16.mp4"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+                 if fdir.exists() else [])
+        sig = tuple((str(p), p.stat().st_mtime_ns) for p in reels) or ("none",)
+        if not _changed("music", sig):
+            return
+        music_container.clear()
+        with music_container:
+            if not reels:
+                ui.label("_(no music video yet — Generate Song, then render)_").classes("opacity-60")
+            else:
+                p = reels[0]
+                with ui.element("div").classes("rex-shot-card").style("width: 300px;"):
+                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.label(p.name).classes("text-xs opacity-75")
+
     def render_queue():
         try:
             items = pf.list_all()
@@ -2155,6 +2178,7 @@ def main_page():
             render_video()
             render_final()
             render_facts_reel()
+            render_music_finals()
             render_queue()
             render_log()
         except Exception as e:
