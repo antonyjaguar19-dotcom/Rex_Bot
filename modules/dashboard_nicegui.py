@@ -1190,13 +1190,14 @@ def main_page():
         .style("margin: 0 0 12px 0; padding: 0 8px;")
     with mode_row:
         ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
-        _mode_opts = {"story": "📖 Story", "music_video": "🎵 Music", "facts": "💡 Facts"}
+        # Facts has its own left-nav tab, so it's not in this mode toggle.
+        _mode_opts = {"story": "📖 Story", "music_video": "🎵 Music"}
         _cur_mode = rs.get_pipeline_mode()
         mode_toggle = ui.toggle(
             _mode_opts,
             value=_cur_mode if _cur_mode in _mode_opts else "story",
         ).props("dense")
-        ui.label("Story = kids story · Music = song + video · Facts = 9x16 facts reel") \
+        ui.label("Story = kids story · Music = song + video · (Facts = left-nav tab)") \
             .classes("text-xs opacity-60")
 
     # ============== STAGE 1 — SCRIPT ==============
