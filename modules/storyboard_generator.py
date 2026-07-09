@@ -283,11 +283,24 @@ def _save_manifest(result: StoryboardResult):
 # ==============================================================================
 
 def _kids_backend():
-    """Kids storytelling renders on SDXL + style-LoRA + IP-Adapter for character
-    consistency (cast-sheet anchored). This is pinned HERE rather than via the
-    global `active` backend so the other modes are untouched — horror pins
-    flux_lora itself, music keeps the active backend. Falls back to the active
-    backend if SDXL+IPA is unavailable/unhealthy."""
+    """Kids storytelling character-consistency backend, pinned HERE (not via the
+    global `active`) so other modes are untouched.
+
+    Preference order:
+      1. USO (Flux.1-dev + USO LoRA) — single-image subject consistency, when
+         `uso_mode` is enabled (default). Best drift fix, works for any cast type.
+      2. SDXL + style-LoRA + IP-Adapter — previous kids backend.
+      3. Active backend — last resort.
+    Each step is tried only if healthy; falls through on failure."""
+    try:
+        if rs.get_uso_mode_enabled():
+            b = ib.get_named_backend("comfyui_uso")
+            ok, _msg = b.health_check()
+            if ok:
+                return b
+            log.warning(f"USO backend unhealthy ({_msg}); trying SDXL+IPA.")
+    except Exception as e:
+        log.warning(f"USO backend unavailable ({e}); trying SDXL+IPA.")
     try:
         import importlib
         cfg = model_registry.get_available("image_backend", "comfyui_sdxl_ipadapter")
@@ -301,6 +314,13 @@ def _kids_backend():
     except Exception as e:
         log.warning(f"SDXL+IPA backend unavailable ({e}); using active backend.")
     return ib.get_active_backend()
+
+
+def _backend_uses_references(backend) -> bool:
+    """USO needs the cast-sheet cascade even when reference_mode is off — the
+    reference IS the consistency mechanism. Detect it so generate_storyboard
+    always builds character sheets when USO is active."""
+    return getattr(backend, "backend_id", "") == "comfyui_uso"
 
 
 def _generate_cast_sheet(script: dict, script_id: str, backend, aspect_ratio: str):
@@ -472,6 +492,25 @@ def _shot_present_chars(script: dict, shot: dict) -> list:
     return out
 
 
+def _ensure_locked_tokens(script: dict, shot: dict, prompt: str) -> str:
+    """Guarantee every character present in this shot has its locked_visual_token
+    in the prompt. A user-edited or feedback-rewritten prompt can silently drop the
+    locked look (clothing/color/species); the reference holds identity but text can
+    override it — so re-append any missing locked token to hold consistency."""
+    p = (prompt or "").strip()
+    low = p.lower()
+    for name in _shot_present_chars(script, shot):
+        c = next((x for x in script.get("characters", [])
+                  if isinstance(x, dict) and x.get("name") == name), None)
+        if not c:
+            continue
+        tok = (c.get("locked_visual_token") or "").strip()
+        if tok and tok.lower() not in low:
+            p = f"{p}, {tok}"
+            low = p.lower()
+    return p
+
+
 def _shot_reference(script: dict, shot: dict, sheets: dict, story_dir: Path) -> list:
     """Per-shot IP-Adapter reference set — a LIST of this shot's character solo
     sheets. The backend feeds 2+ as an image BATCH (combine_embeds=concat) so
@@ -554,7 +593,10 @@ def generate_storyboard(
     except Exception:
         MINIMAL_STYLES = {"stickman"}
     minimal_style = (script.get("style") or "").strip().lower() in MINIMAL_STYLES
-    if rs.get_reference_mode_enabled() and not minimal_style:
+    # USO always uses the cast-sheet cascade (its consistency comes from the
+    # reference); other backends only when reference_mode is opted in.
+    use_refs = rs.get_reference_mode_enabled() or _backend_uses_references(backend)
+    if use_refs and not minimal_style:
         if progress_callback:
             progress_callback("Generating per-character reference sheets...", 0, len(shots))
         char_sheets = _generate_character_sheets(script, script_id, backend)
@@ -610,8 +652,8 @@ def generate_storyboard(
                 approved_img_prompt = (approved.get("image_prompt") or "").strip()
                 approved_img_seed = approved.get("image_seed", -1)
                 if approved_img_prompt:
-                    formatted = approved_img_prompt
-                    log.info(f"[{current}/{total}] Using user-approved image prompt for shot {shot_num}")
+                    formatted = _ensure_locked_tokens(script, shot, approved_img_prompt)
+                    log.info(f"[{current}/{total}] Using user-approved image prompt for shot {shot_num} (+locked tokens)")
                 else:
                     # FALLBACK: legacy on-the-fly assembly (no approval pass run)
                     try:
@@ -771,6 +813,8 @@ def regenerate_shot(
     frames_to_redo = ["first", "last"] if which_frame == "both" else [which_frame]
 
     backend = _kids_backend()
+    log.info(f"Regen shot{shot_number}: backend = {backend.__class__.__module__} "
+             f"(reference-consistency {'ON' if _backend_uses_references(backend) else 'off'})")
     story_dir = STORYBOARDS_DIR / script_id
     story_dir.mkdir(parents=True, exist_ok=True)
 
@@ -782,8 +826,9 @@ def regenerate_shot(
         approved_img_prompt = (approved.get("image_prompt") or "").strip()
         approved_img_seed = approved.get("image_seed", -1)
         if approved_img_prompt:
-            formatted = approved_img_prompt
-            log.info(f"Regen shot{shot_number} {frame_type}: using user-approved prompt")
+            formatted = _ensure_locked_tokens(script, shot, approved_img_prompt)
+            log.info(f"Regen shot{shot_number} {frame_type}: using user-approved prompt "
+                     f"(+locked tokens re-checked)")
         else:
             try:
                 formatted = pa.assemble_image_prompt(
@@ -841,7 +886,7 @@ def regenerate_shot(
             MINIMAL_STYLES = {"stickman"}
         minimal_style = (script.get("style") or "").strip().lower() in MINIMAL_STYLES
         shot_refs = []
-        if rs.get_reference_mode_enabled() and not minimal_style:
+        if (rs.get_reference_mode_enabled() or _backend_uses_references(backend)) and not minimal_style:
             sheets = {}
             for c in script.get("characters", []):
                 if isinstance(c, dict) and c.get("name"):

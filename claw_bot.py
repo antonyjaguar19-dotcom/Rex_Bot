@@ -81,6 +81,15 @@ STATS_FILE = CONFIG_DIR / "stats.json"
 # ============================================================
 
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+# Windows console / redirected stdout defaults to cp1252 → emoji and "→" in log
+# lines raise UnicodeEncodeError inside the StreamHandler (noisy, can mask real
+# errors). Force utf-8 so log output never chokes.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -548,6 +557,36 @@ async def _btn_shot_edit_prompt(interaction, script_id, shot_number, owner_id, n
         await channel.send(f"❌ Regen failed: `{e}`")
 
 
+def _persist_image_prompt(script_id, shot_n, new_prompt):
+    """Save a shot's image prompt + a fresh seed + mark approved. Returns seed."""
+    import random as _rnd
+    state = pap.load_approved_prompts(script_id) or {"script_id": script_id, "prompts": {}}
+    entry = state.setdefault("prompts", {}).setdefault(str(shot_n), {})
+    entry["image_prompt"] = new_prompt
+    entry["image_seed"] = _rnd.randint(1, 2_147_483_647)
+    entry["approved"] = True
+    pap._save(state)
+    pap._ACTIVE_STATES[script_id] = state
+    return entry["image_seed"]
+
+
+def _revise_image_prompt(current: str, notes: str) -> str:
+    """Rewrite an image-generation prompt to incorporate the user's feedback (LLM).
+    Falls back to appending the note (diffusion prompts are additive) if the LLM
+    is unavailable."""
+    from modules.script_generator import _call_llm
+    sys_p = ("You revise text-to-image generation prompts. Given a CURRENT prompt "
+             "and user FEEDBACK, output ONE improved prompt that keeps the scene and "
+             "characters intact but applies the feedback. Concrete and visual. Output "
+             "ONLY the revised prompt text — no quotes, no explanation.")
+    user_p = f"CURRENT PROMPT:\n{current}\n\nFEEDBACK:\n{notes}\n\nRevised prompt:"
+    try:
+        out = (_call_llm(user_p, sys_p, role="creative") or "").strip()
+        return out or f"{current}, {notes}".strip(", ")
+    except Exception:
+        return f"{current}, {notes}".strip(", ")
+
+
 async def _btn_clip_edit_prompt(interaction, script_id, shot_number, owner_id, new_prompt):
     """Edit the user-approved motion prompt then regen the video clip."""
     channel = interaction.channel
@@ -660,6 +699,24 @@ async def _btn_shot_regen(interaction, script_id, shot_number, owner_id, notes="
     await channel.send(
         f"🔁 **Regenerating shot {shot_n}** of `{script_id}`…{note_line}"
     )
+
+    # Apply the user's feedback to the shot's image prompt BEFORE regen. Previously
+    # the notes were only echoed and thrown away — the regen ignored them entirely.
+    if notes and notes.strip():
+        try:
+            cur = (pap.get_shot_prompts(script_id, shot_n) or {}).get("image_prompt", "").strip()
+            if cur:
+                revised = await asyncio.to_thread(_revise_image_prompt, cur, notes)
+                new_seed = _persist_image_prompt(script_id, shot_n, revised)
+                await channel.send(
+                    f"🧠 Applied your notes to shot {shot_n}'s prompt · new seed `{new_seed}`.")
+            else:
+                await channel.send(
+                    "ℹ️ No approved prompt yet for this shot — regenerating from the "
+                    "script; use ✏️ Edit prompt to steer it directly.")
+        except Exception as e:
+            log.exception("apply-feedback failed")
+            await channel.send(f"⚠️ Couldn't apply notes ({e}); regenerating as-is.")
 
     # Delete the old storyboard approval message (and its stale buttons), if any,
     # so the new one posts fresh at the bottom of the chat.
@@ -1482,6 +1539,9 @@ async def on_ready():
                     "set_visual_style":    cmd_set_visual_style,
                     "make_horror":         cmd_make_horror,
                     "set_horror_ambient":  cmd_set_horror_ambient,
+                    "make_facts":          cmd_make_facts,
+                    "set_facts_voice":     cmd_set_facts_voice,
+                    "set_facts_speed":     cmd_set_facts_speed,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -2542,6 +2602,9 @@ async def cmd_generate_script(ctx, *, theme: str = None):
         return
     if _mode == "horror_story":
         await cmd_make_horror(ctx, theme=theme)
+        return
+    if _mode == "facts":
+        await cmd_make_facts(ctx, topic=theme)
         return
 
     if theme is None:
@@ -4590,6 +4653,154 @@ async def cmd_set_horror_ambient(ctx, value: str = None):
     on = value.strip().lower() in ("on", "true", "yes", "1")
     rs.set_horror_ambient_enabled(on)
     await ctx.send(f"✅ Horror ambient bed → `{'on' if on else 'off'}`.")
+
+
+def _facts_compress(src: Path, dst: Path) -> Path:
+    """Re-encode a reel under Discord's ~10 MB unboosted cap for phone preview."""
+    import subprocess
+    from modules.assembly import FFMPEG_EXE
+    subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-c:v", "libx264", "-crf", "28", "-maxrate", "1400k", "-bufsize", "2800k",
+         "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+         str(dst)], timeout=600, check=True)
+    return dst
+
+
+async def _post_reel(channel, path, caption: str = ""):
+    """Post a reel to a channel; auto-compress if over Discord's limit, else link."""
+    p = Path(path)
+    if not p.exists():
+        await channel.send(f"⚠️ reel not found at `{p}`"); return
+    size_mb = p.stat().st_size / (1024 * 1024)
+    send = p
+    if size_mb > 9:
+        try:
+            dst = p.with_name(p.stem + "_discord.mp4")
+            await asyncio.to_thread(_facts_compress, p, dst)
+            if dst.exists() and dst.stat().st_size / (1024 * 1024) <= 9.5:
+                send = dst
+        except Exception:
+            log.exception("facts compress failed")
+    if send.stat().st_size / (1024 * 1024) <= 9.8:
+        if caption:
+            await channel.send(caption)
+        await channel.send(file=discord.File(str(send)))
+    else:
+        await channel.send(
+            f"{caption}\n📁 `{p.name}` ({size_mb:.1f} MB) — too large to upload. "
+            f"Full-quality file saved at:\n`{p}`")
+
+
+@bot.command(name="facts", aliases=["make_facts", "fact"])
+async def cmd_make_facts(ctx, *, topic: str = None):
+    """Facts Shorts pipeline: write true facts about a topic → render a 9x16
+    reel (energetic voice, creative images, read-along subs) → post to #videos."""
+    if not topic or not topic.strip():
+        await ctx.send("Usage: `!facts <topic>` — e.g. `!facts the deep ocean`")
+        return
+    topic = topic.strip()
+
+    is_safe, blocked, _ = check_safety({"theme": topic})
+    if not is_safe:
+        await ctx.send(f"🚨 Topic blocked. Unsafe words: `{', '.join(blocked)}`.")
+        return
+
+    from modules import facts_writer as fw
+    from modules import facts_pipeline as fp
+    loop = asyncio.get_running_loop()
+
+    async def _edit(msg):
+        try:
+            await status.edit(content=msg)
+        except Exception:
+            pass
+
+    def _cb(prefix):
+        return lambda m: asyncio.run_coroutine_threadsafe(_edit(f"{prefix} {m}"), loop)
+
+    status = await ctx.send(f"🧠 **Facts Mode** — writing facts about **{topic}**…")
+    try:
+        story = await asyncio.to_thread(fw.generate_facts_short, topic, 6, _cb("🧠"))
+    except Exception as e:
+        log.exception("Facts writing failed")
+        await _edit(f"❌ Facts writing failed: `{e}`"); return
+
+    # Show the written facts as an embed — a clear, visible "action" (like the
+    # script embed in story mode).
+    emb = discord.Embed(
+        title=f"💡 {story['title']}",
+        description=f"_{story['beats'][0]['narration']}_",
+        color=discord.Color.blurple(),
+    )
+    for b in story["beats"]:
+        if b.get("kind") == "fact":
+            emb.add_field(name=f"#{b['index']} · {b['on_screen']}",
+                          value=(b.get("narration") or "")[:200], inline=False)
+    emb.set_footer(text=f"Topic: {topic} · voice {rs.get_facts_voice()} @ "
+                        f"{rs.get_facts_voice_speed()}x · 9x16 IG reel")
+    await ctx.send(embed=emb)
+
+    # Milestone progress — post each render stage as its OWN message so the whole
+    # pipeline is visible in Discord (not a single silently-edited line).
+    _seen = set()
+
+    async def _post(text):
+        try:
+            await ctx.send(text)
+        except Exception:
+            pass
+
+    def _render_cb(m):
+        ml = (m or "").lower()
+        stages = (
+            ("voicing", f"🎙️ Voicing narration (kokoro {rs.get_facts_voice()})…"),
+            ("building", "🖼️ Generating the fact images…"),
+            ("assembling", "🎬 Assembling the reel (Ken Burns + captions)…"),
+        )
+        for key, label in stages:
+            if key in ml and key not in _seen:
+                _seen.add(key)
+                asyncio.run_coroutine_threadsafe(_post(label), loop)
+                break
+
+    await _edit("🎬 Rendering reel… ~4 min")
+    try:
+        out = await asyncio.to_thread(fp.render_facts, story, _render_cb)
+    except Exception as e:
+        log.exception("Facts render failed")
+        await _edit(f"❌ Facts render failed: `{e}`"); return
+    await status.edit(content="✅ Reel rendered — uploading…")
+
+    v_channel = get_channel_by_name(ctx.guild, "videos") or ctx.channel
+    caption = (f"🎬 **{story['title']}** — facts reel · 9x16 · "
+               f"{out.get('duration', 0):.0f}s · IG-ready")
+    await _post_reel(v_channel, out.get("9x16"), caption)
+    try:
+        if getattr(v_channel, "id", None) != getattr(ctx.channel, "id", None):
+            await ctx.send(f"✅ Done — reel posted in {v_channel.mention}.")
+    except Exception:
+        pass
+
+
+@bot.command(name="set_facts_voice", aliases=["facts_voice"])
+async def cmd_set_facts_voice(ctx, voice: str = None):
+    """Set the facts narrator voice (af_bella / af_nicole / af_sky / am_adam / am_michael)."""
+    if not voice:
+        await ctx.send(f"🎙️ Facts voice: `{rs.get_facts_voice()}` @ {rs.get_facts_voice_speed()}x")
+        return
+    rs.set_facts_voice(voice.strip())
+    await ctx.send(f"✅ Facts voice → `{rs.get_facts_voice()}`.")
+
+
+@bot.command(name="set_facts_speed", aliases=["facts_speed"])
+async def cmd_set_facts_speed(ctx, speed: float = None):
+    """Set the facts narrator pacing (e.g. 0.92 calm, 1.06 lively, 1.20 excited)."""
+    if speed is None:
+        await ctx.send(f"⏩ Facts speed: `{rs.get_facts_voice_speed()}x`")
+        return
+    rs.set_facts_voice_speed(float(speed))
+    await ctx.send(f"✅ Facts speed → `{rs.get_facts_voice_speed()}x`.")
 
 
 if __name__ == "__main__":

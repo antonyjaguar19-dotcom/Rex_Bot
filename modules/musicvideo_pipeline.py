@@ -93,24 +93,51 @@ def render_musicvideo(
     )
     _p(f"🎵 song ready: {song_audio.name}")
 
-    # ---- 2. Scene stills (Z-Image, no character logic) ----
+    # ---- 2. Scene stills ----
+    # USO mode (default): render scene 0 as the visual ANCHOR, then reference it
+    # for every later scene so the protagonist/look stays consistent across the
+    # whole music video. USO off -> previous behaviour (active backend, no
+    # consistency). Falls back cleanly if USO is unhealthy.
     gpu_utils.free_comfyui_vram()
-    img = image_backend.get_active_backend()
+    use_uso = rs.get_uso_mode_enabled()
+    if use_uso:
+        try:
+            img = image_backend.get_named_backend("comfyui_uso")
+            ok, _msg = img.health_check()
+            if not ok:
+                _p(f"USO unhealthy ({_msg}); music stills use active backend.")
+                img = image_backend.get_active_backend()
+                use_uso = False
+        except Exception as e:
+            _p(f"USO unavailable ({e}); music stills use active backend.")
+            img = image_backend.get_active_backend()
+            use_uso = False
+    else:
+        img = image_backend.get_active_backend()
+
     out_dir = STILLS_DIR / f"song_{song_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     scene_images: list[Path] = []
+    anchor: Optional[Path] = None
     for i, sc in enumerate(scenes):
         _p(f"🖼️ scene {i+1}/{len(scenes)}...")
         prompt = _scene_prompt(song, sc)
         seed = random.randint(1, 2**31 - 1)
-        path = img.generate(
+        gen_kwargs = dict(
             prompt=prompt,
             aspect_ratio=aspect,
             seed=seed,
             output_filename=str(out_dir / f"scene_{i:03d}.png"),
         )
-        scene_images.append(Path(path))
+        if use_uso and anchor is not None:
+            path = img.generate(reference_image=anchor, **gen_kwargs)
+        else:
+            path = img.generate(**gen_kwargs)
+        p = Path(path)
+        scene_images.append(p)
+        if use_uso and anchor is None:
+            anchor = p  # first scene becomes the consistency anchor
 
     # ---- 3. Assemble Ken Burns + song ----
     _p("🎬 assembling music video...")

@@ -29,6 +29,7 @@ from modules.subtitles import (
     distribute_lines_over_windows, align_lines_to_words,
 )
 from modules import lyric_aligner
+from modules import runtime_settings as rs
 
 log = logging.getLogger("claw_bot.musicvideo_assembly")
 
@@ -50,7 +51,7 @@ def _ken_burns_segment(image_path: Path, seconds: float, w: int, h: int,
     """
     frames = max(1, round(seconds * FPS))
 
-    # Mild zoom (≤1.12) so the inward crop stays sharp without supersampling.
+    # Mild zoom (≤1.12) so the inward crop stays sharp.
     if zoom_in:
         zexpr = f"min(zoom+{0.12/frames:.6f},1.12)"
     else:
@@ -58,11 +59,16 @@ def _ken_burns_segment(image_path: Path, seconds: float, w: int, h: int,
     xexpr = "iw/2-(iw/zoom/2)"
     yexpr = "ih/2-(ih/zoom/2)"
 
-    # Pre-scale the still to COVER the target, then zoompan zooms in within it.
+    # SUPERSAMPLE: zoompan rounds x/y to whole pixels EACH frame, so at native
+    # size the pan jitters ~1px = visible wobble. Do the zoompan on a 2x canvas
+    # then downscale — each integer step becomes sub-pixel = smooth motion.
+    SS = 2
+    sw, sh = w * SS, h * SS
     vf = (
-        f"scale={w}:{h}:force_original_aspect_ratio=increase,"
-        f"crop={w}:{h},"
-        f"zoompan=z='{zexpr}':x='{xexpr}':y='{yexpr}':d={frames}:s={w}x{h}:fps={FPS},"
+        f"scale={sw}:{sh}:force_original_aspect_ratio=increase,"
+        f"crop={sw}:{sh},"
+        f"zoompan=z='{zexpr}':x='{xexpr}':y='{yexpr}':d={frames}:s={sw}x{sh}:fps={FPS},"
+        f"scale={w}:{h}:flags=bicubic,"
         f"setsar=1,format=yuv420p"
     )
     cmd = [
@@ -222,9 +228,15 @@ def assemble_musicvideo(
 
     outputs: dict = {"song_id": song_id, "scene_count": len(scenes), "song_dur": song_dur}
 
-    if progress_cb:
-        progress_cb("aligning lyrics to song audio...")
-    caption_events = _lyric_caption_events(song_dur, song.get("lyrics", ""), song_audio)
+    # Lyric captions off by default — music ships clean (watermark only). When
+    # off, skip the WhisperX alignment pass entirely. Overlay .ass still burns
+    # the watermark via empty caption events.
+    if rs.get_music_captions_enabled():
+        if progress_cb:
+            progress_cb("aligning lyrics to song audio...")
+        caption_events = _lyric_caption_events(song_dur, song.get("lyrics", ""), song_audio)
+    else:
+        caption_events = []
 
     for aspect_key in ("9x16", "16x9", "1x1"):
         w, h = ASPECTS[aspect_key]

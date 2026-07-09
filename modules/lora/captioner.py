@@ -12,11 +12,30 @@ separate traits from the trigger — the opposite of what we want here.
 """
 
 import logging
+import re
 from pathlib import Path
 
 log = logging.getLogger("claw_bot.lora.captioner")
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+# Common class nouns — caption keeps ONLY the class, never the full look, so the
+# trigger token (not the descriptive words) absorbs face + outfit + accessories.
+_CLASS_WORDS = [
+    "toddler", "baby", "boy", "girl", "child", "kid", "man", "woman", "teenager",
+    "princess", "prince", "knight", "wizard", "witch", "fox", "dog", "cat",
+    "rabbit", "bear", "robot", "dragon", "monster", "creature", "animal",
+]
+
+
+def class_from_look(look_token: str) -> str:
+    """Pull a single class noun out of a look description ('...7yo boy...' -> 'boy')."""
+    lt = (look_token or "").lower()
+    for w in _CLASS_WORDS:
+        if re.search(rf"\b{w}\b", lt):
+            return w
+    return "character"
 
 
 def caption_dataset(
@@ -26,10 +45,15 @@ def caption_dataset(
     *,
     overwrite: bool = True,
 ) -> int:
-    """Write a .txt caption beside every image. Returns number written."""
+    """Write a .txt caption beside every image. Returns number written.
+
+    Caption = trigger + class ONLY (e.g. 'rexj_pip, a boy'). The full look stays
+    OUT so the trigger learns to carry the whole appearance; otherwise flux binds
+    the look to the descriptive words and trigger-only recall is weak.
+    """
     dataset_dir = Path(dataset_dir)
-    look = (look_token or "").strip().rstrip(".")
-    caption = f"{trigger}, {look}" if look else trigger
+    cls = class_from_look(look_token)
+    caption = f"{trigger}, a {cls}"
 
     n = 0
     imgs = [p for p in sorted(dataset_dir.iterdir())

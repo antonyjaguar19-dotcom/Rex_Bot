@@ -1,0 +1,202 @@
+"""
+Claw Bot — Facts Shorts Assembly (vertical 9x16 by default)
+
+Tiles a loose mood backdrop per fact with slow Ken Burns motion, burns the fact
+as LARGE centered on-screen text (the star of the frame — the image is just
+wallpaper), and mixes an optional music bed under the narration. Captions are
+timed to the REAL per-beat voice spans (durations), so text flips exactly when
+the narrator moves to the next fact.
+
+Reuses the Ken Burns / concat helpers from musicvideo_assembly.
+"""
+
+import logging
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable, Optional
+
+_HERE = Path(__file__).parent.parent.resolve()
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+from modules.assembly import FFMPEG_EXE, FINAL_DIR, ASPECTS, _probe_duration
+from modules.musicvideo_assembly import (
+    TEMP_DIR, WATERMARK_TEXT, _ken_burns_segment, _concat_segments,
+)
+from modules.subtitles import ass_time, ass_escape, sentence_chunks, windows_to_events
+
+log = logging.getLogger("claw_bot.facts_assembly")
+
+MUSIC_VOLUME = 0.16   # bed sits well under the voice
+
+
+def _wrap(text: str, max_chars: int = 22) -> str:
+    """Greedy word-wrap into short lines for big centered text (\\N = ASS break)."""
+    words, lines, cur = (text or "").split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > max_chars:
+            lines.append(cur); cur = w
+        else:
+            cur = f"{cur} {w}".strip()
+    if cur:
+        lines.append(cur)
+    return "\\N".join(lines)
+
+
+def _spans_from_durations(durations: list) -> list:
+    spans, cur = [], 0.0
+    for d in durations:
+        spans.append((cur, cur + float(d)))
+        cur += float(d)
+    return spans
+
+
+def _write_facts_ass(total_dur: float, w: int, h: int, path: Path,
+                     beats: list, spans: list) -> Path:
+    """Two-layer captions:
+      TOP    — the punchy fact label (on_screen) + a # number badge above it.
+      BOTTOM — real subtitles of the SPOKEN narration, sentence-chunked + synced
+               within each beat's real voice span, so viewers read along.
+    Plus the Rexjaw watermark."""
+    title_size = max(38, round(h * 0.050))
+    num_size = max(26, round(h * 0.030))
+    sub_size = max(30, round(h * 0.036))
+    wm_size = max(16, round(h * 0.020))
+    side = max(60, round(w * 0.08))
+    top_num_mv = max(40, round(h * 0.055))    # # badge near top edge
+    top_title_mv = max(120, round(h * 0.115))  # label just below the badge
+    sub_mv = max(80, round(h * 0.10))          # subtitle above bottom edge
+    # an=8 top-center, an=2 bottom-center.
+    styles = [
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n",
+        f"Style: Title,Arial,{title_size},&H00FFFFFF,&H00000000,&H90000000,"
+        f"1,0,1,3,2,8,{side},{side},{top_title_mv}\n",
+        f"Style: Num,Arial,{num_size},&H0055CCFF,&H00000000,&H00000000,"
+        f"1,0,1,2,1,8,40,40,{top_num_mv}\n",
+        f"Style: Sub,Arial,{sub_size},&H00FFFFFF,&H00000000,&H90000000,"
+        f"0,0,1,2,1,2,{side},{side},{sub_mv}\n",
+        f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
+        f"0,0,1,1,1,2,40,40,40\n",
+    ]
+    events = [
+        f"Dialogue: 0,{ass_time(0)},{ass_time(total_dur)},Mark,,0,0,0,,{WATERMARK_TEXT}\n"
+    ]
+    for b, (t0, t1) in zip(beats, spans):
+        if t1 <= t0:
+            continue
+        kind = b.get("kind")
+        # TOP label (escape FIRST, then insert \N breaks).
+        raw = (b.get("on_screen") or b.get("narration") or "").strip()
+        title = _wrap(ass_escape(raw))
+        if title:
+            events.append(
+                f"Dialogue: 0,{ass_time(t0)},{ass_time(t1)},Title,,0,0,0,,{title}\n")
+        if kind == "fact" and b.get("index"):
+            events.append(
+                f"Dialogue: 0,{ass_time(t0)},{ass_time(t1)},Num,,0,0,0,,#{b['index']}\n")
+        # BOTTOM subtitle = spoken narration, sentence-chunked + synced across the
+        # beat's real span. Skip the outro (its label already IS the spoken line).
+        narr = (b.get("narration") or "").strip()
+        if narr and kind != "outro":
+            for c0, c1, ctext in windows_to_events([(t0, t1, narr)], sentence_chunks):
+                events.append(
+                    f"Dialogue: 0,{ass_time(c0)},{ass_time(c1)},Sub,,0,0,0,,{ass_escape(ctext)}\n")
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {w}\nPlayResY: {h}\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        + "".join(styles) + "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    path.write_text(header + "".join(events), encoding="utf-8")
+    return path
+
+
+def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path],
+               total_dur: float, subs_path: Path, out_path: Path) -> Path:
+    inputs = ["-i", str(Path(video_path).resolve()),
+              "-i", str(Path(narration_path).resolve())]
+    if music_path is not None and Path(music_path).exists():
+        inputs += ["-i", str(Path(music_path).resolve())]
+        # music (input 2) looped + quieted, mixed under narration (input 1); end on narration
+        audio_fc = (f"[2:a]volume={MUSIC_VOLUME}[m];"
+                    f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]")
+    else:
+        audio_fc = "[1:a]anull[a]"
+
+    fc = (f"[0:v]tpad=stop_mode=clone:stop_duration=3,format=yuv420p,"
+          f"subtitles={subs_path.name}[v];{audio_fc}")
+    cmd = [
+        str(FFMPEG_EXE), "-y", "-loglevel", "error",
+        *inputs,
+        "-filter_complex", fc,
+        "-map", "[v]", "-map", "[a]",
+        "-t", f"{total_dur:.3f}",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        str(Path(out_path).resolve()),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                            cwd=str(TEMP_DIR))
+    if result.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"Facts mux failed:\n{result.stderr.strip()}")
+    return out_path
+
+
+def assemble_facts(
+    story: dict,
+    narration_audio: Path,
+    durations: list[float],
+    backgrounds: list[Path],
+    aspect: str = "9x16",
+    music_path: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """Build the vertical facts reel. durations/backgrounds are per-beat, same
+    length as story['beats']."""
+    if not FFMPEG_EXE.exists():
+        raise FileNotFoundError(f"ffmpeg not found at {FFMPEG_EXE}")
+    beats = story.get("beats", [])
+    n = len(backgrounds)
+    if not (n == len(durations) == len(beats)):
+        raise ValueError(f"length mismatch: bg={n} durations={len(durations)} beats={len(beats)}")
+
+    facts_id = story.get("facts_id") or story.get("_id")
+    total_dur = _probe_duration(narration_audio)
+    w, h = ASPECTS.get(aspect, ASPECTS["9x16"])
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _p(m):
+        if progress_cb:
+            progress_cb(m)
+
+    segments = []
+    for i, img in enumerate(backgrounds):
+        if i % 5 == 0:
+            _p(f"ken burns {i+1}/{n}...")
+        seg = TEMP_DIR / f"fseg_{facts_id}_{i:04d}.mp4"
+        _ken_burns_segment(img, max(0.5, float(durations[i])), w, h, seg,
+                           zoom_in=(i % 2 == 0))
+        segments.append(seg)
+
+    _p("concatenating...")
+    concat_path = TEMP_DIR / f"fconcat_{facts_id}.mp4"
+    _concat_segments(segments, concat_path, f"facts_{facts_id}")
+
+    subs_path = TEMP_DIR / f"overlay_facts_{facts_id}.ass"
+    _write_facts_ass(total_dur, w, h, subs_path, beats,
+                     _spans_from_durations(durations))
+
+    _p("muxing...")
+    out_path = FINAL_DIR / f"facts_{facts_id}_{aspect}.mp4"
+    _mux_facts(concat_path, narration_audio, music_path, total_dur, subs_path, out_path)
+    log.info(f"✅ facts reel ready: {out_path.name}")
+    return {"facts_id": facts_id, "beat_count": n, "duration": total_dur,
+            aspect: out_path}

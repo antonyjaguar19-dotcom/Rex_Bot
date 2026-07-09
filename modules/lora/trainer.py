@@ -68,7 +68,7 @@ config:
           caption_dropout_rate: 0.05
           shuffle_tokens: false
           cache_latents_to_disk: true
-          resolution: [768, 1024]
+          resolution: [768]
       train:
         batch_size: 1
         steps: {steps}

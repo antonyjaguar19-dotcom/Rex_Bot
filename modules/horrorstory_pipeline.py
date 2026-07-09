@@ -10,6 +10,7 @@ Renders an approved horror story:
 Front-end agnostic (returns paths); claw_bot / dashboard post the result.
 """
 
+import json
 import logging
 import random
 import sys
@@ -145,16 +146,20 @@ def _scene_durations(spans: list, total_dur: float) -> list[float]:
     return durs
 
 
-def _kokoro_narrate(narrations: list, out_path: Path, gap_sec: float = 0.45):
+def _kokoro_narrate(narrations: list, out_path: Path, gap_sec: float = 0.45,
+                    voice: Optional[str] = None, speed: Optional[float] = None):
     """Voice each beat with Kokoro (a fixed preset voice → identical narrator
     every beat, zero drift), stitch with a silence gap. Returns (master_wav,
-    spans) where spans = [(text, t_start, t_end)] — same shape as VoxCPM path."""
+    spans) where spans = [(text, t_start, t_end)] — same shape as VoxCPM path.
+
+    voice/speed default to the horror settings; callers (e.g. facts mode) pass
+    their own for a different delivery."""
     import numpy as np
     import soundfile as sf
     from modules.tts_engine import TTSEngine
 
-    voice = rs.get_horror_voice()
-    speed = rs.get_horror_voice_speed()
+    voice = voice or rs.get_horror_voice()
+    speed = speed if speed is not None else rs.get_horror_voice_speed()
     eng = TTSEngine(voice=voice, speed=speed)
     tmp = NARRATION_DIR / "_horror_beats"
     tmp.mkdir(parents=True, exist_ok=True)
@@ -253,9 +258,60 @@ def _narrate_continuous(narrations: list, out_path: Path, voice_design: str = ""
     return Path(wav), f"kokoro:{voice}"
 
 
+def _spans_path(wav: Path) -> Path:
+    """Sidecar JSON holding real per-beat timing next to the narration wav."""
+    return Path(wav).with_suffix(".spans.json")
+
+
+def _render_narration(narrations: list, out_path: Path, voice_design: str = "") -> tuple:
+    """Render narration and, when the engine exposes it, the REAL per-beat timing.
+
+    Returns (wav, spans_or_None, mode). spans = [(text, t_start, t_end)] — one per
+    beat, from the TTS itself (not a silence guess). These are the source of truth
+    for scene windows + subtitle timing, so images/subs/video lock to the voice.
+
+    kokoro  -> per-beat synth (each beat voiced separately) => exact spans.
+    qwen    -> synthesize_segments already returns per-segment spans.
+    others  -> fall back to one continuous render (spans=None => silence-split)."""
+    engine = rs.get_horror_voice_engine()
+    if engine == "kokoro":
+        wav, spans = _kokoro_narrate(narrations, out_path)
+        return Path(wav), spans, f"kokoro:{rs.get_horror_voice()}"
+    if engine == "qwen":
+        try:
+            from modules import tts_qwen
+            spk = rs.get_horror_qwen_speaker()
+            wav, spans = tts_qwen.synthesize_segments(
+                narrations, output_path=out_path, speaker=spk,
+                instruct=rs.get_horror_qwen_instruct(),
+                pitch=rs.get_horror_qwen_pitch())
+            return Path(wav), spans, f"qwen3-tts:{spk}"
+        except Exception as e:
+            log.warning(f"Qwen3-TTS spans failed ({e}); continuous fallback.")
+    wav, mode = _narrate_continuous(narrations, out_path, voice_design)
+    return Path(wav), None, mode
+
+
+def _load_spans(wav: Path) -> Optional[list]:
+    """Load the per-beat spans sidecar for an already-rendered narration wav."""
+    sp = _spans_path(wav)
+    if not sp.exists():
+        return None
+    try:
+        data = json.loads(sp.read_text(encoding="utf-8"))
+        return [(t, float(a), float(b)) for t, a, b in data]
+    except Exception as e:
+        log.warning(f"spans sidecar unreadable ({e}); silence-split fallback.")
+        return None
+
+
 def narrate_story(story: dict, progress_cb: Optional[Callable[[str], None]] = None) -> Path:
     """Render JUST the full narration audio (no visuals). Lets callers post the
-    story audio before the multi-hour image render. Returns the wav path."""
+    story audio before the multi-hour image render. Returns the wav path.
+
+    Also writes a per-beat spans sidecar (when the engine gives real timing) so
+    a later render_horror(narration_path=...) reuses the exact windows instead of
+    re-guessing them from silence."""
     horror_id = story.get("horror_id") or story.get("_id")
     beats = story.get("beats", [])
     if not beats:
@@ -263,8 +319,10 @@ def narrate_story(story: dict, progress_cb: Optional[Callable[[str], None]] = No
     gpu_utils.ensure_vram_free()
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
     out = NARRATION_DIR / f"horror_{horror_id}.wav"
-    out, mode = _narrate_continuous(
+    out, spans, mode = _render_narration(
         [b.get("narration", "") for b in beats], out, story.get("voice_design", ""))
+    if spans:
+        _spans_path(out).write_text(json.dumps(spans), encoding="utf-8")
     if progress_cb:
         progress_cb(f"narration ready ({mode})")
     return out
@@ -296,27 +354,37 @@ def render_horror(
     #         voice), then cut the visuals on the audio's real silences. ----
     gpu_utils.ensure_vram_free()
     NARRATION_DIR.mkdir(parents=True, exist_ok=True)
+    spans = None
     if narration_path and Path(narration_path).exists():
         narration_path = Path(narration_path)
-        _p("🎙️ using pre-rendered narration")
+        spans = _load_spans(narration_path)
+        _p("🎙️ using pre-rendered narration" + (" (+real per-beat spans)" if spans else ""))
     else:
         narration_path = NARRATION_DIR / f"horror_{horror_id}.wav"
-        _p(f"🎙️ narrating full story ({len(beats)} beats, continuous)...")
-        narration_path, mode = _narrate_continuous(
+        _p(f"🎙️ narrating full story ({len(beats)} beats)...")
+        narration_path, spans, mode = _render_narration(
             [b.get("narration", "") for b in beats], narration_path, voice_design)
+        if spans:
+            _spans_path(narration_path).write_text(json.dumps(spans), encoding="utf-8")
     total_dur = hasm._probe_duration(narration_path)
     _p(f"🎙️ narration ready: {total_dur:.1f}s")
 
-    # Per-beat windows snapped to detected silences (images = silent splits).
-    from modules import audio_segmenter
-    weights = [max(1, len(b.get("narration", "").split())) for b in beats]
-    try:
-        durations = audio_segmenter.plan_windows_from_silence(narration_path, weights)
-        _p(f"✂️ split on {len(durations)} silence-aligned windows")
-    except Exception as e:
-        log.warning(f"silence split failed ({e}); falling back to proportional.")
-        wsum = sum(weights)
-        durations = [round(w / wsum * total_dur, 3) for w in weights]
+    # Per-beat windows. PREFERRED: the TTS's own per-beat spans (exact — every
+    # image/subtitle/clip locks to the real voice, no drift, video len = narration).
+    # FALLBACK (engine gave no spans): snap proportional boundaries to silences.
+    if spans and len(spans) == len(beats):
+        durations = _scene_durations(spans, total_dur)
+        _p(f"🎯 {len(durations)} windows from real per-beat narration spans")
+    else:
+        from modules import audio_segmenter
+        weights = [max(1, len(b.get("narration", "").split())) for b in beats]
+        try:
+            durations = audio_segmenter.plan_windows_from_silence(narration_path, weights)
+            _p(f"✂️ split on {len(durations)} silence-aligned windows")
+        except Exception as e:
+            log.warning(f"silence split failed ({e}); falling back to proportional.")
+            wsum = sum(weights)
+            durations = [round(w / wsum * total_dur, 3) for w in weights]
 
     # ---- 2. Horror stills (one per beat) — Flux + a fixed STYLE LoRA
     #         (Horrorstyle). Character consistency = prompt tokens, NOT a trained

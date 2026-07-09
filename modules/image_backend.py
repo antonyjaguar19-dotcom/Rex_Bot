@@ -64,13 +64,13 @@ class ImageBackend(ABC):
 # FACTORY — loads the active backend from the registry
 # ==============================================================================
 
-def get_active_backend() -> ImageBackend:
-    cfg = model_registry.get_active("image_backend")
+def _instantiate(cfg: dict) -> ImageBackend:
+    """Load + instantiate an image Backend from a registry config dict."""
     module_path = cfg.get("module_path")
     if not module_path:
         raise ValueError(f"Backend {cfg.get('_id')} has no 'module_path' in config")
 
-    log.info(f"Loading image backend: {cfg['_id']} from {module_path}")
+    log.info(f"Loading image backend: {cfg.get('_id')} from {module_path}")
 
     try:
         module = importlib.import_module(module_path)
@@ -90,6 +90,20 @@ def get_active_backend() -> ImageBackend:
         )
 
     return backend_class(cfg)
+
+
+def get_active_backend() -> ImageBackend:
+    return _instantiate(model_registry.get_active("image_backend"))
+
+
+def get_named_backend(backend_id: str) -> ImageBackend:
+    """Load a SPECIFIC image backend by registry id (not the active one).
+    Used to pin a consistency backend (e.g. USO) for kids/music without
+    changing the global active backend. Raises if the id is unknown."""
+    cfg = model_registry.get_available("image_backend", backend_id)
+    if not cfg:
+        raise ValueError(f"Image backend '{backend_id}' not found in registry")
+    return _instantiate(cfg)
 
 
 # ==============================================================================

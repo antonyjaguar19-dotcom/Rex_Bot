@@ -28,8 +28,11 @@ def test_captioner_writes_sidecars(tmp_path):
     (tmp_path / "notimage.json").write_text("{}")
     n = captioner.caption_dataset(tmp_path, "rexj_pip", "7yo boy, brass goggles.")
     assert n == 3
-    assert (tmp_path / "a.txt").read_text() == "rexj_pip, 7yo boy, brass goggles"
+    # caption keeps trigger + class only (look stays out so trigger carries it)
+    assert (tmp_path / "a.txt").read_text() == "rexj_pip, a boy"
     assert captioner.count_images(tmp_path) == 3
+    assert captioner.class_from_look("a 7-year-old girl with a hat") == "girl"
+    assert captioner.class_from_look("glowing orb") == "character"
 
 
 # ----------------------------------------------------------------- store

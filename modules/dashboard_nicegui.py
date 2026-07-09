@@ -131,6 +131,7 @@ class State:
         self.log_lines: list[str] = []
         self.song: Optional[dict] = None       # music-video pipeline: current song
         self.horror: Optional[dict] = None     # horror pipeline: current story
+        self.facts: Optional[dict] = None      # facts-shorts pipeline: current reel
 
     def push(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -548,6 +549,36 @@ def render_horror_action(refresh_cb):
             S.push(f"✅ Horror video ready: {out.get('16x9')}")
         except Exception as e:
             S.push(f"Horror render failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def generate_facts_action(topic: str, refresh_cb):
+    """One-shot Facts Shorts: write true facts about a topic, then render the
+    9x16 reel (energetic voice + creative images + read-along subs)."""
+    if not (topic or "").strip():
+        ui.notify("❌ Topic required.", type="negative")
+        return
+    if not _try_begin("facts reel"):
+        return
+    S.stage = "final"
+    S.push(f"Facts reel — topic='{topic}'")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import facts_writer as fw
+            from modules import facts_pipeline as fp
+            story = fw.generate_facts_short(topic, 6, progress_cb=lambda m: S.push(f"· {m}"))
+            S.facts = story
+            n = len([b for b in story.get("beats", []) if b.get("kind") == "fact"])
+            S.push(f"Facts written — '{story.get('title')}' ({n} facts). Rendering reel…")
+            out = fp.render_facts(story, progress_cb=lambda m: S.push(f"· {m}"))
+            S.push(f"✅ Facts reel ready: {Path(out.get('9x16')).name}")
+        except Exception as e:
+            S.push(f"Facts reel failed: {e}")
         finally:
             _end()
             refresh_cb()
@@ -1105,6 +1136,7 @@ def main_page():
             .classes("rex-drawer").props("width=185") as nav_drawer:
         with ui.tabs().props("vertical").classes("rex-nav w-full") as nav_tabs:
             tab_pipeline = ui.tab("Pipeline", icon="movie")
+            tab_facts = ui.tab("Facts", icon="lightbulb")
             tab_settings = ui.tab("Settings", icon="tune")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
@@ -1117,6 +1149,7 @@ def main_page():
         .props("animated").classes("w-full").style("background: transparent;")
     with panels:
         pipeline_panel = ui.tab_panel(tab_pipeline).classes("w-full")
+        facts_panel = ui.tab_panel(tab_facts).classes("w-full")
         settings_panel = ui.tab_panel(tab_settings).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
@@ -1157,11 +1190,13 @@ def main_page():
         .style("margin: 0 0 12px 0; padding: 0 8px;")
     with mode_row:
         ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
+        _mode_opts = {"story": "📖 Story", "music_video": "🎵 Music", "facts": "💡 Facts"}
+        _cur_mode = rs.get_pipeline_mode()
         mode_toggle = ui.toggle(
-            {"story": "📖 Story", "music_video": "🎵 Music", "horror_story": "🎃 Horror"},
-            value=rs.get_pipeline_mode(),
+            _mode_opts,
+            value=_cur_mode if _cur_mode in _mode_opts else "story",
         ).props("dense")
-        ui.label("Story = kids story · Music = song + video · Horror = narrated horror") \
+        ui.label("Story = kids story · Music = song + video · Facts = 9x16 facts reel") \
             .classes("text-xs opacity-60")
 
     # ============== STAGE 1 — SCRIPT ==============
@@ -1307,6 +1342,41 @@ def main_page():
                   on_click=lambda: render_horror_action(full_refresh)) \
             .classes("rex-btn-primary").style("margin-top: 12px;")
 
+    # ============== FACTS SHORTS (own tab) ==============
+    with ui.card().classes("rex-card w-full") as card_facts:
+        with ui.row().classes("items-center"):
+            ui.label("💡 Facts Shorts").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-purple") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "9x16 · IG"
+        ui.label("Text-forward reel: true facts + energetic voice + creative images + "
+                 "read-along subtitles. Vertical, Instagram-ready. ~4 min.") \
+            .classes("text-xs opacity-70")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
+            facts_topic = ui.input(label="Topic",
+                                   placeholder="e.g. the deep ocean, black holes, the human brain") \
+                .classes("flex-1").props("outlined dark dense")
+
+        with ui.row().classes("gap-2 items-center").style("margin-top: 4px;"):
+            ui.button("💡 Generate Facts Reel",
+                      on_click=lambda: generate_facts_action(facts_topic.value, full_refresh)) \
+                .classes("rex-btn-primary")
+            facts_voice_sel = ui.select(
+                ["af_bella", "af_nicole", "af_sky", "am_adam", "am_michael"],
+                value=rs.get_facts_voice(), label="Voice") \
+                .props("outlined dark dense").style("min-width: 130px")
+            facts_voice_sel.on("update:model-value",
+                               lambda e: rs.set_facts_voice(facts_voice_sel.value))
+            facts_pace_sel = ui.select(
+                {0.92: "calm", 1.06: "lively", 1.20: "excited"},
+                value=rs.get_facts_voice_speed(), label="Pace") \
+                .props("outlined dark dense").style("min-width: 120px")
+            facts_pace_sel.on("update:model-value",
+                              lambda e: rs.set_facts_voice_speed(float(facts_pace_sel.value)))
+
+        ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
+        facts_container = ui.column().classes("w-full")
+
     # ============== STAGE 2 — PROMPTS ==============
     with ui.card().classes("rex-card w-full") as card_prompts:
         with ui.row().classes("items-center"):
@@ -1437,6 +1507,30 @@ def main_page():
                 else rs.clear_cfg_override(),
                 _notify_set("CFG", cfg_set.value)))
 
+            # Video generation resolution preset (parity with !set_video_resolution).
+            # "(auto)" = the video model's own models.json default dims.
+            _vres_ov = rs.get_video_resolution_override()
+            vres_set = ui.select(
+                ["(auto)"] + list(rs.VIDEO_RES_PRESETS.keys()),
+                value=(_vres_ov if _vres_ov in rs.VIDEO_RES_PRESETS else "(auto)"),
+                label="Video res",
+            ).props("outlined dark dense").style("min-width: 120px;")
+            vres_set.on("update:model-value", lambda e: (
+                rs.clear_video_resolution_override() if vres_set.value == "(auto)"
+                else rs.set_video_resolution_override(vres_set.value),
+                _notify_set("Video res", vres_set.value)))
+
+            # Clip-length override (parity with !set_clip_length). 0 = match
+            # narration (audio-first sync). 1–30s forces a fixed clip length.
+            clip_set = ui.number(label="Clip sec", value=rs.get_clip_length_override() or 0,
+                                 min=0, max=30, step=0.5, format="%.1f") \
+                .props("outlined dark dense").style("width: 110px;")
+            clip_set.on("blur", lambda e: (
+                rs.set_clip_length_override(float(clip_set.value))
+                if clip_set.value and float(clip_set.value) >= 1.0
+                else rs.clear_clip_length_override(),
+                _notify_set("Clip sec", clip_set.value or "auto")))
+
         with ui.row().classes("w-full gap-4 items-center").style("margin-top: 6px;"):
             up_sw = ui.switch("Upscale (4×)", value=rs.get_upscale_enabled())
             up_sw.on("update:model-value",
@@ -1548,6 +1642,23 @@ def main_page():
                 ui.notify("Theme suggested into Script box.", type="info")
             ui.button("💡 Suggest theme", on_click=_suggest).props("flat")
 
+            def _show_stats():
+                # Parity with Discord !stats — read the shared on-disk counters.
+                p = PROJECT_ROOT / "05_Config" / "stats.json"
+                try:
+                    d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+                except Exception as e:
+                    ui.notify(f"stats unreadable: {e}", type="negative")
+                    return
+                if not d:
+                    ui.notify("No stats yet.", type="info")
+                    return
+                lines = [f"{k}: {v}" for k, v in d.items()]
+                lines.append(f"theme bank: {get_theme_count()}")
+                ui.notify("\n".join(lines), multiline=True,
+                          close_button="OK", timeout=0)
+            ui.button("📊 Stats", on_click=_show_stats).props("flat")
+
     # ============== LIVE LOG (collapsible footer) ==============
     with ui.footer().classes("p-0").style("background: rgba(8,8,18,0.96);"):
         with ui.expansion("📜 Live log", icon="terminal").props("dense") \
@@ -1563,6 +1674,7 @@ def main_page():
     card_script.move(pipeline_panel)
     card_musicvideo.move(pipeline_panel)
     card_horror.move(pipeline_panel)
+    card_facts.move(facts_panel)
     card_prompts.move(pipeline_panel)
     card_storyboard.move(pipeline_panel)
     card_video.move(pipeline_panel)
@@ -1582,8 +1694,10 @@ def main_page():
             c.set_visibility(m == "story")
         card_musicvideo.set_visibility(m == "music_video")
         card_horror.set_visibility(m == "horror_story")
+        # Facts has its own left-nav tab (card_facts) — nothing to toggle here.
 
-    _MODE_LABEL = {"story": "Story", "music_video": "Music video", "horror_story": "Horror"}
+    _MODE_LABEL = {"story": "Story", "music_video": "Music video",
+                   "horror_story": "Horror", "facts": "Facts"}
 
     def _set_mode(m: str):
         rs.set_pipeline_mode(m)
@@ -1959,6 +2073,24 @@ def main_page():
                     ui.video(str(p)).style("border-radius: 8px; width: 100%;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
+    def render_facts_reel():
+        fdir = PROJECT_ROOT / "04_Outputs" / "final"
+        reels = (sorted(fdir.glob("facts_*_9x16.mp4"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+                 if fdir.exists() else [])
+        sig = tuple((str(p), p.stat().st_mtime_ns) for p in reels) or ("none",)
+        if not _changed("facts", sig):
+            return
+        facts_container.clear()
+        with facts_container:
+            if not reels:
+                ui.label("_(no reel yet — enter a topic and Generate)_").classes("opacity-60")
+            else:
+                p = reels[0]
+                with ui.element("div").classes("rex-shot-card").style("width: 300px;"):
+                    ui.video(str(p)).style("border-radius: 8px; width: 100%;")
+                    ui.label(p.name).classes("text-xs opacity-75")
+
     def render_queue():
         try:
             items = pf.list_all()
@@ -2015,6 +2147,7 @@ def main_page():
             render_storyboard()
             render_video()
             render_final()
+            render_facts_reel()
             render_queue()
             render_log()
         except Exception as e:

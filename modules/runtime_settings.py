@@ -267,7 +267,7 @@ def clear_music_mood_override() -> None:
 #   music_video  — theme → song lyrics (Qwen) → ACE-Step song → Ken Burns stills.
 # Default story so existing behavior is unchanged until the user opts in.
 
-VALID_PIPELINE_MODES = ("story", "music_video", "horror_story")
+VALID_PIPELINE_MODES = ("story", "music_video", "horror_story", "facts")
 
 
 def get_pipeline_mode() -> str:
@@ -410,6 +410,31 @@ def set_horror_voice_speed(speed: float) -> None:
     log.info(f"Horror voice speed: {speed}")
 
 
+# --- Facts Shorts voice: bright + slightly fast = energetic, "alive" delivery
+# (kokoro voice ids installed: af_bella / af_nicole / af_sky / am_adam / am_michael)
+def get_facts_voice() -> str:
+    return _load().get("facts_voice") or "af_bella"
+
+
+def set_facts_voice(voice: str) -> None:
+    data = _load()
+    data["facts_voice"] = voice.strip()
+    _save(data)
+    log.info(f"Facts voice: {voice}")
+
+
+def get_facts_voice_speed() -> float:
+    val = _load().get("facts_voice_speed")
+    return float(val) if val is not None else 1.08
+
+
+def set_facts_voice_speed(speed: float) -> None:
+    data = _load()
+    data["facts_voice_speed"] = float(speed)
+    _save(data)
+    log.info(f"Facts voice speed: {speed}")
+
+
 _HORROR_QWEN_INSTRUCT = (
     "Read this aloud as a serious adult male narrator telling a horror story: "
     "slow, deep, calm and grave, with an unhurried, measured, steady delivery "
@@ -547,6 +572,42 @@ def set_reference_mode_enabled(enabled: bool) -> None:
     data["reference_mode"] = bool(enabled)
     _save(data)
     log.info(f"Reference mode: {enabled}")
+
+
+# --- USO character-consistency backend (kids + music) ---
+
+def get_uso_mode_enabled() -> bool:
+    """Whether kids storyboards + music videos render via the USO backend
+    (Flux.1-dev + USO LoRA, single-image subject consistency). Default True.
+    Turn off with set_uso_mode_enabled(False) to fall back to the previous
+    backends (SDXL+IP-Adapter for kids, active backend for music)."""
+    val = _load().get("uso_mode")
+    return True if val is None else bool(val)
+
+
+def set_uso_mode_enabled(enabled: bool) -> None:
+    data = _load()
+    data["uso_mode"] = bool(enabled)
+    _save(data)
+    log.info(f"USO mode: {enabled}")
+
+
+# --- Music-video lyric captions (burned-in subtitles) ---
+
+def get_music_captions_enabled() -> bool:
+    """Whether music videos burn word-synced lyric captions. Default False —
+    music ships clean (watermark only). Turn on with
+    set_music_captions_enabled(True). When off, the WhisperX alignment pass is
+    skipped entirely (faster render)."""
+    val = _load().get("music_captions")
+    return False if val is None else bool(val)
+
+
+def set_music_captions_enabled(enabled: bool) -> None:
+    data = _load()
+    data["music_captions"] = bool(enabled)
+    _save(data)
+    log.info(f"Music lyric captions: {enabled}")
 
 
 # --- Lip-sync (Wan S2V for character dialogue shots) ---
