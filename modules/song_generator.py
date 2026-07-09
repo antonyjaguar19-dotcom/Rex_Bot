@@ -228,6 +228,9 @@ def generate_song(theme: str, duration_sec: Optional[int] = None) -> dict:
         song["vocal_type"] = vocal_ov
     if visual_ov:
         song["visual_style"] = visual_ov
+    tempo_ov = rs.get_tempo_override()
+    if tempo_ov:
+        song["bpm"] = int(tempo_ov)   # so the approval embed shows the real tempo
 
     # Safety: scan lyrics + scene prompts. Reuse the script safety filter (it
     # walks string values of the dict).

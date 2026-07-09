@@ -298,7 +298,10 @@ VALID_SONG_STYLES = (
     "lofi", "edm", "acoustic", "cinematic", "folk",
 )
 VALID_VOCAL_TYPES = (
-    "auto", "female", "male", "duet", "choir", "rap", "instrumental",
+    # Vocal type = WHO sings. 'rap' removed (it's a Song Style, not a voice).
+    # 'choir' dropped (ACE-Step rarely delivers it). instrumental works only when
+    # lyrics are cleared (see musicvideo_pipeline._effective_lyrics).
+    "auto", "female", "male", "duet", "instrumental",
 )
 VALID_VISUAL_STYLES = ("cartoon", "doodle", "spectrum", "photoreal")
 
@@ -321,6 +324,60 @@ def clear_song_style_override() -> None:
     data = _load()
     data.pop("song_style", None)
     _save(data)
+
+
+# --- Tempo override (bpm fed to ACE-Step; None = let the LLM/song choose) ---
+VALID_TEMPOS = {"slow": 75, "medium": 100, "fast": 130, "very fast": 160}
+
+
+def get_tempo_override():
+    v = _load().get("tempo_bpm")
+    return int(v) if v is not None else None
+
+
+def set_tempo_override(tempo: str) -> int:
+    t = (tempo or "").strip().lower()
+    if t not in VALID_TEMPOS:
+        raise ValueError(f"Invalid tempo: {tempo!r}. Must be one of {list(VALID_TEMPOS)} or auto.")
+    data = _load()
+    data["tempo_bpm"] = VALID_TEMPOS[t]
+    _save(data)
+    log.info(f"Tempo override set: {t} ({VALID_TEMPOS[t]} bpm)")
+    return VALID_TEMPOS[t]
+
+
+def clear_tempo_override() -> None:
+    data = _load()
+    data.pop("tempo_bpm", None)
+    _save(data)
+
+
+def get_music_image_backend() -> str:
+    """Music scene stills: 'zturbo' (Z-Image Turbo — fast + reliable, no cross-scene
+    consistency; DEFAULT) or 'uso' (character consistency via scene-0 anchor, slower
+    + intermittent hangs)."""
+    v = _load().get("music_image_backend")
+    return v if v in ("uso", "zturbo") else "zturbo"
+
+
+def set_music_image_backend(mode: str) -> None:
+    mode = (mode or "").strip().lower()
+    if mode not in ("uso", "zturbo"):
+        raise ValueError(f"Invalid music_image_backend: {mode!r} (uso|zturbo).")
+    data = _load()
+    data["music_image_backend"] = mode
+    _save(data)
+    log.info(f"Music image backend: {mode}")
+
+
+def get_tempo_label() -> str:
+    bpm = get_tempo_override()
+    if bpm is None:
+        return "auto"
+    for k, v in VALID_TEMPOS.items():
+        if v == bpm:
+            return k
+    return f"{bpm}bpm"
 
 
 def get_vocal_type_override() -> Optional[str]:

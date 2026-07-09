@@ -1567,6 +1567,7 @@ async def on_ready():
                     "set_song_style":      cmd_set_song_style,
                     "set_vocal_type":      cmd_set_vocal_type,
                     "set_visual_style":    cmd_set_visual_style,
+                    "set_tempo":           cmd_set_tempo,
                     "make_horror":         cmd_make_horror,
                     "set_horror_ambient":  cmd_set_horror_ambient,
                     "make_facts":          cmd_make_facts,
@@ -4497,6 +4498,27 @@ async def cmd_set_song_style(ctx, style: str = None):
     try:
         rs.set_song_style_override(style)
         await ctx.send(f"✅ Song style → `{style}`.")
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}")
+
+
+@bot.command(name="set_tempo", aliases=["tempo"])
+async def cmd_set_tempo(ctx, *, tempo: str = None):
+    """Set song tempo: slow / medium / fast / very fast (or `auto`)."""
+    if not tempo:
+        await ctx.send(
+            f"🥁 Tempo: `{rs.get_tempo_label()}`\n"
+            f"Options: {', '.join(rs.VALID_TEMPOS)} (or `auto`)."
+        )
+        return
+    t = tempo.strip().lower()
+    if t == "auto":
+        rs.clear_tempo_override()
+        await ctx.send("🔄 Tempo → auto (song decides).")
+        return
+    try:
+        bpm = rs.set_tempo_override(t)
+        await ctx.send(f"✅ Tempo → `{t}` ({bpm} bpm).")
     except ValueError as e:
         await ctx.send(f"⚠️ {e}")
 

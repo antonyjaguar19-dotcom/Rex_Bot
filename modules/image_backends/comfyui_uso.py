@@ -287,7 +287,23 @@ def generate(prompt: str, output_path: Path, aspect_ratio: str = "1:1",
         comfy_output = _extract_output_image(history)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(comfy_output), str(output_path))
+        # ComfyUI can still hold the output file open for a moment after finishing
+        # the job → shutil.move raises PermissionError [WinError 32]. Retry a few
+        # times, then fall back to copy (leaving the source for ComfyUI to clean).
+        _moved = False
+        for _i in range(10):
+            try:
+                shutil.move(str(comfy_output), str(output_path))
+                _moved = True
+                break
+            except PermissionError:
+                _t.sleep(0.4)
+        if not _moved:
+            shutil.copy2(str(comfy_output), str(output_path))
+            try:
+                Path(comfy_output).unlink()
+            except Exception:
+                pass
         log.info(f"USO image saved: {output_path}")
         return GenResult(success=True, image_path=output_path, seed=seed)
 

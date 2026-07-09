@@ -472,39 +472,97 @@ class SettingsView(_SubView):
     async def b7(self, i, b): await _run_cmd(i, "reset_settings")
 
 
-class MusicHubView(_SubView):
-    """🎵 Music Mode hub — only music-video pipeline actions."""
+_VOCAL_DESC = {
+    "auto": "let the AI choose", "female": "female singer", "male": "male singer",
+    "duet": "male + female", "instrumental": "no vocals — music only",
+}
+_VISUAL_DESC = {
+    "auto": "AI picks per mood", "cartoon": "cartoon look", "doodle": "hand-drawn doodle",
+    "spectrum": "abstract audio waveform", "photoreal": "photorealistic",
+}
+
+
+class _VocalTypeSelect(ui.Select):
+    def __init__(self):
+        cur = rs.get_vocal_type_override() or "auto"
+        opts = ["auto"] + [v for v in rs.VALID_VOCAL_TYPES if v != "auto"]
+        options = [discord.SelectOption(label=v.capitalize(), value=v,
+                                        description=_VOCAL_DESC.get(v), default=(v == cur))
+                   for v in opts[:25]]
+        super().__init__(placeholder="🎤 Vocal type…", options=options,
+                         min_values=1, max_values=1, custom_id="cp:mus:vocalsel")
+
+    async def callback(self, interaction):
+        await _run_cmd(interaction, "set_vocal_type", vocal=self.values[0])
+
+
+class _VisualStyleSelect(ui.Select):
+    def __init__(self):
+        cur = rs.get_visual_style_override() or "auto"
+        opts = ["auto"] + list(rs.VALID_VISUAL_STYLES)
+        options = [discord.SelectOption(label=v.capitalize(), value=v,
+                                        description=_VISUAL_DESC.get(v), default=(v == cur))
+                   for v in opts[:25]]
+        super().__init__(placeholder="🎨 Visual style…", options=options,
+                         min_values=1, max_values=1, custom_id="cp:mus:visualsel")
+
+    async def callback(self, interaction):
+        await _run_cmd(interaction, "set_visual_style", style=self.values[0])
+
+
+class _SongStyleSelect(ui.Select):
+    def __init__(self):
+        cur = rs.get_song_style_override() or "auto"
+        opts = ["auto"] + list(rs.VALID_SONG_STYLES)
+        options = [discord.SelectOption(label=v.capitalize(), value=v, default=(v == cur))
+                   for v in opts[:25]]
+        super().__init__(placeholder="🎸 Song style…", options=options,
+                         min_values=1, max_values=1, custom_id="cp:mus:stylesel")
+
+    async def callback(self, interaction):
+        await _run_cmd(interaction, "set_song_style", style=self.values[0])
+
+
+class _TempoSelect(ui.Select):
+    def __init__(self):
+        cur = rs.get_tempo_label()
+        opts = ["auto"] + list(rs.VALID_TEMPOS)
+        desc = {"auto": "let the song decide", **{k: f"{v} bpm" for k, v in rs.VALID_TEMPOS.items()}}
+        options = [discord.SelectOption(label=v.capitalize(), value=v,
+                                        description=desc.get(v), default=(v == cur))
+                   for v in opts[:25]]
+        super().__init__(placeholder="🥁 Tempo…", options=options,
+                         min_values=1, max_values=1, custom_id="cp:mus:temposel")
+
+    async def callback(self, interaction):
+        await _run_cmd(interaction, "set_tempo", tempo=self.values[0])
+
+
+class MusicHubView(ui.View):
+    """🎵 Music Mode hub — make-song button + all knobs as dropdowns."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        # Four dropdowns (rows 1-4); buttons share row 0.
+        for idx, sel in enumerate((_VocalTypeSelect(), _VisualStyleSelect(),
+                                   _SongStyleSelect(), _TempoSelect()), start=1):
+            sel.row = idx
+            self.add_item(sel)
 
     @ui.button(label="🎶 Make Song", style=discord.ButtonStyle.success, row=0, custom_id="cp:mus:make")
-    async def b2(self, i, b):
+    async def b_make(self, i, b):
         await i.response.send_modal(ValueModal(
             "Make Song", "Theme (what's the song about?)", "e.g. a rainy night drive",
             "make_song", "theme",
         ))
 
     @ui.button(label="🎬 Final", style=discord.ButtonStyle.success, row=0, custom_id="cp:mus:final")
-    async def b6(self, i, b): await _switch(i, FinalView, "🎬 Final Output", "Assembled music videos appear in 04_Outputs/final.")
+    async def b_final(self, i, b):
+        await _switch(i, FinalView, "🎬 Final Output", "Assembled music videos appear in 04_Outputs/final.")
 
-    @ui.button(label="🎸 Song Style", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:style")
-    async def b3(self, i, b):
-        await i.response.send_modal(ValueModal(
-            "Song Style", "Style", "pop / rap / metal / jazz / romantic ... or auto",
-            "set_song_style", "style",
-        ))
-
-    @ui.button(label="🎤 Vocal Type", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:vocal")
-    async def b4(self, i, b):
-        await i.response.send_modal(ValueModal(
-            "Vocal Type", "Vocal", "female / male / duet / choir / rap / instrumental / auto",
-            "set_vocal_type", "vocal",
-        ))
-
-    @ui.button(label="🎨 Visual Style", style=discord.ButtonStyle.secondary, row=1, custom_id="cp:mus:visual")
-    async def b5(self, i, b):
-        await i.response.send_modal(ValueModal(
-            "Visual Style", "Visual", "cartoon / doodle / spectrum / photoreal / auto",
-            "set_visual_style", "style",
-        ))
+    @ui.button(label="🏠 Home", style=discord.ButtonStyle.danger, row=0, custom_id="cp:mus:home")
+    async def b_home(self, i, b):
+        await i.response.edit_message(embed=_home_embed(), view=HomeView())
 
 
 class FactsHubView(_SubView):

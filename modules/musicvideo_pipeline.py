@@ -34,14 +34,46 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 STILLS_DIR = PROJECT_ROOT / "04_Outputs" / "storyboards"   # reuse storyboard tree
 
 
+import re as _re
+
+# Vocal descriptors the LLM may have baked into ace_tags. We STRIP these before
+# injecting the chosen vocal so the override actually wins (appending left the
+# old "female vocal" in place → ACE-Step kept singing female regardless).
+_VOCAL_DESC = _re.compile(
+    # "female/male" + any vocal-ish role (vocal, voice, singer, rap, rapper,
+    # rapping, sings, vocalist) — catches "female rap" too, not just "female vocal".
+    r"\b(?:fe)?male\s+(?:vocals?|voice|voices|singer|singers|vocalist|"
+    r"rap|rapper|rapping|sings|singing)\b"
+    r"|\b(?:duet|choir)\b"                              # duet / choir (vocal descriptors)
+    r"|\b(?:rap|solo)\s+vocals?\b"                      # rap/solo vocal (keeps bare genre 'rap')
+    r"|\binstrumental\b|\bno\s+vocals?\b",              # instrumental / no vocals
+    _re.I,
+)
+
+
 def _vocal_tags(song: dict) -> str:
-    """Ensure the vocal type is reflected in the ACE tag string."""
+    """Force the chosen vocal type into the ACE tag string: strip any vocal
+    descriptor the LLM wrote, then put the chosen one FIRST (ACE-Step weights
+    early tags higher)."""
     tags = (song.get("ace_tags") or "").strip()
     vocal = (song.get("vocal_type") or "auto").strip().lower()
-    if vocal not in ("auto", "") and vocal not in tags.lower():
-        extra = "instrumental, no vocals" if vocal == "instrumental" else f"{vocal} vocal"
-        tags = f"{tags}, {extra}" if tags else extra
-    return tags
+    if vocal in ("auto", ""):
+        return tags
+    # remove existing vocal descriptors, tidy leftover commas
+    tags = _VOCAL_DESC.sub("", tags)
+    tags = _re.sub(r"\s*,\s*(?:,\s*)+", ", ", tags).strip(" ,")
+    lead = "instrumental, no vocals" if vocal == "instrumental" else f"{vocal} vocal"
+    return f"{lead}, {tags}".strip(", ") if tags else lead
+
+
+def _effective_lyrics(song: dict) -> str:
+    """For a true instrumental, ACE-Step wants the '[inst]' marker in the lyrics
+    field — NOT a real lyric sheet (it would sing it) and NOT an empty string
+    (that produced noisy/incoherent output). '[inst]' tells the model to compose
+    music with no vocals."""
+    if (song.get("vocal_type") or "").strip().lower() == "instrumental":
+        return "[inst]"
+    return song.get("lyrics", "")
 
 
 def _scene_prompt(song: dict, scene: dict) -> str:
@@ -84,9 +116,9 @@ def render_musicvideo(
     ab = audio_backend.get_active_backend()
     song_audio = ab.generate(
         tags=_vocal_tags(song),
-        lyrics=song.get("lyrics", ""),
+        lyrics=_effective_lyrics(song),
         duration_sec=float(song.get("duration_sec", 120)),
-        bpm=song.get("bpm"),
+        bpm=(rs.get_tempo_override() or song.get("bpm")),
         keyscale=song.get("keyscale"),
         language=song.get("language", "en"),
         output_filename=f"song_{song_id}.mp3",
@@ -99,8 +131,22 @@ def render_musicvideo(
     # whole music video. USO off -> previous behaviour (active backend, no
     # consistency). Falls back cleanly if USO is unhealthy.
     gpu_utils.free_comfyui_vram()
-    use_uso = rs.get_uso_mode_enabled()
-    if use_uso:
+    use_uso = False
+    if rs.get_music_image_backend() == "zturbo":
+        # Fast + reliable stills, no cross-scene consistency (like facts mode).
+        try:
+            img = image_backend.get_named_backend("comfyui_zimage_turbo")
+            ok, _msg = img.health_check()
+            if ok:
+                _p("music stills via Z-Image Turbo (fast, no anchor)")
+            else:
+                _p(f"Z-Image Turbo unhealthy ({_msg}); using active backend.")
+                img = image_backend.get_active_backend()
+        except Exception as e:
+            _p(f"Z-Image Turbo unavailable ({e}); using active backend.")
+            img = image_backend.get_active_backend()
+    elif rs.get_uso_mode_enabled():
+        use_uso = True
         try:
             img = image_backend.get_named_backend("comfyui_uso")
             ok, _msg = img.health_check()
