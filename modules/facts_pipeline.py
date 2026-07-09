@@ -145,17 +145,26 @@ def render_facts(
     out_dir.mkdir(parents=True, exist_ok=True)
     ar = aspect.replace("x", ":")
 
+    # Facts backdrops need speed + reliability, NOT character consistency, so
+    # prefer Z-Image Turbo over the global active USO (USO is single-image char
+    # consistency and intermittently hangs >300s — wrong tool here). Fall through:
+    # Z-Image Turbo -> active backend -> gradient.
+    gpu_utils.free_comfyui_vram()
     backend = None
-    try:
-        gpu_utils.free_comfyui_vram()
-        backend = image_backend.get_active_backend()
-        ok, _msg = backend.health_check()
-        if not ok:
-            _p(f"image backend unhealthy ({_msg}); using gradient backdrops.")
-            backend = None
-    except Exception as e:
-        _p(f"image backend unavailable ({e}); using gradient backdrops.")
-        backend = None
+    for _bid in ("comfyui_zimage_turbo", None):
+        try:
+            b = (image_backend.get_named_backend(_bid) if _bid
+                 else image_backend.get_active_backend())
+            ok, _msg = b.health_check()
+            if ok:
+                backend = b
+                _p(f"backdrops via {_bid or 'active backend'}")
+                break
+            _p(f"{_bid or 'active'} unhealthy ({_msg}); trying next…")
+        except Exception as e:
+            _p(f"{_bid or 'active'} unavailable ({e}); trying next…")
+    if backend is None:
+        _p("no image backend healthy; using gradient backdrops.")
 
     _p(f"🖼️ building {len(beats)} backdrops ({'backend' if backend else 'gradient'})...")
     backgrounds: list[Path] = []
