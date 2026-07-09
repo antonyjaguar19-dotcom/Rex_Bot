@@ -2148,6 +2148,17 @@ def main_page():
                     ui.link("⬇ Download", _media_url(p)).props("download") \
                         .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
+                # Upload-ready description (copy-paste for YouTube/IG).
+                dfile = fdir / (p.stem.replace("_9x16", "") + "_description.txt")
+                if dfile.exists():
+                    dtext = dfile.read_text(encoding="utf-8")
+                    with ui.row().classes("items-center gap-2").style("margin-top:8px;"):
+                        ui.label("Upload description").classes("text-sm font-bold opacity-80")
+                        ui.button("📋 Copy", on_click=lambda j=json.dumps(dtext):
+                                  ui.run_javascript(f"navigator.clipboard.writeText({j})")) \
+                            .props("flat dense color=accent")
+                    ui.textarea(value=dtext).props("readonly outlined dense autogrow") \
+                        .classes("w-full").style("max-width:640px;")
 
     def render_music_finals():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
