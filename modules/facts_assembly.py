@@ -22,7 +22,8 @@ if str(_HERE) not in sys.path:
 
 from modules.assembly import FFMPEG_EXE, FINAL_DIR, ASPECTS, _probe_duration
 from modules.musicvideo_assembly import (
-    TEMP_DIR, WATERMARK_TEXT, _ken_burns_segment, _concat_segments,
+    TEMP_DIR, WATERMARK_TEXT, WATERMARK_PNG, logo_overlay_filter,
+    _ken_burns_segment, _concat_segments,
 )
 from modules.subtitles import ass_time, ass_escape, sentence_chunks, windows_to_events
 
@@ -78,12 +79,9 @@ def _write_facts_ass(total_dur: float, w: int, h: int, path: Path,
         f"1,0,1,2,1,8,40,40,{top_num_mv}\n",
         f"Style: Sub,Arial,{sub_size},&H00FFFFFF,&H00000000,&H90000000,"
         f"1,0,1,2,1,2,{side},{side},{sub_mv}\n",
-        f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
-        f"0,0,1,1,1,2,40,40,40\n",
     ]
-    events = [
-        f"Dialogue: 0,{ass_time(0)},{ass_time(total_dur)},Mark,,0,0,0,,{WATERMARK_TEXT}\n"
-    ]
+    # Watermark is now the brand logo PNG (overlaid in the mux), not burned text.
+    events = []
     for b, (t0, t1) in zip(beats, spans):
         if t1 <= t0:
             continue
@@ -151,8 +149,15 @@ def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path
         f"[fg]scale={w}:{h}:force_original_aspect_ratio=decrease[fgs];"
         f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2:shortest=1[fit];"
     )
+    # Brand logo overlay (bottom-right) — added as the last input if present.
+    logo_idx = len(inputs) // 2
+    wm = logo_overlay_filter("vsub", "v", logo_idx, w) if WATERMARK_PNG.exists() else ""
+    vtail = "[vsub]" if wm else "[v]"
     fc = (f"{fit}[fit]tpad=stop_mode=clone:stop_duration=3,format=yuv420p,"
-          f"subtitles={subs_path.name}[v];{audio_fc}")
+          f"subtitles={subs_path.name}{vtail};{audio_fc}")
+    if wm:
+        inputs += ["-i", str(WATERMARK_PNG.resolve())]
+        fc = f"{fc};{wm}"
     cmd = [
         str(FFMPEG_EXE), "-y", "-loglevel", "error",
         *inputs,

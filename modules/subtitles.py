@@ -278,12 +278,15 @@ def write_captions_ass(
     event_lines = []
 
     if watermark_text:
+        # Premium mark: Segoe UI Semibold, ~73% opaque white, hairline outline +
+        # soft shadow for depth on any background, letter-spaced for a logo feel.
         style_lines.append(
-            f"Style: Mark,Arial,{wm_size},&H80FFFFFF,&H80000000,&H00000000,"
-            f"0,0,1,1,1,6,40,{wm_margin},40\n"
+            f"Style: Mark,Segoe UI Semibold,{wm_size},&H45FFFFFF,&H60000000,&H50000000,"
+            f"0,0,1,0.6,1.4,6,40,{wm_margin},40\n"
         )
         event_lines.append(
-            f"Dialogue: 0,{ass_time(0)},{ass_time(total_dur)},Mark,,0,0,0,,{watermark_text}\n"
+            f"Dialogue: 0,{ass_time(0)},{ass_time(total_dur)},Mark,,0,0,0,,"
+            f"{{\\fsp2}}{watermark_text}\n"
         )
     if events:
         style_lines.append(

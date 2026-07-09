@@ -104,6 +104,26 @@ def _concat_segments(segments: list[Path], out_path: Path, tag: str) -> Path:
 
 WATERMARK_TEXT = "Rexjaw"
 
+# Brand logo watermark (transparent PNG) — overlaid bottom-right on every render,
+# replacing the old burned text mark. Missing file => no watermark (graceful).
+WATERMARK_PNG = PROJECT_ROOT / "02_Agent" / "assets" / "watermark.png"
+WM_WIDTH_FRAC = 0.16     # logo width as a fraction of the video width
+WM_MARGIN_FRAC = 0.03
+WM_OPACITY = 0.9
+
+
+def logo_overlay_filter(in_label: str, out_label: str, logo_idx: int, w: int) -> str:
+    """ffmpeg filter_complex snippet: scale the logo to WM_WIDTH_FRAC of the frame
+    width, apply WM_OPACITY, overlay bottom-right with a margin. `logo_idx` is the
+    input index of the -i watermark.png. Returns '' when the logo file is absent."""
+    if not WATERMARK_PNG.exists():
+        return ""
+    lw = max(80, int(w * WM_WIDTH_FRAC))
+    m = max(24, int(w * WM_MARGIN_FRAC))
+    return (f"[{logo_idx}:v]scale={lw}:-1,format=rgba,"
+            f"colorchannelmixer=aa={WM_OPACITY}[wmlogo];"
+            f"[{in_label}][wmlogo]overlay=W-w-{m}:H-h-{m}[{out_label}]")
+
 # Each lyric line needs at least this long on screen to be readable. If the
 # detected singing windows can't give every line this much (e.g. whisper barely
 # heard the vocals on a heavily-produced electronic track and returned a 0.3s
@@ -150,13 +170,13 @@ def _lyric_caption_events(song_dur: float, lyrics: str, song_audio: Optional[Pat
 
 def _write_overlay_ass(song_dur: float, w: int, h: int, path: Path,
                        events: Optional[list] = None) -> Path:
-    """Write an .ass file with the 'Rexjaw' watermark AND the given (already
-    computed — see _lyric_caption_events) lyric caption events, if any."""
-    return write_captions_ass(song_dur, w, h, path, events=events, watermark_text=WATERMARK_TEXT)
+    """Write an .ass with the given lyric caption events (watermark is now the
+    brand logo PNG, overlaid in the mux — not burned text)."""
+    return write_captions_ass(song_dur, w, h, path, events=events, watermark_text=None)
 
 
 def _mux_song(video_path: Path, song_path: Path, song_dur: float,
-              out_path: Path, subs_path: Path) -> Path:
+              out_path: Path, subs_path: Path, w: int = 1920) -> Path:
     """Mux the song over the visuals + burn the overlay .ass (lyric captions +
     'Rexjaw' watermark). Clone the last video frame as a tail pad, then trim to
     the song length. Song audio mapped in full (no -shortest).
@@ -171,11 +191,18 @@ def _mux_song(video_path: Path, song_path: Path, song_dur: float,
     vf = ",".join(chain)
     # Inputs/outputs as ABSOLUTE paths — cwd is TEMP_DIR (for the .ass ref), so
     # relative file paths would resolve against the wrong directory.
+    inputs = ["-i", str(Path(video_path).resolve()),
+              "-i", str(Path(song_path).resolve())]
+    wm = logo_overlay_filter("vsub", "v", 2, w) if WATERMARK_PNG.exists() else ""
+    vtail = "[vsub]" if wm else "[v]"
+    fc = f"[0:v]{vf}{vtail}"
+    if wm:
+        inputs += ["-i", str(WATERMARK_PNG.resolve())]
+        fc = f"{fc};{wm}"
     cmd = [
         str(FFMPEG_EXE), "-y", "-loglevel", "error",
-        "-i", str(Path(video_path).resolve()),
-        "-i", str(Path(song_path).resolve()),
-        "-filter_complex", f"[0:v]{vf}[v]",
+        *inputs,
+        "-filter_complex", fc,
         "-map", "[v]", "-map", "1:a",
         "-t", f"{song_dur:.3f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -260,7 +287,7 @@ def assemble_musicvideo(
         _write_overlay_ass(song_dur, w, h, subs_path, events=caption_events)
 
         out_path = FINAL_DIR / f"song_{song_id}_{aspect_key}.mp4"
-        _mux_song(concat_path, song_audio, song_dur, out_path, subs_path)
+        _mux_song(concat_path, song_audio, song_dur, out_path, subs_path, w)
         outputs[aspect_key] = out_path
         log.info(f"✅ {aspect_key} ready: {out_path.name}")
 

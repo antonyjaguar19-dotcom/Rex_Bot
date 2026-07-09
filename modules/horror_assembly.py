@@ -22,8 +22,8 @@ if str(_HERE) not in sys.path:
 
 from modules.assembly import FFMPEG_EXE, FINAL_DIR, _probe_duration
 from modules.musicvideo_assembly import (
-    ASPECTS, TEMP_DIR, WATERMARK_TEXT, _ken_burns_segment,
-    _concat_segments,
+    ASPECTS, TEMP_DIR, WATERMARK_TEXT, WATERMARK_PNG, logo_overlay_filter,
+    _ken_burns_segment, _concat_segments,
 )
 from modules.subtitles import sentence_chunks, windows_to_events, merge_events, write_captions_ass
 from modules import audio_segmenter
@@ -55,7 +55,8 @@ def _write_captions_ass(total_dur: float, w: int, h: int, path: Path,
         events = merge_events(refined)
     else:
         events = windows_to_events(windows, chunk_fn=sentence_chunks)
-    return write_captions_ass(total_dur, w, h, path, events=events, watermark_text=WATERMARK_TEXT)
+    # Watermark is the brand logo PNG (overlaid in the mux), not burned text.
+    return write_captions_ass(total_dur, w, h, path, events=events, watermark_text=None)
 
 
 def _spans_from_durations(durations: list) -> list:
@@ -105,10 +106,17 @@ def _mux_horror(video_path: Path, narration_path: Path, drone_path: Optional[Pat
     else:
         audio_fc = "[1:a]anull[a]"
 
+    logo_idx = len(inputs) // 2
+    w = ASPECTS[ASPECT_KEY][0]
+    wm = logo_overlay_filter("vsub", "v", logo_idx, w) if WATERMARK_PNG.exists() else ""
+    vtail = "[vsub]" if wm else "[v]"
     fc = (
         f"[0:v]tpad=stop_mode=clone:stop_duration=3,format=yuv420p,"
-        f"subtitles={subs_path.name}[v];{audio_fc}"
+        f"subtitles={subs_path.name}{vtail};{audio_fc}"
     )
+    if wm:
+        inputs += ["-i", str(WATERMARK_PNG.resolve())]
+        fc = f"{fc};{wm}"
     cmd = [
         str(FFMPEG_EXE), "-y", "-loglevel", "error",
         *inputs,
