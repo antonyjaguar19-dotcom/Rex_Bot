@@ -153,6 +153,8 @@ class State:
         self.song: Optional[dict] = None       # music-video pipeline: current song
         self.horror: Optional[dict] = None     # horror pipeline: current story
         self.facts: Optional[dict] = None      # facts-shorts pipeline: current reel
+        self.facts_stage: str = "idle"         # facts stepper: write|voice|images|assemble|done
+        self.music_stage: str = "idle"         # music stepper: lyrics|song|visuals|assemble|done
 
     def push(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -446,7 +448,7 @@ def generate_song_action(theme: str, refresh_cb):
         return
     if not _try_begin("song generation"):
         return
-    S.stage = "script"
+    S.music_stage = "lyrics"
     S.push(f"Writing song — theme='{theme}'")
     refresh_cb()
 
@@ -489,14 +491,27 @@ def render_musicvideo_action(refresh_cb):
         return
     if not _try_begin("music video render"):
         return
-    S.stage = "final"
+    S.music_stage = "song"
     S.push("Rendering music video...")
     refresh_cb()
+
+    def _pm(m):
+        S.push(f"· {m}")
+        ml = m.lower()
+        if "ace-step" in ml or "rendering song" in ml or "song ready" in ml:
+            S.music_stage = "song"
+        elif "scene" in ml or "still" in ml:
+            S.music_stage = "visuals"
+        elif "assembl" in ml:
+            S.music_stage = "assemble"
+        elif "complete" in ml:
+            S.music_stage = "done"
 
     def worker():
         try:
             from modules import musicvideo_pipeline as mvp
-            outputs = mvp.render_musicvideo(S.song, progress_cb=lambda m: S.push(f"· {m}"))
+            outputs = mvp.render_musicvideo(S.song, progress_cb=_pm)
+            S.music_stage = "done"
             done = [k for k in ("9x16", "16x9", "1x1") if outputs.get(k)]
             S.push(f"✅ Music video ready: {', '.join(done)} in 04_Outputs/final")
         except Exception as e:
@@ -570,19 +585,33 @@ def generate_facts_action(topic: str, refresh_cb):
         return
     if not _try_begin("facts reel"):
         return
-    S.stage = "final"
+    S.facts_stage = "write"
     S.push(f"Facts reel — topic='{topic}'")
     refresh_cb()
+
+    def _p(m):
+        S.push(f"· {m}")
+        ml = m.lower()
+        if "voicing" in ml or "narration" in ml:
+            S.facts_stage = "voice"
+        elif "backdrop" in ml or "building" in ml:
+            S.facts_stage = "images"
+        elif any(k in ml for k in ("assembl", "ken burns", "animating", "muxing")):
+            S.facts_stage = "assemble"
+        elif "complete" in ml:
+            S.facts_stage = "done"
 
     def worker():
         try:
             from modules import facts_writer as fw
             from modules import facts_pipeline as fp
-            story = fw.generate_facts_short(topic, 6, progress_cb=lambda m: S.push(f"· {m}"))
+            story = fw.generate_facts_short(topic, 6, progress_cb=_p)
             S.facts = story
+            S.facts_stage = "voice"
             n = len([b for b in story.get("beats", []) if b.get("kind") == "fact"])
             S.push(f"Facts written — '{story.get('title')}' ({n} facts). Rendering reel…")
-            out = fp.render_facts(story, progress_cb=lambda m: S.push(f"· {m}"))
+            out = fp.render_facts(story, progress_cb=_p)
+            S.facts_stage = "done"
             S.push(f"✅ Facts reel ready: {Path(out.get('9x16')).name}")
         except Exception as e:
             S.push(f"Facts reel failed: {e}")
@@ -1163,10 +1192,9 @@ def main_page():
     with ui.left_drawer(value=True, bordered=False) \
             .classes("rex-drawer").props("width=185") as nav_drawer:
         with ui.tabs().props("vertical").classes("rex-nav w-full") as nav_tabs:
-            tab_pipeline = ui.tab("Pipeline", icon="movie")
+            tab_pipeline = ui.tab("Story", icon="movie")
             tab_facts = ui.tab("Facts", icon="lightbulb")
             tab_music = ui.tab("Music", icon="music_note")
-            tab_settings = ui.tab("Settings", icon="tune")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
             tab_tools = ui.tab("Tools", icon="build")
@@ -1180,7 +1208,6 @@ def main_page():
         pipeline_panel = ui.tab_panel(tab_pipeline).classes("w-full")
         facts_panel = ui.tab_panel(tab_facts).classes("w-full")
         music_panel = ui.tab_panel(tab_music).classes("w-full")
-        settings_panel = ui.tab_panel(tab_settings).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
         tools_panel = ui.tab_panel(tab_tools).classes("w-full")
@@ -1215,20 +1242,38 @@ def main_page():
             else:
                 line.classes(replace="rex-step-line")
 
-    # ============== MODE SWITCH (story vs music) ==============
-    mode_row = ui.row().classes("w-full items-center gap-3") \
-        .style("margin: 0 0 12px 0; padding: 0 8px;")
-    with mode_row:
-        ui.label("🎛️ Mode").classes("text-sm font-bold opacity-80")
-        # Facts + Music each have their own left-nav tab now; Pipeline = Story.
-        _mode_opts = {"story": "📖 Story"}
-        _cur_mode = rs.get_pipeline_mode()
-        mode_toggle = ui.toggle(
-            _mode_opts,
-            value=_cur_mode if _cur_mode in _mode_opts else "story",
-        ).props("dense")
-        ui.label("Story pipeline · Music + Facts are in the left nav") \
-            .classes("text-xs opacity-60")
+    # --- reusable step tracker for the Facts + Music tabs ---
+    FACTS_STAGES = ["Write", "Voice", "Images", "Assemble", "Done"]
+    MUSIC_STAGES = ["Lyrics", "Song", "Visuals", "Assemble", "Done"]
+    _FACTS_KEYS = ["write", "voice", "images", "assemble", "done"]
+    _MUSIC_KEYS = ["lyrics", "song", "visuals", "assemble", "done"]
+
+    def _build_stepper(labels):
+        circles, lines = [], []
+        with ui.row().classes("w-full items-center justify-between") \
+                .style("padding:2px 6px 12px;"):
+            for i, name in enumerate(labels):
+                with ui.column().classes("items-center gap-1"):
+                    circles.append(ui.label(str(i + 1)).classes("rex-step"))
+                    ui.label(name).classes("text-xs opacity-75")
+                if i < len(labels) - 1:
+                    lines.append(ui.element("div").classes("rex-step-line")
+                                 .style("flex:1;max-width:60px;"))
+        return circles, lines
+
+    def _paint_stepper(circles, lines, active_idx):
+        for i, el in enumerate(circles):
+            cls = "rex-step"
+            if i < active_idx:
+                cls += " done"
+            elif i == active_idx:
+                cls += " active"
+            el.classes(replace=cls)
+        for i, l in enumerate(lines):
+            l.classes(replace="rex-step-line done" if i < active_idx else "rex-step-line")
+
+    facts_steps = ([], [])
+    music_steps = ([], [])
 
     # ============== STAGE 1 — SCRIPT ==============
     with ui.card().classes("rex-card w-full") as card_script:
@@ -1302,6 +1347,7 @@ def main_page():
         ui.label("ACE-Step song + Ken Burns visuals (9x16/16x9/1x1). Style / vocal / "
                  "tempo / visual set in Settings or the Discord panel (or auto).") \
             .classes("text-xs opacity-70")
+        music_steps = _build_stepper(MUSIC_STAGES)
 
         with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
             song_theme = ui.input(label="Song theme",
@@ -1386,6 +1432,7 @@ def main_page():
         ui.label("Text-forward reel: true facts + energetic voice + creative images + "
                  "read-along subtitles. Vertical, Instagram-ready. ~4 min.") \
             .classes("text-xs opacity-70")
+        facts_steps = _build_stepper(FACTS_STAGES)
 
         with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
             facts_topic = ui.input(label="Topic",
@@ -1710,7 +1757,6 @@ def main_page():
     # (Cards were built at page level above; move them now so the long single
     #  scroll becomes a left-nav tabbed layout. Child widget handles created
     #  inside each card stay valid after the parent moves.)
-    mode_row.move(pipeline_panel)
     stepper_row.move(pipeline_panel)
     card_script.move(pipeline_panel)
     card_musicvideo.move(music_panel)
@@ -1720,7 +1766,7 @@ def main_page():
     card_storyboard.move(pipeline_panel)
     card_video.move(pipeline_panel)
     card_final.move(pipeline_panel)
-    card_settings.move(settings_panel)
+    card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
     card_models.move(models_panel)
     card_queue.move(queue_panel)
     card_tools.move(tools_panel)
@@ -1736,15 +1782,6 @@ def main_page():
             c.set_visibility(True)
         card_horror.set_visibility(rs.get_pipeline_mode() == "horror_story")
 
-    _MODE_LABEL = {"story": "Story", "music_video": "Music video",
-                   "horror_story": "Horror", "facts": "Facts"}
-
-    def _set_mode(m: str):
-        rs.set_pipeline_mode(m)
-        _apply_mode_visibility()
-        ui.notify(f"Mode → {_MODE_LABEL.get(m, m)}", type="positive")
-
-    mode_toggle.on("update:model-value", lambda e: _set_mode(mode_toggle.value))
     _apply_mode_visibility()
 
     # =================== REFRESHERS ===================
@@ -2220,6 +2257,10 @@ def main_page():
             gpu_label.text = gpu_summary()
             _refresh_status()
             refresh_stepper()
+            _fa = _FACTS_KEYS.index(S.facts_stage) if S.facts_stage in _FACTS_KEYS else -1
+            _paint_stepper(facts_steps[0], facts_steps[1], _fa)
+            _ma = _MUSIC_KEYS.index(S.music_stage) if S.music_stage in _MUSIC_KEYS else -1
+            _paint_stepper(music_steps[0], music_steps[1], _ma)
             render_script()
             render_prompts()
             render_storyboard()
