@@ -1702,11 +1702,11 @@ def main_page():
                     card_video, card_final]
 
     def _apply_mode_visibility():
-        m = rs.get_pipeline_mode()
+        # Pipeline tab IS the story pipeline now (Music + Facts are their own tabs),
+        # so the story cards are always visible regardless of pipeline_mode.
         for c in _story_cards:
-            c.set_visibility(m == "story")
-        card_horror.set_visibility(m == "horror_story")
-        # Music + Facts have their own left-nav tabs — nothing to toggle here.
+            c.set_visibility(True)
+        card_horror.set_visibility(rs.get_pipeline_mode() == "horror_story")
 
     _MODE_LABEL = {"story": "Story", "music_video": "Music video",
                    "horror_story": "Horror", "facts": "Facts"}
