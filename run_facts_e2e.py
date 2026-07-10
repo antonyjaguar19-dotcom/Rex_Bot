@@ -26,6 +26,22 @@ def log(m):
 def main():
     from modules import facts_writer as fw
     from modules import facts_pipeline as fp
+    from modules import job_lock
+
+    # Take the shared GPU queue. Without this the harness renders straight into
+    # whatever the bot is doing: two pipelines, one 16 GB card. It waits its
+    # turn instead of colliding.
+    log("waiting for the GPU queue…")
+    job_lock.acquire_blocking(
+        "tools:facts e2e",
+        on_queued=lambda pos: log(f"queued #{pos} behind {job_lock.holder_label()}"))
+    try:
+        _run(fw, fp)
+    finally:
+        job_lock.release()
+
+
+def _run(fw, fp):
 
     args = sys.argv[1:]
     animate = "--animate" in args

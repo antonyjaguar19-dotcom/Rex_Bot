@@ -150,3 +150,23 @@ def test_two_big_models_cannot_coexist_on_16gb():
     card = 16.0
     assert gm.MODEL_VRAM_GB[gm.WAN_VIDEO] + gm.MODEL_VRAM_GB[gm.OLLAMA] > card
     assert gm.MODEL_VRAM_GB[gm.QWEN_EDIT] + gm.MODEL_VRAM_GB[gm.WAN_VIDEO] > card
+
+
+def test_a_slow_free_is_remeasured_before_warning(clean, monkeypatch, caplog):
+    """Freeing is async: ComfyUI returns from /free before CUDA hands the memory
+    back. Measuring once reported '0.6 GB free' on a card that settled to 14.4.
+    """
+    readings = iter([0.6, 14.4])          # immediately after evict, then settled
+    monkeypatch.setattr(gm, "free_gb", lambda: next(readings))
+    monkeypatch.setattr(gm.time, "sleep", lambda s: None)
+    with caplog.at_level("WARNING"):
+        gm.acquire(gm.QWEN_EDIT)
+    assert "only" not in caplog.text, "must re-measure before warning"
+
+
+def test_a_genuinely_full_card_still_warns(clean, monkeypatch, caplog):
+    monkeypatch.setattr(gm, "free_gb", lambda: 0.2)   # stays full after settling
+    monkeypatch.setattr(gm.time, "sleep", lambda s: None)
+    with caplog.at_level("WARNING"):
+        gm.acquire(gm.QWEN_EDIT)
+    assert "only 0.2 GB free" in caplog.text

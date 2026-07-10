@@ -37,6 +37,7 @@ for the duration. Outside the lock it is a best-effort hint.
 
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from typing import Optional
 
@@ -71,6 +72,9 @@ WORKING_HEADROOM_GB = 1.5
 
 # Warn only when the load is genuinely marginal — the shape of the CUDA fault.
 MIN_FREE_AFTER_LOAD_GB = 0.5
+
+# CUDA hands memory back asynchronously; re-measure once before crying wolf.
+SETTLE_SEC = 2.0
 
 _lock = threading.Lock()
 _resident: Optional[str] = None
@@ -162,7 +166,16 @@ def acquire(label: str) -> None:
              f"{free_gb():.1f} GB free, resident={resident_model()})")
     evict_all()
 
+    # Freeing is asynchronous: ComfyUI returns from /free before CUDA has
+    # actually handed the memory back, and a caller's own torch allocator may
+    # still be holding cached blocks. Measuring immediately reported "0.6 GB
+    # free" on a card that settled to 14.4 GB a moment later — a warning that
+    # was pure noise.
     have = free_gb()
+    if have < want + MIN_FREE_AFTER_LOAD_GB:
+        time.sleep(SETTLE_SEC)
+        have = free_gb()
+
     if have < want + MIN_FREE_AFTER_LOAD_GB:
         # Not fatal — ComfyUI offloads — but this is the exact shape of the
         # failure that killed the CUDA context, so say so.
