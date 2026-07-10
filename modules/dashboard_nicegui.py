@@ -3223,7 +3223,19 @@ def main_page():
             cls += " rex-pulse"
         log_box.content = f"<pre class='{cls}'>{safe}</pre>"
 
+    # A render worker holds `full_refresh` as its callback and keeps calling it
+    # long after the browser tab is gone — every element touch then raises
+    # "The client this element belongs to has been deleted." Track the client's
+    # lifetime and make refresh a silent no-op once it dies.
+    _page = {"alive": True}
+    try:
+        ui.context.client.on_delete(lambda *_: _page.update(alive=False))
+    except Exception as e:                     # older NiceGUI: fall back to the guard below
+        log.debug(f"could not hook client.on_delete: {e}")
+
     def full_refresh():
+        if not _page["alive"]:
+            return
         try:
             gpu_label.text = gpu_summary()
             _refresh_status()
@@ -3243,8 +3255,16 @@ def main_page():
             render_recovery()
             render_queue()
             render_log()
+        except RuntimeError as e:
+            # The tab closed mid-refresh: expected, not an error worth a stack.
+            if "has been deleted" in str(e):
+                _page["alive"] = False
+                log.debug("dashboard client gone; refresh stopped for this session")
+                return
+            log.exception(f"refresh error: {e}")
         except Exception as e:
-            log.warning(f"refresh err: {e}")
+            # Anything else is a real bug — a bare warning line used to hide it.
+            log.exception(f"refresh error: {e}")
 
     full_refresh()
     # Auto-refresh every 1.5s

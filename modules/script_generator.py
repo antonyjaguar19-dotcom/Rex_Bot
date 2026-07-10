@@ -353,6 +353,26 @@ def rewrite_narration(current: str, instruction: str = "", *,
 # JSON EXTRACTION + VALIDATION
 # ==============================================================================
 
+MAX_BAD_OUTPUTS = 20     # keep the last N unparseable LLM responses on disk
+
+
+def _save_bad_output(raw: str) -> Path:
+    """Archive an unparseable LLM response under its own timestamped name and
+    prune old ones. Returns the path (used in the raised error message)."""
+    try:
+        bad_dir = OUTPUTS_DIR / "_bad_llm_output"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        path = bad_dir / f"{datetime.now():%Y%m%d_%H%M%S_%f}.txt"
+        path.write_text(raw, encoding="utf-8")
+        old = sorted(bad_dir.glob("*.txt"))[:-MAX_BAD_OUTPUTS]
+        for f in old:
+            f.unlink(missing_ok=True)
+        return path
+    except Exception as e:
+        log.warning(f"Could not archive bad LLM output: {e}")
+        return OUTPUTS_DIR / "_last_raw_llm_output.txt"
+
+
 def _extract_json(raw: str) -> dict:
     """Pull JSON out of an LLM response, tolerantly. Saves raw output for debugging."""
     # Save raw output for debugging
@@ -421,9 +441,13 @@ def _extract_json(raw: str) -> dict:
         return json.loads(repaired)
     except json.JSONDecodeError as e:
         log.error(f"Repair also failed: {e}")
+        # `_last_raw_llm_output.txt` is rewritten by EVERY call, so by the time
+        # anyone investigates, the offending output has been overwritten by a
+        # later success. Keep a dated copy of the failures only.
+        bad_path = _save_bad_output(raw)
         raise ValueError(
             f"Could not extract JSON from LLM response. "
-            f"Raw output saved to: {OUTPUTS_DIR / '_last_raw_llm_output.txt'}. "
+            f"Raw output saved to: {bad_path}. "
             f"First 300 chars: {raw[:300]}"
         )
 

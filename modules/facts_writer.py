@@ -153,6 +153,34 @@ class FactsUnavailable(RuntimeError):
     placeholder narration ("Here is an interesting thing about bees number 1")."""
 
 
+# One bad JSON sample shouldn't cost you a reel; a dead server should fail fast.
+LLM_ATTEMPTS = 3
+
+
+def _is_connection_error(exc) -> bool:
+    """True when the LLM server is unreachable (retrying is pointless).
+
+    Type first — requests raises ConnectionError/Timeout subclasses, and the
+    message alone is not reliable. Text is only a fallback for wrapped errors.
+    """
+    if exc is None:
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    try:
+        import requests
+        if isinstance(exc, (requests.exceptions.ConnectionError,
+                            requests.exceptions.Timeout)):
+            return True
+    except Exception:
+        pass
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(k in text for k in (
+        "connectionpool", "max retries", "refused",
+        "timed out", "unreachable", "actively refused",
+    ))
+
+
 def generate_facts_short(
     topic: str,
     n_facts: int = DEFAULT_N_FACTS,
@@ -173,18 +201,37 @@ def generate_facts_short(
     if progress_cb:
         progress_cb(f"writing {n} facts about {topic}...")
     placeholder = False
-    try:
-        raw = _call_llm(_prompt(topic, n), _SYS, role="creative")
-        data = _extract_json(raw)
-        if not data.get("facts"):
-            raise ValueError("LLM returned no facts")
-    except Exception as e:
+    data = None
+    last_err = None
+    # A malformed-JSON roll is transient (one bad sample, a stray delimiter), so
+    # re-roll before giving up. A connection error is not — bail on it at once
+    # rather than hammering a server that isn't there.
+    for attempt in range(1, LLM_ATTEMPTS + 1):
+        try:
+            raw = _call_llm(_prompt(topic, n), _SYS, role="creative")
+            data = _extract_json(raw)
+            if not data.get("facts"):
+                raise ValueError("LLM returned no facts")
+            break
+        except Exception as e:
+            last_err = e
+            if _is_connection_error(e):
+                break
+            if attempt < LLM_ATTEMPTS:
+                log.warning(f"Facts LLM attempt {attempt}/{LLM_ATTEMPTS} "
+                            f"unusable ({e}); re-rolling.")
+                if progress_cb:
+                    progress_cb(f"LLM output unusable, retrying ({attempt + 1}/{LLM_ATTEMPTS})…")
+
+    if data is None or not data.get("facts"):
         if not allow_placeholder:
+            hint = ("Is Ollama running?" if _is_connection_error(last_err)
+                    else f"The model returned unusable JSON {LLM_ATTEMPTS}x.")
             raise FactsUnavailable(
-                f"Could not write facts about '{topic}': {e}. "
-                f"Is Ollama running? (nothing was rendered)"
-            ) from e
-        log.warning(f"Facts LLM failed ({e}); using offline placeholder.")
+                f"Could not write facts about '{topic}': {last_err}. "
+                f"{hint} (nothing was rendered)"
+            ) from last_err
+        log.warning(f"Facts LLM failed ({last_err}); using offline placeholder.")
         data = _fallback(topic, n)
         placeholder = True
 

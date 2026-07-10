@@ -16,7 +16,9 @@ def no_disk(tmp_path, monkeypatch):
     yield
 
 
-def _break_llm(monkeypatch, exc=RuntimeError("ollama is down")):
+def _break_llm(monkeypatch, exc=None):
+    exc = exc or ConnectionError(
+        "HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded")
     def boom(*a, **k):
         raise exc
     monkeypatch.setattr(fw, "_call_llm", boom)
@@ -75,3 +77,59 @@ def test_empty_facts_list_raises(monkeypatch):
     monkeypatch.setattr(fw, "_extract_json", lambda raw: {"title": "T", "facts": []})
     with pytest.raises(fw.FactsUnavailable):
         fw.generate_facts_short("bees", 6)
+
+
+# ---------------------------------------------------------------- retry logic
+
+def test_malformed_json_is_retried_then_succeeds(monkeypatch):
+    """One bad sample must not cost a reel — re-roll before failing."""
+    calls = {"n": 0}
+    good = {"title": "Bee Facts", "hook": "h",
+            "facts": [{"spoken": f"f{i}", "caption": "c", "backdrop": "b"}
+                      for i in range(6)],
+            "outro": "o"}
+
+    monkeypatch.setattr(fw, "_call_llm", lambda *a, **k: "raw")
+
+    def flaky(raw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("Could not extract JSON from LLM response")
+        return good
+    monkeypatch.setattr(fw, "_extract_json", flaky)
+
+    story = fw.generate_facts_short("bees", 6)
+    assert calls["n"] == 2               # retried exactly once
+    assert story["_placeholder"] is False
+
+
+def test_malformed_json_every_attempt_raises_with_count(monkeypatch):
+    monkeypatch.setattr(fw, "_call_llm", lambda *a, **k: "raw")
+    monkeypatch.setattr(fw, "_extract_json",
+                        lambda raw: (_ for _ in ()).throw(ValueError("bad json")))
+    with pytest.raises(fw.FactsUnavailable, match="unusable JSON"):
+        fw.generate_facts_short("bees", 6)
+
+
+def test_connection_error_fails_fast_without_retrying(monkeypatch):
+    """No point hammering a server that isn't there."""
+    calls = {"n": 0}
+
+    def down(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("HTTPConnectionPool(host='127.0.0.1', port=11434): "
+                           "Max retries exceeded")
+    monkeypatch.setattr(fw, "_call_llm", down)
+
+    with pytest.raises(fw.FactsUnavailable, match="Is Ollama running"):
+        fw.generate_facts_short("bees", 6)
+    assert calls["n"] == 1               # tried once, gave up
+
+
+def test_is_connection_error_classifies():
+    assert fw._is_connection_error(RuntimeError("Max retries exceeded"))
+    assert fw._is_connection_error(ConnectionError("refused"))
+    assert fw._is_connection_error(RuntimeError("connection refused"))
+    assert fw._is_connection_error(TimeoutError("timed out"))
+    assert not fw._is_connection_error(ValueError("bad json"))
+    assert not fw._is_connection_error(None)
