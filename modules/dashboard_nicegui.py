@@ -48,6 +48,7 @@ from modules import job_lock
 from modules import job_recovery as jr
 from modules import config_check
 from modules import manual_mode as mm
+from modules import publish_kit as pk
 from modules import voices
 
 # How often a running job rewrites its stage into the recovery register.
@@ -128,6 +129,20 @@ try:
     app.add_media_files("/media", str(OUTPUTS_DIR))
 except Exception as _e:
     logging.getLogger("claw_bot.dashboard").warning(f"media mount failed: {_e}")
+
+
+def _kit_sig(video) -> tuple:
+    """Thumbnail mtimes, so a regenerated thumbnail actually redraws.
+
+    The reel's own mtime never changes when only its thumbnail is re-rendered,
+    so a signature built from the video alone leaves the stale image on screen.
+    """
+    stem = Path(video).with_suffix("")
+    out = []
+    for suffix in ("_thumb_9x16.jpg", "_thumb_16x9.jpg", "_publish.json"):
+        f = Path(f"{stem}{suffix}")
+        out.append(f.stat().st_mtime_ns if f.exists() else 0)
+    return tuple(out)
 
 
 def _media_url(p) -> str:
@@ -1214,6 +1229,40 @@ def run_upscale_action(refresh_cb):
             _end()
             refresh_cb()
     _bg_gpu("upscale", worker)
+
+
+def regen_thumbnail_action(video: Path, scene: str, refresh_cb):
+    """Re-render one video's mascot thumbnail from an edited scene ('' = re-roll).
+
+    The safety check runs on the UI thread so a bad scene is refused instantly,
+    before the job ever joins the GPU queue.
+    """
+    from modules import mascot as mas
+    scene = (scene or "").strip()
+    if scene:
+        bad = mas.scene_violation(scene)
+        if bad:
+            ui.notify(f"❌ '{bad}' can't appear with the mascot. Rewrite the scene.",
+                      type="negative")
+            return
+    if not _try_begin("thumbnail regen"):
+        return
+    S.push(f"Thumbnail regen — {video.name}"
+           + (f": {scene[:60]}" if scene else " (bot re-roll)"))
+    refresh_cb()
+
+    def worker():
+        try:
+            kit = pk.regenerate_thumbnail(video, scene)
+            S.push(f"✅ New thumbnail — scene: {kit.get('mascot_scene', '')[:70]}")
+        except ValueError as e:
+            S.push(f"Scene rejected: {e}")
+        except Exception as e:
+            S.push(f"Thumbnail regen failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("thumbnail regen", worker)
 
 
 # ==============================================================================
@@ -2908,7 +2957,7 @@ def main_page():
         finals = (sorted(final_dir.glob(f"final_{sid}_*.mp4"))
                   if sid and final_dir.exists() else [])
         placeholder = ("_(no final yet)_" if not sid else "_(not assembled yet)_")
-        sig = tuple((str(p), p.stat().st_mtime_ns) for p in finals) or (placeholder,)
+        sig = tuple((str(p), p.stat().st_mtime_ns, _kit_sig(p)) for p in finals)             or (placeholder,)
         if not _changed("final", sig):
             return
         final_container.clear()
@@ -2957,12 +3006,32 @@ def main_page():
                             _media_url(t)).props("download") \
                         .classes("text-xs").style("color:#7cf;")
 
+        # --- edit the scene the bot invented, and re-render from it ---
+        kit = pk.load_kit(video)
+        scene = kit.get("mascot_scene", "")
+        if not scene and kit.get("thumb_source") != "mascot":
+            return          # a still-frame thumbnail has no scene to edit
+        ui.label("Thumbnail scene — edit and re-render if you don't like it") \
+            .classes("text-xs opacity-70").style("margin-top:10px;")
+        scene_box = ui.textarea(value=scene) \
+            .props("outlined dense autogrow dark").classes("w-full") \
+            .style("max-width:640px;")
+        with ui.row().classes("gap-2").style("margin-top:4px;"):
+            ui.button("🎨 Re-render with this scene",
+                      on_click=lambda v=video, b=scene_box:
+                          regen_thumbnail_action(v, b.value, full_refresh)) \
+                .props("unelevated color=accent dense")
+            ui.button("🎲 Let the bot try again",
+                      on_click=lambda v=video:
+                          regen_thumbnail_action(v, "", full_refresh)) \
+                .props("flat dense")
+
     def render_facts_reel():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
         reels = (sorted(fdir.glob("facts_*_9x16.mp4"),
                         key=lambda p: p.stat().st_mtime, reverse=True)[:1]
                  if fdir.exists() else [])
-        sig = tuple((str(p), p.stat().st_mtime_ns) for p in reels) or ("none",)
+        sig = tuple((str(p), p.stat().st_mtime_ns, _kit_sig(p)) for p in reels)             or ("none",)
         if not _changed("facts", sig):
             return
         facts_container.clear()

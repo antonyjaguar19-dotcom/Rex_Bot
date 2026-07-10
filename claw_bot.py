@@ -4934,6 +4934,92 @@ async def cmd_make_facts(ctx, *, topic: str = None):
         pass
 
 
+async def _send_thumb(channel, kit: dict, note: str = ""):
+    """Post a kit's thumbnails + the scene that produced them."""
+    scene = kit.get("mascot_scene", "")
+    msg = note or ""
+    if scene:
+        msg += f"\n🎨 **Scene:** _{scene}_"
+    if kit.get("title"):
+        msg += f"\n📌 **Title:** `{kit['title']}`"
+    files = []
+    for key in ("thumb_9x16", "thumb_16x9"):
+        p = kit.get(key)
+        if p and Path(p).exists():
+            files.append(discord.File(str(p)))
+    await channel.send(msg.strip() or "🖼️", files=files or None)
+
+
+@bot.command(name="thumb", aliases=["thumbnail"])
+async def cmd_thumb(ctx, video_id: str = None, *, scene: str = None):
+    """Show or REGENERATE a video's thumbnail.
+
+    `!thumb`                     list recent videos
+    `!thumb <id>`                show its current thumbnail + scene
+    `!thumb <id> <your scene>`   re-render with YOUR description
+    `!thumb <id> reroll`         let the bot invent a new scene
+    """
+    from modules import publish_kit as pk
+
+    if not video_id:
+        vids = pk.latest_videos(8)
+        if not vids:
+            await ctx.send("No finished videos with a publish kit yet.")
+            return
+        lines = ["🖼️ **Recent videos** — `!thumb <id>` to see, "
+                 "`!thumb <id> <scene>` to redo:"]
+        for v in vids:
+            k = pk.load_kit(v)
+            lines.append(f"• `{v.stem.replace('_9x16', '')}` — {k.get('title', v.stem)[:50]}")
+        await send_long_message(ctx.channel, "\n".join(lines))
+        return
+
+    video = pk.find_video(video_id)
+    if not video:
+        await ctx.send(f"❌ No final video matching `{video_id}`. Try `!thumb`.")
+        return
+
+    # No scene given -> just show what's there.
+    if not scene:
+        kit = pk.load_kit(video)
+        if not kit:
+            await ctx.send(f"`{video.name}` has no publish kit yet.")
+            return
+        await _send_thumb(ctx.channel, kit, f"🖼️ **{video.name}**")
+        await ctx.send("Redo it with `!thumb {} <your scene>` "
+                       "or `!thumb {} reroll`.".format(video_id, video_id))
+        return
+
+    await _regen_thumb(ctx, video, scene.strip())
+
+
+@_gpu_job("thumbnail regen")
+async def _regen_thumb(ctx, video, scene: str):
+    from modules import publish_kit as pk
+    from modules import mascot as mas
+
+    reroll = scene.lower() in ("reroll", "re-roll", "random", "again")
+    status = await ctx.send(
+        f"🎨 {'Re-rolling the scene' if reroll else 'Rendering your scene'} "
+        f"for `{video.name}`… (~1 min)")
+    try:
+        kit = await asyncio.to_thread(
+            pk.regenerate_thumbnail, video, "" if reroll else scene)
+    except ValueError as e:                      # unsafe scene
+        await status.edit(content=f"❌ {e}")
+        return
+    except mas.MascotGpuFault as e:
+        await status.edit(content=f"💥 {e}")
+        return
+    except Exception as e:
+        log.exception("thumbnail regen failed")
+        await status.edit(content=f"❌ Thumbnail regen failed: `{e}`")
+        return
+
+    await status.edit(content="✅ New thumbnail:")
+    await _send_thumb(ctx.channel, kit)
+
+
 @bot.command(name="mascot")
 async def cmd_mascot(ctx, switch: str = None):
     """Mascot thumbnails: `!mascot` status · `!mascot on|off` · attach an image

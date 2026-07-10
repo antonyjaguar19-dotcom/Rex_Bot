@@ -355,6 +355,126 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
 
 
 # ==============================================================================
+# EDIT + REGENERATE — when the bot's idea isn't the one you wanted
+# ==============================================================================
+
+def load_kit(video) -> dict:
+    """The publish.json written beside a video, or {} if there isn't one."""
+    p = Path(f"{Path(video).with_suffix('')}_publish.json")
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning(f"unreadable publish kit {p.name}: {e}")
+        return {}
+
+
+def find_video(video_id: str):
+    """Resolve a bare id ('20260709_201218') or a filename to a final MP4.
+
+    Prefers the 9x16 master over its _discord re-encode, and never matches a
+    PLACEHOLDER_* render (reels written while the LLM was down).
+    """
+    final_dir = PROJECT_ROOT / "04_Outputs" / "final"
+    if not final_dir.exists():
+        return None
+    vid = str(video_id).strip()
+    exact = final_dir / vid
+    if exact.exists() and exact.suffix == ".mp4":
+        return exact
+    cands = [p for p in final_dir.glob(f"*{vid}*.mp4")
+             if not p.name.startswith("PLACEHOLDER_")
+             and not p.stem.endswith("_discord")]
+    if not cands:
+        return None
+    nine = [p for p in cands if "9x16" in p.name]
+    return (nine or cands)[0]
+
+
+def latest_videos(limit: int = 10) -> list:
+    """Most recent finals that have a publish kit, newest first."""
+    final_dir = PROJECT_ROOT / "04_Outputs" / "final"
+    if not final_dir.exists():
+        return []
+    vids = [p for p in final_dir.glob("*.mp4")
+            if not p.name.startswith("PLACEHOLDER_")
+            and not p.stem.endswith("_discord")
+            and Path(f"{p.with_suffix('')}_publish.json").exists()]
+    return sorted(vids, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+
+
+def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
+                         aspects: tuple = ("16x9", "9x16")) -> dict:
+    """Re-render one video's mascot artwork, optionally from YOUR scene.
+
+    scene=""     -> ask the LLM for a fresh one (a re-roll, with a new seed)
+    scene="..."  -> render exactly what you wrote
+    title=...    -> repaint this title instead of the video's current one
+
+    Raises ValueError on an unsafe scene and MascotGpuFault when the GPU is
+    dead. Both are things the caller must SHOW you, not swallow — unlike
+    attach(), which must never take a finished render down with it.
+    """
+    from modules import mascot
+
+    video = Path(video)
+    if not video.exists():
+        raise FileNotFoundError(f"No such video: {video}")
+    stem = video.with_suffix("")
+
+    scene = (scene or "").strip()
+    if scene:
+        bad = mascot.scene_violation(scene)
+        if bad:
+            raise ValueError(f"That scene contains {bad!r}, which the mascot "
+                             f"never appears with. Rewrite it without that.")
+        if "mascot" not in scene.lower():
+            scene = f"the mascot character {scene}"
+
+    kit = load_kit(video)
+    if title is None:
+        title = kit.get("title", "")
+    if not title:
+        tf = Path(f"{stem}_title.txt")
+        title = tf.read_text(encoding="utf-8").strip() if tf.exists() else video.stem
+
+    # Cached art would be reused verbatim — the point of the cache, and exactly
+    # wrong here.
+    for a in aspects:
+        Path(f"{stem}_mascot_{a}.png").unlink(missing_ok=True)
+
+    art = mascot.render_for_video(
+        title=title, context=kit.get("mascot_scene", "") or title,
+        out_dir=video.parent, stem=stem.name, aspects=aspects,
+        seed=seed, scene=scene or None)
+    if not art:
+        raise RuntimeError("Mascot render produced nothing — is ComfyUI up, "
+                           "and is a mascot image installed?")
+
+    for aspect in aspects:
+        base = art.get(aspect)
+        if not base:
+            continue
+        size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
+        out = Path(f"{stem}_thumb_{aspect}.jpg")
+        if render_thumbnail(Path(base), title, out, size):
+            kit[f"thumb_{aspect}"] = str(out)
+
+    kit.update({"video": str(video), "title": title, "thumb_source": "mascot",
+                "mascot_scene": art.get("_scene", scene),
+                "mascot_seed": art.get("_seed")})
+    try:
+        Path(f"{stem}_publish.json").write_text(json.dumps(kit, indent=2),
+                                                encoding="utf-8")
+        Path(f"{stem}_title.txt").write_text(title, encoding="utf-8")
+    except Exception as e:
+        log.warning(f"could not update publish kit files: {e}")
+    log.info(f"Thumbnail regenerated for {video.name}: {kit['mascot_scene']}")
+    return kit
+
+
+# ==============================================================================
 # ONE CALL PER FINISHED VIDEO
 # ==============================================================================
 
