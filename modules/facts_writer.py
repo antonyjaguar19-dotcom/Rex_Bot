@@ -148,29 +148,56 @@ def _social_description(data: dict, title: str, topic: str, beats: list) -> str:
     return "\n".join(lines)
 
 
+class FactsUnavailable(RuntimeError):
+    """The LLM could not write real facts. Raised instead of quietly shipping
+    placeholder narration ("Here is an interesting thing about bees number 1")."""
+
+
 def generate_facts_short(
     topic: str,
     n_facts: int = DEFAULT_N_FACTS,
     progress_cb: Optional[Callable[[str], None]] = None,
+    allow_placeholder: bool = False,
 ) -> dict:
-    """Write + save a facts reel for `topic`. Returns the story dict."""
+    """Write + save a facts reel for `topic`. Returns the story dict.
+
+    If the LLM is unreachable or returns junk this RAISES. It used to fall back
+    to `_fallback()` silently, so a reel rendered with Ollama down narrated
+    "Here is an interesting thing about honeybees number 1" — a full render,
+    voiced, subtitled and posted, with placeholder text.
+
+    `allow_placeholder=True` restores the old behaviour for offline tests.
+    """
     t0 = _t.time()
     n = max(MIN_FACTS, min(int(n_facts or DEFAULT_N_FACTS), MAX_FACTS))
     if progress_cb:
         progress_cb(f"writing {n} facts about {topic}...")
+    placeholder = False
     try:
         raw = _call_llm(_prompt(topic, n), _SYS, role="creative")
         data = _extract_json(raw)
         if not data.get("facts"):
             raise ValueError("LLM returned no facts")
     except Exception as e:
-        log.warning(f"Facts LLM failed ({e}); using offline fallback.")
+        if not allow_placeholder:
+            raise FactsUnavailable(
+                f"Could not write facts about '{topic}': {e}. "
+                f"Is Ollama running? (nothing was rendered)"
+            ) from e
+        log.warning(f"Facts LLM failed ({e}); using offline placeholder.")
         data = _fallback(topic, n)
+        placeholder = True
 
     beats = _to_beats(data, topic)
     if len([b for b in beats if b["kind"] == "fact"]) < MIN_FACTS:
+        if not allow_placeholder:
+            raise FactsUnavailable(
+                f"LLM wrote only {len([b for b in beats if b['kind'] == 'fact'])} "
+                f"usable facts about '{topic}' (need {MIN_FACTS}). Nothing rendered."
+            )
         data = _fallback(topic, n)
         beats = _to_beats(data, topic)
+        placeholder = True
 
     now = datetime.now()
     facts_id = now.strftime("%Y%m%d_%H%M%S")
@@ -185,7 +212,13 @@ def generate_facts_short(
         "locations": [],
         "description": _social_description(data, title, topic, beats),
         "_generated_at": now.isoformat(),
+        # True only when allow_placeholder let the offline stub through, so a
+        # stub reel can never be mistaken for a real one on disk.
+        "_placeholder": placeholder,
     }
+    if placeholder:
+        log.warning(f"Facts reel {facts_id} contains PLACEHOLDER narration "
+                    f"(LLM unavailable) — do not publish.")
 
     # Safety is ADVISORY for facts (educational): the kids word-list flags benign
     # science terms ("blood", etc.). Log, never block. (A real profanity/harm gate

@@ -3433,8 +3433,13 @@ async def cmd_set_voice(ctx, voice_id: str = None):
         await ctx.send(f"🔄 Voice override cleared. Reverting to default (`af_heart`).")
         return
 
-    rs.set_voice_override(voice_id)
-    await ctx.send(f"✅ Voice set to `{voice_id}`. Will apply to next clip generation.")
+    try:
+        rs.set_voice_override(voice_id)
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"✅ Voice set to `{rs.get_effective_voice()}`. "
+                   f"Will apply to next clip generation.")
 
 
 @bot.command(name="list_voices", aliases=["voices"])
@@ -4909,7 +4914,11 @@ async def cmd_set_facts_voice(ctx, voice: str = None):
     if not voice:
         await ctx.send(f"🎙️ Facts voice: `{rs.get_facts_voice()}` @ {rs.get_facts_voice_speed()}x")
         return
-    rs.set_facts_voice(voice.strip())
+    try:
+        rs.set_facts_voice(voice)
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
+        return
     await ctx.send(f"✅ Facts voice → `{rs.get_facts_voice()}`.")
 
 

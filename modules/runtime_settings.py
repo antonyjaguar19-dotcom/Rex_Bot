@@ -16,6 +16,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from modules import model_registry
+from modules import voices
 from modules.file_utils import atomic_write_json
 
 log = logging.getLogger("claw_bot.runtime_settings")
@@ -138,14 +139,27 @@ def clear_all_overrides() -> None:
 # --- Voice (Kokoro TTS) ---
 
 def get_voice_override() -> Optional[str]:
-    return _load().get("voice")
+    """Self-healing read — an unknown stored id is treated as 'no override'
+    rather than being handed to a UI select that will reject it."""
+    raw = _load().get("voice")
+    if not raw:
+        return None
+    canon = voices.normalize(raw)
+    if canon is None:
+        log.warning(f"Stored voice {raw!r} is not a valid voice; ignoring override")
+        return None
+    return canon
 
 
 def set_voice_override(voice_id: str) -> None:
+    """Validated write — an unknown voice never reaches disk."""
+    canon = voices.normalize(voice_id)
+    if canon is None:
+        raise ValueError(f"'{voice_id}' is not a Kokoro voice. {voices.suggest(voice_id)}")
     data = _load()
-    data["voice"] = voice_id
+    data["voice"] = canon
     _save(data)
-    log.info(f"Voice override set: {voice_id}")
+    log.info(f"Voice override set: {canon}")
 
 
 def clear_voice_override() -> None:
@@ -470,14 +484,27 @@ def set_horror_voice_speed(speed: float) -> None:
 # --- Facts Shorts voice: bright + slightly fast = energetic, "alive" delivery
 # (kokoro voice ids installed: af_bella / af_nicole / af_sky / am_adam / am_michael)
 def get_facts_voice() -> str:
-    return _load().get("facts_voice") or "af_bella"
+    """Self-healing read: a bad stored id degrades to the default rather than
+    crashing the dashboard's select ("Invalid value: Af_bella" -> HTTP 500)."""
+    raw = _load().get("facts_voice")
+    voice = voices.coerce(raw, voices.DEFAULT_FACTS_VOICE, voices.FACTS_VOICES)
+    if raw and voice != raw:
+        log.warning(f"Stored facts_voice {raw!r} is not a valid voice; using {voice!r}")
+    return voice
 
 
 def set_facts_voice(voice: str) -> None:
+    """Validated write. Raises ValueError on an unknown voice so the bad value
+    never reaches disk — that is what bricked the dashboard."""
+    canon = voices.normalize(voice, voices.FACTS_VOICES)
+    if canon is None:
+        raise ValueError(
+            f"'{voice}' is not a facts voice. "
+            f"{voices.suggest(voice, voices.FACTS_VOICES)}")
     data = _load()
-    data["facts_voice"] = voice.strip()
+    data["facts_voice"] = canon
     _save(data)
-    log.info(f"Facts voice: {voice}")
+    log.info(f"Facts voice: {canon}")
 
 
 def get_facts_voice_speed() -> float:
@@ -790,11 +817,8 @@ def get_effective_video_resolution() -> Optional[tuple]:
     return table.get(aspect) or table.get("16:9")
 
 def get_effective_voice() -> str:
-    """User override > Kokoro default ('af_heart')."""
-    override = get_voice_override()
-    if override:
-        return override
-    return "af_heart"
+    """User override > Kokoro default ('af_heart'). Always a valid voice id."""
+    return get_voice_override() or voices.DEFAULT_VOICE
 
 
 def get_effective_sync_mode() -> str:

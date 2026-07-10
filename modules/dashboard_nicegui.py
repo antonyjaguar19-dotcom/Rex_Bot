@@ -48,15 +48,19 @@ from modules import job_lock
 from modules import job_recovery as jr
 from modules import config_check
 from modules import manual_mode as mm
+from modules import voices
 
 # How often a running job rewrites its stage into the recovery register.
 CHECKPOINT_EVERY_SEC = 10.0
 
-# Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
-VOICE_CHOICES = [
-    "af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky",
-    "am_adam", "am_michael", "bf_emma", "bf_isabella", "bm_george", "bm_lewis",
-]
+# Voice ids come from ONE place now (modules/voices.py). Hardcoding them here is
+# how "Af_bella" got saved and then crashed the page build with "Invalid value".
+VOICE_CHOICES = list(voices.KOKORO_VOICES)
+FACTS_VOICE_CHOICES = list(voices.FACTS_VOICES)
+
+# Option maps reused for both the widget and its _sel() clamp.
+_FACTS_PACE = {0.92: "calm", 1.06: "lively", 1.20: "excited"}
+_FACTS_VIDEO = {"kenburns": "Ken Burns (fast)", "wan": "Animate (slow)"}
 try:
     from modules.music_generator import VALID_MOODS as MUSIC_MOODS
     MUSIC_MOODS = list(MUSIC_MOODS)
@@ -478,6 +482,22 @@ def _end():
     S.busy = False
     S.current_action = ""
     job_lock.release()
+
+
+def _sel(value, options, default=None):
+    """Clamp a stored setting to a value the select actually offers.
+
+    NiceGUI raises "Invalid value: X" while BUILDING the page when a select's
+    initial value isn't among its options — the whole dashboard then returns
+    HTTP 500. A stale or hand-typed setting must never be able to do that.
+    `options` may be a list or an {value: label} dict.
+    """
+    valid = list(options.keys()) if isinstance(options, dict) else list(options)
+    if value in valid:
+        return value
+    if value is not None:
+        log.warning(f"Setting {value!r} not in {valid[:6]}… — falling back")
+    return default if default is not None else (valid[0] if valid else None)
 
 
 def _stage_index(stage: str) -> int:
@@ -1966,20 +1986,23 @@ def main_page():
                       on_click=lambda: generate_facts_action(facts_topic.value, full_refresh)) \
                 .classes("rex-btn-primary")
             facts_voice_sel = ui.select(
-                ["af_bella", "af_nicole", "af_sky", "am_adam", "am_michael"],
-                value=rs.get_facts_voice(), label="Voice") \
+                list(FACTS_VOICE_CHOICES),
+                value=_sel(rs.get_facts_voice(), FACTS_VOICE_CHOICES,
+                           voices.DEFAULT_FACTS_VOICE), label="Voice") \
                 .props("outlined dark dense").style("min-width: 130px")
             facts_voice_sel.on("update:model-value",
                                lambda e: rs.set_facts_voice(facts_voice_sel.value))
             facts_pace_sel = ui.select(
-                {0.92: "calm", 1.06: "lively", 1.20: "excited"},
-                value=rs.get_facts_voice_speed(), label="Pace") \
+                _FACTS_PACE,
+                value=_sel(rs.get_facts_voice_speed(), _FACTS_PACE, 1.06),
+                label="Pace") \
                 .props("outlined dark dense").style("min-width: 120px")
             facts_pace_sel.on("update:model-value",
                               lambda e: rs.set_facts_voice_speed(float(facts_pace_sel.value)))
             facts_video_sel = ui.select(
-                {"kenburns": "Ken Burns (fast)", "wan": "Animate (slow)"},
-                value=rs.get_facts_video_mode(), label="Video") \
+                _FACTS_VIDEO,
+                value=_sel(rs.get_facts_video_mode(), _FACTS_VIDEO, "kenburns"),
+                label="Video") \
                 .props("outlined dark dense").style("min-width: 150px")
             facts_video_sel.on("update:model-value",
                                lambda e: rs.set_facts_video_mode(facts_video_sel.value))
@@ -2063,14 +2086,17 @@ def main_page():
 
             aspect_set = ui.select(
                 ["16:9", "9:16", "1:1"],
-                value=(rs.get_resolution_override() or "16:9"), label="Aspect",
+                value=_sel(rs.get_resolution_override(), ["16:9", "9:16", "1:1"], "16:9"),
+                label="Aspect",
             ).props("outlined dark dense").style("min-width: 120px;")
             aspect_set.on("update:model-value",
                           lambda e: (rs.set_resolution_override(aspect_set.value),
                                      _notify_set("Aspect", aspect_set.value)))
 
             voice_set = ui.select(
-                VOICE_CHOICES, value=rs.get_effective_voice(), label="Voice",
+                VOICE_CHOICES,
+                value=_sel(rs.get_effective_voice(), VOICE_CHOICES, voices.DEFAULT_VOICE),
+                label="Voice",
                 with_input=True,
             ).props("outlined dark dense").style("min-width: 150px;")
             voice_set.on("update:model-value",
@@ -2078,7 +2104,8 @@ def main_page():
                                     _notify_set("Voice", voice_set.value)))
 
             music_set = ui.select(
-                MUSIC_MOODS, value=(rs.get_music_mood_override() or MUSIC_MOODS[0]),
+                MUSIC_MOODS,
+                value=_sel(rs.get_music_mood_override(), MUSIC_MOODS, MUSIC_MOODS[0]),
                 label="Music mood",
             ).props("outlined dark dense").style("min-width: 150px;")
             music_set.on("update:model-value",
@@ -2087,14 +2114,18 @@ def main_page():
 
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
             sync_set = ui.select(
-                ["strict", "loose"], value=rs.get_effective_sync_mode(), label="Sync mode",
+                ["strict", "loose"],
+                value=_sel(rs.get_effective_sync_mode(), ["strict", "loose"], "strict"),
+                label="Sync mode",
             ).props("outlined dark dense").style("min-width: 130px;")
             sync_set.on("update:model-value",
                         lambda e: (rs.set_sync_mode_override(sync_set.value),
                                    _notify_set("Sync", sync_set.value)))
 
             trans_set = ui.select(
-                ["crossfade", "cut"], value=rs.get_effective_transition_mode(),
+                ["crossfade", "cut"],
+                value=_sel(rs.get_effective_transition_mode(), ["crossfade", "cut"],
+                           "crossfade"),
                 label="Transition",
             ).props("outlined dark dense").style("min-width: 140px;")
             trans_set.on("update:model-value",
@@ -2152,11 +2183,16 @@ def main_page():
                                  _notify_set("Reference", ref_sw.value)))
 
         # --- Music-video tuning (mode itself lives on the Pipeline tab) ---
+        # Option lists are named so the widget and its _sel() clamp can't drift.
+        _song_style_opts = ["(auto)"] + list(rs.VALID_SONG_STYLES)
+        _vocal_opts = ["(auto)"] + [v for v in rs.VALID_VOCAL_TYPES if v != "auto"]
+        _visual_opts = ["(auto)"] + list(rs.VALID_VISUAL_STYLES)
         with ui.row().classes("w-full gap-3 flex-wrap items-end").style("margin-top: 6px;"):
             ui.label("🎵 Music").classes("text-sm font-bold opacity-80")
             song_style_set = ui.select(
-                ["(auto)"] + list(rs.VALID_SONG_STYLES),
-                value=(rs.get_song_style_override() or "(auto)"), label="Song style",
+                _song_style_opts,
+                value=_sel(rs.get_song_style_override() or "(auto)",
+                           _song_style_opts, "(auto)"), label="Song style",
             ).props("outlined dark dense").style("min-width: 140px;")
             song_style_set.on("update:model-value", lambda e: (
                 rs.clear_song_style_override() if song_style_set.value == "(auto)"
@@ -2164,8 +2200,9 @@ def main_page():
                 _notify_set("Song style", song_style_set.value)))
 
             vocal_set = ui.select(
-                ["(auto)"] + [v for v in rs.VALID_VOCAL_TYPES if v != "auto"],
-                value=(rs.get_vocal_type_override() or "(auto)"), label="Vocal type",
+                _vocal_opts,
+                value=_sel(rs.get_vocal_type_override() or "(auto)",
+                           _vocal_opts, "(auto)"), label="Vocal type",
             ).props("outlined dark dense").style("min-width: 140px;")
             vocal_set.on("update:model-value", lambda e: (
                 rs.clear_vocal_type_override() if vocal_set.value == "(auto)"
@@ -2173,8 +2210,9 @@ def main_page():
                 _notify_set("Vocal", vocal_set.value)))
 
             visual_set = ui.select(
-                ["(auto)"] + list(rs.VALID_VISUAL_STYLES),
-                value=(rs.get_visual_style_override() or "(auto)"), label="Visual style",
+                _visual_opts,
+                value=_sel(rs.get_visual_style_override() or "(auto)",
+                           _visual_opts, "(auto)"), label="Visual style",
             ).props("outlined dark dense").style("min-width: 140px;")
             visual_set.on("update:model-value", lambda e: (
                 rs.clear_visual_style_override() if visual_set.value == "(auto)"
