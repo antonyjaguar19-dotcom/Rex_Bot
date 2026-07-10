@@ -101,6 +101,13 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ---
 
+## 3m. What We Changed (2026-07-10) — MANUAL MODE (5th pipeline)
+Direct-drive mode: user prompts ComfyUI straight, no LLM chain. Commit 5160b80 on `feat/horror-story-mode`. 241 tests green. **Bot restart needed.**
+- **`modules/manual_mode.py`** — project store `04_Outputs/manual/{id}/project.json` (atomic), board ops, freeform image gen (active/named backend, ref-image aware w/ TypeError fallback, adult-profile safety), `animate_shot` (active video backend, capped at model `max_clip_seconds`, no chaining), Kokoro narration, ACE-Step music bed, ffmpeg assembly (clips normalized OR Ken Burns stills → uniform 30fps segs → concat → music amix 0.30; narration-wins durations per Rule 5; hard cuts). Current-project marker `_current.txt` = Discord↔web sync.
+- **Dashboard** — new **Manual** tab: project picker/new, image-model select + seed/steps/cfg (writes rs overrides), prompt/negative, reference upload + upload-straight-to-board (`ui.upload`), per-shot cards (motion/narration/duration, Animate/TTS/reorder/replace-with-last-gen/remove), music gen, multi-aspect assemble. Renderer signature-cached (finals mtimes folded in — stable filenames).
+- **Discord** — `!mhelp` `!mnew` `!mlist` `!muse` `!mboard` `!mgen` (attachment=reference) `!mupload` (attachment=shot) `!mmotion` `!manim` `!mnarr` `!mdur` `!mmove` `!mrm` `!mmusic` `!massemble`. GPU-lock via `_gpu_job`. Model/param switching reuses `!switch_model`/`!set_steps`/`!set_cfg`.
+- **Verified**: 15 new tests; assemble e2e w/ real ffmpeg (narration-wins math exact), Kokoro TTS live, dashboard headless boot HTTP 200. NOT live-verified (ComfyUI was down): image gen / animate / music adapters — glue only, adapters production-proven.
+
 ## 3z. What We Changed (2026-06-26) — kids mode → production (LLM + SDXL+IP-Adapter character consistency)
 Deep pass on KIDS story mode (audio-first pipeline). Restart needed each .py edit; bot restarted + verified single instance. 201 tests green. Commits on `feat/horror-story-mode`: 7b83031, 0183636, 68c8e88, c924822, 2210edb, cd38419, c41b653, 08f4c09, f15b706.
 - **Dialogue-aware narration split** (`audio_first_pipeline._split_sentences`) — old splitter broke on `!`/`?` inside quotes + didn't split after `."` → dangling fragments + two-speaker shots + wrong speaker→voice. New walker: never breaks inside a quote, keeps trailing close-quote, newlines = hard breaks. `_breath_groups` keeps a quoted line whole even if >70c. Structurer prompt rules 6+7: continuation fragments keep same subject/place, never pull later plot in.
