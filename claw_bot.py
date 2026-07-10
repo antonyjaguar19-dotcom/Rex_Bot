@@ -4863,6 +4863,311 @@ async def cmd_set_facts_speed(ctx, speed: float = None):
     await ctx.send(f"✅ Facts speed → `{rs.get_facts_voice_speed()}x`.")
 
 
+# ============================================================
+# COMMANDS — Manual Mode (direct-drive: you prompt, models render)
+# ============================================================
+
+def _mm():
+    from modules import manual_mode
+    return manual_mode
+
+
+def _mm_proj():
+    manual_mode = _mm()
+    pid = manual_mode.current_project_id()
+    return manual_mode.load_project(pid) if pid else None
+
+
+@bot.command(name="mnew", aliases=["manual_new"])
+async def cmd_manual_new(ctx, *, name: str = ""):
+    """Create a manual-mode project (becomes current). `!mnew [name]`"""
+    proj = _mm().create_project((name or "").strip())
+    await ctx.send(f"🎛️ Manual project created: **{proj['name']}** (`{proj['_id']}`)\n"
+                   f"Next: `!mgen <prompt>` (attach an image to use it as reference) "
+                   f"or `!mupload` with an attached image.")
+
+
+@bot.command(name="mlist", aliases=["manual_list"])
+async def cmd_manual_list(ctx):
+    """List manual projects, newest first."""
+    projs = _mm().list_projects()
+    if not projs:
+        await ctx.send("No manual projects yet — `!mnew <name>`.")
+        return
+    cur = _mm().current_project_id()
+    lines = [f"{'->' if pid == cur else '· '} `{pid}` — {name}"
+             for pid, name in projs[:15]]
+    await ctx.send("🎛️ **Manual projects**\n" + "\n".join(lines))
+
+
+@bot.command(name="muse", aliases=["manual_use"])
+async def cmd_manual_use(ctx, pid: str = None):
+    """Switch the current manual project. `!muse <project_id>`"""
+    if not pid or not _mm().load_project(pid):
+        await ctx.send("Usage: `!muse <project_id>` — see `!mlist`.")
+        return
+    _mm().set_current(pid)
+    await ctx.send(f"✅ Current manual project → `{pid}`.")
+
+
+@bot.command(name="mboard", aliases=["manual_board"])
+async def cmd_manual_board(ctx):
+    """Show the current manual board (shots, durations, motion prompts)."""
+    proj = _mm_proj()
+    if proj is None:
+        await ctx.send("No manual project — `!mnew <name>` first.")
+        return
+    await send_long_message(ctx.channel, _mm().board_summary(proj))
+
+
+async def _mm_save_attachment(ctx, proj, prefix: str):
+    """Save the message's first image attachment into the project. None if absent."""
+    if not ctx.message.attachments:
+        return None
+    att = ctx.message.attachments[0]
+    if not (att.content_type or "").startswith("image"):
+        return None
+    manual_mode = _mm()
+    dest = (manual_mode.project_dir(proj["_id"]) / "images"
+            / f"{prefix}_{int(time.time())}_{att.filename}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await att.save(dest)
+    return dest
+
+
+@bot.command(name="mgen", aliases=["manual_gen"])
+@_gpu_job("manual image gen")
+async def cmd_manual_gen(ctx, *, prompt: str = None):
+    """Generate a still from YOUR prompt and add it to the board.
+    Attach an image = reference (USO/Kontext/IPA backends use it).
+    `!mgen a colossal rusted robot in a sunflower field, golden hour`"""
+    if not prompt or not prompt.strip():
+        await ctx.send("Usage: `!mgen <your image prompt>` "
+                       "(optionally attach a reference image)")
+        return
+    manual_mode = _mm()
+    proj = _mm_proj()
+    if proj is None:
+        proj = manual_mode.create_project("")
+        await ctx.send(f"(no project — created `{proj['_id']}`)")
+    ref = await _mm_save_attachment(ctx, proj, "ref")
+    status = await ctx.send(f"🎨 Generating still… (ref: {'yes' if ref else 'no'})")
+    try:
+        res = await asyncio.to_thread(
+            manual_mode.generate_image, prompt.strip(),
+            None, None, proj.get("aspect_ratio", "16:9"), None, ref, proj)
+        shot = manual_mode.add_shot(proj, res["path"], prompt=prompt.strip(),
+                                    seed=res["seed"])
+    except Exception as e:
+        log.exception("manual gen failed")
+        await status.edit(content=f"❌ Manual gen failed: `{e}`")
+        return
+    await status.edit(content=f"✅ Shot **{shot['n']}** added (seed `{res['seed']}`, "
+                              f"{res['backend']}). Set motion: "
+                              f"`!mmotion {shot['n']} <text>`")
+    try:
+        await ctx.send(file=discord.File(
+            str(manual_mode.abs_path(proj, shot["image"]))))
+    except Exception:
+        pass
+
+
+@bot.command(name="mupload", aliases=["manual_upload"])
+async def cmd_manual_upload(ctx):
+    """Add an ATTACHED image straight to the board (your own art/photo)."""
+    proj = _mm_proj()
+    if proj is None:
+        proj = _mm().create_project("")
+    img = await _mm_save_attachment(ctx, proj, "up")
+    if img is None:
+        await ctx.send("Attach an image to this command.")
+        return
+    shot = _mm().add_shot(proj, img, prompt=f"(uploaded) {img.name}")
+    await ctx.send(f"✅ Uploaded → shot **{shot['n']}**. "
+                   f"Motion: `!mmotion {shot['n']} <text>` · "
+                   f"Animate: `!manim {shot['n']}`")
+
+
+@bot.command(name="mmotion", aliases=["manual_motion"])
+async def cmd_manual_motion(ctx, shot_n: int = None, *, motion: str = None):
+    """Set a shot's motion prompt. `!mmotion 2 slow push-in, leaves drifting`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None or not motion:
+        await ctx.send("Usage: `!mmotion <shot#> <motion prompt>`")
+        return
+    try:
+        _mm().set_shot_fields(proj, shot_n, motion_prompt=motion.strip())
+    except IndexError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"✅ Shot {shot_n} motion saved. Animate: `!manim {shot_n}`")
+
+
+@bot.command(name="mdur", aliases=["manual_duration"])
+async def cmd_manual_dur(ctx, shot_n: int = None, seconds: float = None):
+    """Set a shot's duration in seconds. `!mdur 2 4.5`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None or seconds is None:
+        await ctx.send("Usage: `!mdur <shot#> <seconds>`")
+        return
+    try:
+        _mm().set_shot_fields(proj, shot_n, duration=float(seconds))
+    except IndexError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"✅ Shot {shot_n} → {float(seconds):.1f}s.")
+
+
+@bot.command(name="mrm", aliases=["manual_remove"])
+async def cmd_manual_rm(ctx, shot_n: int = None):
+    """Remove a shot from the board. `!mrm 3`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None:
+        await ctx.send("Usage: `!mrm <shot#>`")
+        return
+    try:
+        _mm().remove_shot(proj, shot_n)
+    except IndexError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"🗑️ Shot {shot_n} removed (board renumbered).")
+
+
+@bot.command(name="mmove", aliases=["manual_move"])
+async def cmd_manual_move(ctx, shot_n: int = None, direction: str = None):
+    """Reorder a shot. `!mmove 3 up` / `!mmove 1 down`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None or direction not in ("up", "down"):
+        await ctx.send("Usage: `!mmove <shot#> up|down`")
+        return
+    try:
+        _mm().move_shot(proj, shot_n, direction)
+    except IndexError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await send_long_message(ctx.channel,
+                            "✅ Moved.\n" + _mm().board_summary(_mm_proj()))
+
+
+@bot.command(name="manim", aliases=["manual_animate"])
+@_gpu_job("manual animate")
+async def cmd_manual_animate(ctx, shot_n: int = None, *, motion: str = None):
+    """Animate a shot's still with the active video model (I2V).
+    `!manim 2` (uses saved motion) or `!manim 2 slow dolly forward`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None:
+        await ctx.send("Usage: `!manim <shot#> [motion prompt]`")
+        return
+    status = await ctx.send(f"🎥 Animating shot {shot_n}… (I2V, a few minutes)")
+    try:
+        clip = await asyncio.to_thread(
+            _mm().animate_shot, proj, shot_n,
+            motion.strip() if motion else None)
+    except Exception as e:
+        log.exception("manual animate failed")
+        await status.edit(content=f"❌ Animate failed: `{e}`")
+        return
+    await status.edit(content=f"✅ Shot {shot_n} animated.")
+    await _post_reel(ctx.channel, clip, f"🎞️ shot {shot_n}")
+
+
+@bot.command(name="mnarr", aliases=["manual_narration"])
+async def cmd_manual_narr(ctx, shot_n: int = None, *, text: str = None):
+    """Add TTS narration to a shot (its length wins over shot duration).
+    `!mnarr 1 The old robot woke after a hundred years.`"""
+    proj = _mm_proj()
+    if proj is None or shot_n is None or not text:
+        await ctx.send("Usage: `!mnarr <shot#> <narration text>`")
+        return
+    status = await ctx.send(f"🎙️ Voicing shot {shot_n}…")
+    try:
+        wav = await asyncio.to_thread(_mm().narrate_shot, proj, shot_n,
+                                      text.strip())
+    except Exception as e:
+        log.exception("manual narration failed")
+        await status.edit(content=f"❌ Narration failed: `{e}`")
+        return
+    await status.edit(content=f"✅ Shot {shot_n} narrated.")
+    try:
+        await ctx.send(file=discord.File(str(wav)))
+    except Exception:
+        pass
+
+
+@bot.command(name="mmusic", aliases=["manual_music"])
+@_gpu_job("manual music")
+async def cmd_manual_music(ctx, *, tags: str = None):
+    """Generate a music bed from style tags (ACE-Step).
+    `!mmusic lofi, chill, mellow piano, vinyl crackle`"""
+    proj = _mm_proj()
+    if proj is None or not tags:
+        await ctx.send("Usage: `!mmusic <style tags>` — "
+                       "e.g. `!mmusic epic orchestral, drums`")
+        return
+    status = await ctx.send("🎵 Generating music bed…")
+    try:
+        path = await asyncio.to_thread(_mm().generate_music, proj, tags.strip())
+    except Exception as e:
+        log.exception("manual music failed")
+        await status.edit(content=f"❌ Music failed: `{e}`")
+        return
+    await status.edit(content="✅ Music ready — mixed under narration at assemble.")
+    try:
+        await ctx.send(file=discord.File(str(path)))
+    except Exception:
+        pass
+
+
+@bot.command(name="massemble", aliases=["manual_assemble"])
+@_gpu_job("manual assembly")
+async def cmd_manual_assemble(ctx, *aspects):
+    """Assemble the board into final MP4(s). `!massemble` (project aspect)
+    or `!massemble 9:16 16:9`"""
+    proj = _mm_proj()
+    if proj is None:
+        await ctx.send("No manual project — `!mnew` first.")
+        return
+    if not proj["shots"]:
+        await ctx.send("Board is empty — add shots first (`!mgen` / `!mupload`).")
+        return
+    valid = [a for a in aspects if a in ("16:9", "9:16", "1:1")] or None
+    status = await ctx.send(f"🎬 Assembling {len(proj['shots'])} shots…")
+    loop = asyncio.get_running_loop()
+
+    def _cb(m):
+        asyncio.run_coroutine_threadsafe(status.edit(content=f"🎬 {m}"), loop)
+
+    try:
+        finals = await asyncio.to_thread(_mm().assemble, proj, valid, _cb)
+    except Exception as e:
+        log.exception("manual assembly failed")
+        await status.edit(content=f"❌ Assembly failed: `{e}`")
+        return
+    await status.edit(content="✅ Assembled — uploading…")
+    v_channel = get_channel_by_name(ctx.guild, "videos") or ctx.channel
+    for aspect, p in finals.items():
+        await _post_reel(v_channel, p, f"🎛️ **{proj['name']}** — manual · {aspect}")
+
+
+@bot.command(name="mhelp", aliases=["manual_help"])
+async def cmd_manual_help(ctx):
+    """Manual-mode command reference."""
+    await ctx.send(
+        "🎛️ **Manual Mode** — you drive ComfyUI directly (no story AI).\n"
+        "`!mnew [name]` new project · `!mlist` list · `!muse <id>` switch · "
+        "`!mboard` view\n"
+        "`!mgen <prompt>` generate still → board (attach image = reference)\n"
+        "`!mupload` (attach image) add your own image as a shot\n"
+        "`!mmotion <shot> <text>` set motion · `!manim <shot> [text]` animate (I2V)\n"
+        "`!mnarr <shot> <text>` TTS narration · `!mdur <shot> <sec>` duration\n"
+        "`!mmove <shot> up|down` reorder · `!mrm <shot>` remove\n"
+        "`!mmusic <tags>` music bed · `!massemble [aspects]` final MP4s\n"
+        "Model/params: `!switch_model`, `!set_steps`, `!set_cfg` "
+        "(same knobs as story mode).\n"
+        "Web: **Manual** tab on the dashboard — same project, live-synced."
+    )
+
+
 @bot.command(name="set_facts_video", aliases=["facts_video"])
 async def cmd_set_facts_video(ctx, mode: str = None):
     """Facts visuals: `kenburns` (pan/zoom stills, fast ~4 min) or `wan`

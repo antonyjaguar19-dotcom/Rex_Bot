@@ -45,6 +45,7 @@ from modules.theme_bank import get_random_theme, get_theme_count
 from modules.file_utils import atomic_write_json
 from modules import job_lock
 from modules import config_check
+from modules import manual_mode as mm
 
 # Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
 VOICE_CHOICES = [
@@ -1085,6 +1086,204 @@ def run_upscale_action(refresh_cb):
 
 
 # ==============================================================================
+# MANUAL MODE ACTIONS
+# ==============================================================================
+# Manual mode is direct-drive: user prompt → ComfyUI, no LLM chain. Current
+# project lives on disk (mm.current_project_id) so Discord + web stay synced.
+
+# Last freeform generation (preview → "Add to board"). Session-scoped is fine:
+# one GPU box, one operator.
+MANUAL_LAST_GEN: dict = {}
+# Optional reference image for the next generation (uploaded via the UI).
+MANUAL_REF: dict = {}
+
+
+def _manual_proj() -> Optional[dict]:
+    pid = mm.current_project_id()
+    return mm.load_project(pid) if pid else None
+
+
+def manual_gen_image_action(prompt: str, backend_id: Optional[str],
+                            negative: str, seed_text: str, refresh_cb):
+    if not (prompt or "").strip():
+        ui.notify("❌ Prompt required.", type="negative")
+        return
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project — create one first.", type="negative")
+        return
+    if not _try_begin("manual image gen"):
+        return
+    try:
+        seed = int(seed_text) if str(seed_text or "").strip() else None
+    except ValueError:
+        seed = None
+    ref = MANUAL_REF.get("path")
+    S.push(f"Manual gen — backend={backend_id or '(active)'} seed={seed or 'rand'}")
+    refresh_cb()
+
+    def worker():
+        try:
+            res = mm.generate_image(
+                prompt=prompt.strip(),
+                backend_id=backend_id or None,
+                negative_prompt=(negative or "").strip() or None,
+                aspect_ratio=proj.get("aspect_ratio", "16:9"),
+                seed=seed,
+                reference_image=ref,
+                proj=proj,
+            )
+            MANUAL_LAST_GEN.clear()
+            MANUAL_LAST_GEN.update({"path": str(res["path"]), "seed": res["seed"],
+                                    "prompt": prompt.strip()})
+            S.push(f"Manual image done — seed={res['seed']} ({res['backend']})")
+        except Exception as e:
+            S.push(f"Manual gen failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def manual_add_last_to_board(refresh_cb, duration: float = 5.0):
+    if not MANUAL_LAST_GEN.get("path"):
+        ui.notify("❌ Nothing generated yet.", type="negative")
+        return
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    try:
+        shot = mm.add_shot(proj, Path(MANUAL_LAST_GEN["path"]),
+                           prompt=MANUAL_LAST_GEN.get("prompt", ""),
+                           seed=MANUAL_LAST_GEN.get("seed"),
+                           duration=duration)
+        S.push(f"Added shot {shot['n']} to manual board")
+    except Exception as e:
+        ui.notify(f"Add failed: {e}", type="negative")
+        return
+    refresh_cb()
+
+
+def manual_animate_action(shot_n: int, refresh_cb):
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    try:
+        shot = mm.get_shot(proj, shot_n)
+    except IndexError as e:
+        ui.notify(str(e), type="negative")
+        return
+    if not (shot.get("motion_prompt") or "").strip():
+        ui.notify("❌ Set a motion prompt first (💾 save it), then animate.",
+                  type="negative")
+        return
+    if not _try_begin(f"manual animate shot {shot_n}"):
+        return
+    S.push(f"Animating manual shot {shot_n}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            clip = mm.animate_shot(proj, shot_n)
+            S.push(f"Manual shot {shot_n} animated → {clip.name}")
+        except Exception as e:
+            S.push(f"Animate failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def manual_narrate_action(shot_n: int, voice: Optional[str], refresh_cb):
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    try:
+        shot = mm.get_shot(proj, shot_n)
+    except IndexError as e:
+        ui.notify(str(e), type="negative")
+        return
+    if not (shot.get("narration") or "").strip():
+        ui.notify("❌ Type narration text and 💾 save it first.", type="negative")
+        return
+    if not _try_begin(f"manual narration shot {shot_n}"):
+        return
+    S.push(f"TTS narration for manual shot {shot_n}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            wav = mm.narrate_shot(proj, shot_n, voice=voice or None)
+            S.push(f"Narration ready → {wav.name}")
+        except Exception as e:
+            S.push(f"Narration failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def manual_music_action(tags: str, duration_text: str, refresh_cb):
+    if not (tags or "").strip():
+        ui.notify("❌ Style tags required (e.g. 'lofi, chill, piano').",
+                  type="negative")
+        return
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    if not _try_begin("manual music gen"):
+        return
+    try:
+        dur = float(duration_text) if str(duration_text or "").strip() else None
+    except ValueError:
+        dur = None
+    S.push(f"Manual music gen — tags='{tags[:50]}'")
+    refresh_cb()
+
+    def worker():
+        try:
+            path = mm.generate_music(proj, tags.strip(), duration_sec=dur)
+            S.push(f"Music ready → {path.name}")
+        except Exception as e:
+            S.push(f"Music gen failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+def manual_assemble_action(aspects: list, refresh_cb):
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    if not proj["shots"]:
+        ui.notify("❌ Board is empty.", type="negative")
+        return
+    if not _try_begin("manual assembly"):
+        return
+    S.push(f"Assembling manual project {proj['_id']} ({', '.join(aspects)})…")
+    refresh_cb()
+
+    def worker():
+        try:
+            finals = mm.assemble(proj, aspects=aspects,
+                                 progress_cb=lambda m: S.push(f"  {m}"))
+            for a, p in finals.items():
+                S.push(f"Manual final [{a}] → {p.name}")
+        except Exception as e:
+            S.push(f"Manual assembly failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg(worker)
+
+
+# ==============================================================================
 # UI BUILDERS
 # ==============================================================================
 
@@ -1195,6 +1394,7 @@ def main_page():
             tab_pipeline = ui.tab("Story", icon="movie")
             tab_facts = ui.tab("Facts", icon="lightbulb")
             tab_music = ui.tab("Music", icon="music_note")
+            tab_manual = ui.tab("Manual", icon="tune")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
 
@@ -1207,6 +1407,7 @@ def main_page():
         pipeline_panel = ui.tab_panel(tab_pipeline).classes("w-full")
         facts_panel = ui.tab_panel(tab_facts).classes("w-full")
         music_panel = ui.tab_panel(tab_music).classes("w-full")
+        manual_panel = ui.tab_panel(tab_manual).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
 
@@ -1745,6 +1946,173 @@ def main_page():
                           close_button="OK", timeout=0)
             ui.button("📊 Stats", on_click=_show_stats).props("flat")
 
+    # ============== MANUAL MODE ==============
+    with ui.card().classes("rex-card w-full") as card_manual:
+        with ui.row().classes("items-center"):
+            ui.label("🎛️ Manual Mode").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-purple") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "DIRECT DRIVE"
+        ui.label("You are the director: pick model, write prompt, build the board "
+                 "shot by shot, animate, narrate, add music, assemble.") \
+            .classes("text-xs opacity-70")
+
+        # ---- project row ----
+        with ui.row().classes("w-full gap-2 items-end flex-wrap"):
+            manual_proj_select = ui.select(options={}, label="Project",
+                                           with_input=True) \
+                .props("outlined dark dense").style("min-width: 260px;")
+
+            def _pick_proj():
+                if manual_proj_select.value:
+                    mm.set_current(manual_proj_select.value)
+                    S.push(f"Manual project → {manual_proj_select.value}")
+                    full_refresh()
+            manual_proj_select.on("update:model-value", lambda e: _pick_proj())
+
+            manual_new_name = ui.input(label="New project name",
+                                       placeholder="e.g. dragon test reel") \
+                .props("outlined dark dense").style("min-width: 200px;")
+            manual_aspect_sel = ui.select(["16:9", "9:16", "1:1"], value="16:9",
+                                          label="Aspect") \
+                .props("outlined dark dense").style("min-width: 100px;")
+
+            def _new_proj():
+                proj = mm.create_project(manual_new_name.value or "",
+                                         aspect_ratio=manual_aspect_sel.value)
+                manual_new_name.value = ""
+                S.push(f"Manual project created: {proj['_id']}")
+                ui.notify(f"Project ready: {proj['name']}", type="positive")
+                full_refresh()
+            ui.button("➕ New project", on_click=_new_proj).props("flat color=accent")
+
+        # ---- generate section ----
+        ui.separator()
+        ui.label("1 · Generate a still (or upload your own)") \
+            .classes("text-sm font-bold opacity-80")
+        with ui.row().classes("w-full gap-2 items-end flex-wrap"):
+            def _img_backend_opts():
+                try:
+                    return ["(active)"] + list(
+                        (model_registry.list_available("image_backend") or {}).keys())
+                except Exception:
+                    return ["(active)"]
+            manual_backend_sel = ui.select(_img_backend_opts(), value="(active)",
+                                           label="Image model") \
+                .props("outlined dark dense").style("min-width: 220px;")
+            manual_seed_in = ui.input(label="Seed (blank = random)") \
+                .props("outlined dark dense").style("width: 160px;")
+            manual_steps_in = ui.input(label="Steps (override)") \
+                .props("outlined dark dense").style("width: 130px;")
+            manual_cfg_in = ui.input(label="CFG (override)") \
+                .props("outlined dark dense").style("width: 130px;")
+
+            def _apply_overrides():
+                # Same global knobs the Settings card writes — adapters read them.
+                try:
+                    if str(manual_steps_in.value or "").strip():
+                        rs.set_steps_override(int(manual_steps_in.value))
+                    if str(manual_cfg_in.value or "").strip():
+                        rs.set_cfg_override(float(manual_cfg_in.value))
+                    ui.notify("Overrides applied.", type="positive")
+                except ValueError:
+                    ui.notify("Steps/CFG must be numbers.", type="negative")
+            ui.button("⚙️ Apply", on_click=_apply_overrides).props("flat dense") \
+                .tooltip("Write steps/CFG overrides (same as Settings)")
+
+        manual_prompt_in = ui.textarea(
+            label="Image prompt",
+            placeholder="e.g. a colossal rusted robot kneeling in a sunflower field, "
+                        "golden hour, cinematic") \
+            .classes("w-full").props("outlined dark dense autogrow")
+        manual_negative_in = ui.input(label="Negative prompt (optional)") \
+            .classes("w-full").props("outlined dark dense")
+
+        with ui.row().classes("w-full gap-2 items-center flex-wrap"):
+            def _on_ref_upload(e):
+                proj = _manual_proj()
+                if proj is None:
+                    ui.notify("Create a project first.", type="negative")
+                    return
+                dest = mm.project_dir(proj["_id"]) / "images" / f"ref_{int(time.time())}_{e.name}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(e.content.read())
+                MANUAL_REF["path"] = str(dest)
+                ui.notify(f"Reference set: {e.name}", type="positive")
+            ui.upload(label="Reference image (optional — USO/Kontext/IPA use it)",
+                      auto_upload=True, on_upload=_on_ref_upload) \
+                .props("accept=image/* dense").style("max-width: 320px;")
+
+            def _clear_ref():
+                MANUAL_REF.pop("path", None)
+                ui.notify("Reference cleared.", type="info")
+            ui.button("✖ Clear ref", on_click=_clear_ref).props("flat dense")
+
+            def _on_shot_upload(e):
+                proj = _manual_proj()
+                if proj is None:
+                    ui.notify("Create a project first.", type="negative")
+                    return
+                tmp = mm.project_dir(proj["_id"]) / "images" / f"up_{int(time.time())}_{e.name}"
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_bytes(e.content.read())
+                shot = mm.add_shot(proj, tmp, prompt=f"(uploaded) {e.name}")
+                S.push(f"Uploaded {e.name} → shot {shot['n']}")
+                full_refresh()
+            ui.upload(label="Upload image straight to board",
+                      auto_upload=True, on_upload=_on_shot_upload) \
+                .props("accept=image/* dense").style("max-width: 320px;")
+
+        with ui.row().classes("gap-2"):
+            def _mgen():
+                bid = manual_backend_sel.value
+                manual_gen_image_action(
+                    manual_prompt_in.value,
+                    None if bid == "(active)" else bid,
+                    manual_negative_in.value, manual_seed_in.value, full_refresh)
+            ui.button("✨ Generate image", on_click=_mgen).classes("rex-btn-primary")
+
+        manual_lastgen_container = ui.row().classes("w-full gap-3")
+
+        # ---- board ----
+        ui.separator()
+        ui.label("2 · Storyboard (shots in order)").classes("text-sm font-bold opacity-80")
+        manual_board_container = ui.column().classes("w-full gap-2")
+
+        # ---- music ----
+        ui.separator()
+        ui.label("3 · Music (optional, ACE-Step)").classes("text-sm font-bold opacity-80")
+        with ui.row().classes("w-full gap-2 items-end flex-wrap"):
+            manual_music_tags = ui.input(
+                label="Style tags",
+                placeholder="e.g. lofi, chill, mellow piano, vinyl crackle") \
+                .classes("flex-1").props("outlined dark dense")
+            manual_music_dur = ui.input(label="Seconds (blank = board length)") \
+                .props("outlined dark dense").style("width: 210px;")
+            ui.button("🎵 Generate music",
+                      on_click=lambda: manual_music_action(
+                          manual_music_tags.value, manual_music_dur.value, full_refresh)) \
+                .props("flat color=accent")
+        manual_music_container = ui.row().classes("w-full gap-2")
+
+        # ---- assemble ----
+        ui.separator()
+        ui.label("4 · Assemble").classes("text-sm font-bold opacity-80")
+        with ui.row().classes("gap-3 items-center flex-wrap"):
+            asp_169 = ui.checkbox("16:9", value=True)
+            asp_916 = ui.checkbox("9:16", value=False)
+            asp_11 = ui.checkbox("1:1", value=False)
+
+            def _massemble():
+                aspects = [a for a, cb in
+                           [("16:9", asp_169), ("9:16", asp_916), ("1:1", asp_11)]
+                           if cb.value]
+                if not aspects:
+                    ui.notify("Pick at least one aspect.", type="negative")
+                    return
+                manual_assemble_action(aspects, full_refresh)
+            ui.button("🎬 Assemble final", on_click=_massemble).classes("rex-btn-primary")
+        manual_final_container = ui.row().classes("w-full gap-3")
+
     # ============== LIVE LOG (collapsible footer) ==============
     with ui.footer().classes("p-0").style("background: rgba(8,8,18,0.96);"):
         with ui.expansion("📜 Live log", icon="terminal").props("dense") \
@@ -1765,6 +2133,7 @@ def main_page():
     card_video.move(pipeline_panel)
     card_final.move(pipeline_panel)
     card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
+    card_manual.move(manual_panel)
     card_models.move(models_panel)
     card_queue.move(queue_panel)
     card_tools.move(pipeline_panel)   # story-specific tools → inside Story
@@ -2241,6 +2610,165 @@ def main_page():
                             .style("margin-left: auto;")
                         ui.button("🗑️ Drop", on_click=_drop).props("flat dense color=red")
 
+    def render_manual():
+        pid = mm.current_project_id()
+        proj = mm.load_project(pid) if pid else None
+
+        # Project picker options (refresh when the list changes).
+        opts = {p: f"{p} — {name}" for p, name in mm.list_projects()}
+        if _changed("manual_opts", tuple(opts.keys()) + (pid,)):
+            manual_proj_select.set_options(opts, value=pid)
+
+        # Last generated preview.
+        lg = MANUAL_LAST_GEN.get("path")
+        if _changed("manual_lastgen", lg):
+            manual_lastgen_container.clear()
+            if lg and Path(lg).exists():
+                with manual_lastgen_container:
+                    with ui.element("div").classes("rex-shot-card").style("width: 280px;"):
+                        ui.image(_media_url(Path(lg))).style("border-radius: 8px;")
+                        ui.label(f"seed {MANUAL_LAST_GEN.get('seed', '?')}") \
+                            .classes("text-xs opacity-75")
+                        ui.button("➕ Add to board",
+                                  on_click=lambda: manual_add_last_to_board(full_refresh)) \
+                            .props("flat dense color=accent").classes("w-full")
+
+        # Board + music + finals — one signature over the whole manifest.
+        if proj is None:
+            if _changed("manual_board", "none"):
+                manual_board_container.clear()
+                with manual_board_container:
+                    ui.label("_(no project — create one above)_").classes("opacity-60")
+                manual_music_container.clear()
+                manual_final_container.clear()
+            return
+
+        # Final files keep a stable name across re-assembles — fold their mtimes
+        # into the signature or re-renders would show the stale preview.
+        _fin_mt = []
+        for rel in (proj.get("final") or {}).values():
+            fp = mm.abs_path(proj, rel)
+            _fin_mt.append(fp.stat().st_mtime_ns if fp and fp.exists() else 0)
+        sig = json.dumps(proj, sort_keys=True) + str(_fin_mt)
+        if not _changed("manual_board", sig):
+            return
+
+        manual_board_container.clear()
+        with manual_board_container:
+            if not proj["shots"]:
+                ui.label("_(board empty — generate or upload a still)_").classes("opacity-60")
+            for shot in proj["shots"]:
+                n = shot["n"]
+                with ui.element("div").classes("rex-shot-card w-full"):
+                    with ui.row().classes("w-full gap-3 flex-wrap"):
+                        # Still + clip previews
+                        with ui.column().classes("gap-1").style("width: 240px;"):
+                            img = mm.abs_path(proj, shot.get("image"))
+                            if img and img.exists():
+                                ui.image(_media_url(img)).style("border-radius: 8px;")
+                            clip = mm.abs_path(proj, shot.get("clip"))
+                            if clip and clip.exists():
+                                ui.video(_media_url(clip)) \
+                                    .style("border-radius: 8px; width: 100%;")
+                            ui.label(f"Shot {n} · seed {shot.get('seed') or '—'}") \
+                                .classes("text-xs opacity-75")
+                        # Controls
+                        with ui.column().classes("flex-1 gap-1").style("min-width: 280px;"):
+                            mot_box = ui.textarea(label="Motion prompt (for animate)",
+                                                  value=shot.get("motion_prompt") or "") \
+                                .classes("w-full").props("outlined dark dense autogrow")
+                            narr_box = ui.textarea(label="Narration (optional)",
+                                                   value=shot.get("narration") or "") \
+                                .classes("w-full").props("outlined dark dense autogrow")
+                            with ui.row().classes("gap-2 items-end flex-wrap"):
+                                dur_in = ui.input(label="Seconds",
+                                                  value=str(shot.get("duration", 5.0))) \
+                                    .props("outlined dark dense").style("width: 90px;")
+                                voice_sel = ui.select(VOICE_CHOICES, value="af_heart",
+                                                      label="Voice") \
+                                    .props("outlined dark dense").style("width: 140px;")
+
+                                def _save(s=n, mb=mot_box, nb=narr_box, db=dur_in):
+                                    try:
+                                        mm.set_shot_fields(
+                                            proj, s,
+                                            motion_prompt=mb.value or "",
+                                            narration=nb.value or "",
+                                            duration=float(db.value or 5.0))
+                                        ui.notify(f"Shot {s} saved.", type="positive")
+                                        full_refresh()
+                                    except Exception as ex:
+                                        ui.notify(f"Save failed: {ex}", type="negative")
+                                ui.button("💾 Save", on_click=_save).props("flat dense")
+
+                                def _anim(s=n, mb=mot_box, nb=narr_box, db=dur_in):
+                                    # Save first so animate uses what's on screen.
+                                    try:
+                                        mm.set_shot_fields(
+                                            proj, s, motion_prompt=mb.value or "",
+                                            narration=nb.value or "",
+                                            duration=float(db.value or 5.0))
+                                    except Exception:
+                                        pass
+                                    manual_animate_action(s, full_refresh)
+                                ui.button("🎥 Animate", on_click=_anim) \
+                                    .props("flat dense color=accent")
+
+                                def _tts(s=n, vs=voice_sel, nb=narr_box):
+                                    try:
+                                        mm.set_shot_fields(proj, s, narration=nb.value or "")
+                                    except Exception:
+                                        pass
+                                    manual_narrate_action(s, vs.value, full_refresh)
+                                ui.button("🎙️ TTS", on_click=_tts).props("flat dense")
+
+                                na = mm.abs_path(proj, shot.get("narration_audio"))
+                                if na and na.exists():
+                                    ui.audio(_media_url(na)).style("max-width: 220px;")
+                            with ui.row().classes("gap-1"):
+                                def _up(s=n):
+                                    mm.move_shot(proj, s, "up"); full_refresh()
+                                def _down(s=n):
+                                    mm.move_shot(proj, s, "down"); full_refresh()
+                                def _rm(s=n):
+                                    mm.remove_shot(proj, s)
+                                    S.push(f"Removed manual shot {s}")
+                                    full_refresh()
+                                def _repl(s=n):
+                                    if not MANUAL_LAST_GEN.get("path"):
+                                        ui.notify("Nothing generated yet.", type="negative")
+                                        return
+                                    mm.replace_shot_image(
+                                        proj, s, Path(MANUAL_LAST_GEN["path"]),
+                                        prompt=MANUAL_LAST_GEN.get("prompt"),
+                                        seed=MANUAL_LAST_GEN.get("seed"))
+                                    S.push(f"Shot {s} still replaced with last gen")
+                                    full_refresh()
+                                ui.button(icon="arrow_upward", on_click=_up).props("flat dense round")
+                                ui.button(icon="arrow_downward", on_click=_down).props("flat dense round")
+                                ui.button("♻️ Use last gen", on_click=_repl).props("flat dense")
+                                ui.button(icon="delete", on_click=_rm) \
+                                    .props("flat dense round color=red")
+
+        manual_music_container.clear()
+        music = mm.abs_path(proj, (proj.get("music") or {}).get("path"))
+        if music and music.exists():
+            with manual_music_container:
+                ui.audio(_media_url(music)).style("max-width: 420px;")
+                ui.label((proj.get("music") or {}).get("tags", "")[:70]) \
+                    .classes("text-xs opacity-70")
+
+        manual_final_container.clear()
+        finals = proj.get("final") or {}
+        with manual_final_container:
+            for aspect, rel in finals.items():
+                fp = mm.abs_path(proj, rel)
+                if fp and fp.exists():
+                    with ui.element("div").classes("rex-shot-card").style("width: 320px;"):
+                        ui.video(_media_url(fp)).style("border-radius: 8px; width: 100%;")
+                        ui.link(f"⬇ Download {aspect}", _media_url(fp)) \
+                            .props("download").classes("text-xs").style("color:#7cf;")
+
     def render_log():
         text = "\n".join(S.log_lines[-30:]) or "(idle)"
         # escape angle brackets
@@ -2266,6 +2794,7 @@ def main_page():
             render_final()
             render_facts_reel()
             render_music_finals()
+            render_manual()
             render_queue()
             render_log()
         except Exception as e:
