@@ -211,3 +211,60 @@ def test_grounded_llm_title_is_kept(monkeypatch):
     monkeypatch.setattr(sg, "_call_llm",
                         lambda *a, **k: '{"title": "Goldfish Recognize Their Owners"}')
     assert pk.build_title(FB, CTX, "facts") == "Goldfish Recognize Their Owners"
+
+
+# ---------------------------------------------------------------- emoji
+
+def test_strip_emoji_removes_glyphs_the_font_cannot_draw():
+    assert pk.strip_emoji("Black Holes Bend Light & More 🌌") == \
+        "Black Holes Bend Light & More"
+    assert pk.strip_emoji("Fire 🚒 Facts") == "Fire Facts"
+    assert pk.strip_emoji("no emoji") == "no emoji"
+
+
+def test_strip_emoji_never_returns_empty_for_an_emoji_only_title():
+    # render_thumbnail falls back to the original when stripping empties it
+    assert pk.strip_emoji("🌊") == ""
+
+
+def test_title_file_keeps_the_emoji_but_the_thumbnail_does_not(video, still, monkeypatch):
+    painted = {}
+    real = pk._wrap_text
+    monkeypatch.setattr(pk, "_wrap_text",
+                        lambda d, t, f, w: painted.setdefault("t", t) and None or real(d, t, f, w))
+    kit = pk.attach(video, "Goldfish Facts 🐟", context="", source_image=still)
+    from pathlib import Path as P
+    assert "🐟" in P(kit["title_file"]).read_text(encoding="utf-8")
+    assert "🐟" not in painted["t"]
+
+
+# ---------------------------------------------------------------- art cache
+
+def test_mascot_art_is_reused_not_rerendered(tmp_path, monkeypatch):
+    import modules.mascot as mas
+    import modules.runtime_settings as rs
+    monkeypatch.setattr(rs, "get_mascot_thumbnails_enabled", lambda: True)
+
+    video = tmp_path / "reel_9x16.mp4"
+    video.write_bytes(b"x")
+    cached = tmp_path / "reel_9x16_mascot_9x16.png"
+    Image.new("RGB", (768, 1344), (10, 10, 10)).save(cached)
+
+    calls = []
+    monkeypatch.setattr(mas, "render_for_video", lambda **k: calls.append(1) or {})
+
+    art = pk._mascot_art(video, "T", "ctx", "facts", ("9x16",))
+    assert art["9x16"] == cached
+    assert not calls, "cached art must not trigger a USO render"
+
+
+def test_missing_cached_art_triggers_a_render(tmp_path, monkeypatch):
+    import modules.mascot as mas
+    import modules.runtime_settings as rs
+    monkeypatch.setattr(rs, "get_mascot_thumbnails_enabled", lambda: True)
+    video = tmp_path / "reel_9x16.mp4"
+    video.write_bytes(b"x")
+    calls = []
+    monkeypatch.setattr(mas, "render_for_video", lambda **k: calls.append(1) or {})
+    pk._mascot_art(video, "T", "ctx", "facts", ("9x16", "16x9"))
+    assert calls, "with no cache it must render"

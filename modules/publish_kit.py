@@ -230,10 +230,23 @@ def _scrim(size: tuple[int, int], height_frac: float, opacity: int) -> Image.Ima
     return scrim.resize((w, h)).filter(ImageFilter.GaussianBlur(h * 0.01))
 
 
+# Bold UI fonts (Segoe UI Bold, Arial Bold, DejaVu) carry no emoji glyphs, so a
+# painted emoji comes out as a tofu box. The emoji stays in _title.txt, where it
+# belongs — on the thumbnail it is dropped rather than drawn as ▯.
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF←-⇿⌀-➿⬀-⯿︀-️‍]"
+)
+
+
+def strip_emoji(text: str) -> str:
+    return re.sub(r"\s+", " ", _EMOJI_RE.sub("", text)).strip(" -–—·,")
+
+
 def render_thumbnail(frame: Path, title: str, out_jpg: Path,
                      size: tuple[int, int] = THUMB_16X9) -> Optional[Path]:
-    """Compose frame + darkening scrim + wrapped title + watermark -> JPEG."""
+    """Compose frame + darkening scrim + wrapped title -> JPEG."""
     try:
+        title = strip_emoji(title) or title
         w, h = size
         img = _fit_cover(Image.open(frame).convert("RGB"), w, h)
 
@@ -308,9 +321,20 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
     try:
         from modules import mascot
         wanted = tuple(a for a in aspects if a in mascot.NATIVE_ASPECTS)
+        stem = video.with_suffix("").name
+
+        # Reuse artwork already rendered for this video. Re-compositing a title
+        # is milliseconds; a USO render is minutes, so a rerun (new title, new
+        # font, tweaked scrim) must not go back to the GPU. Delete the
+        # *_mascot_*.png files to force fresh art.
+        cached = {a: video.parent / f"{stem}_mascot_{a}.png" for a in wanted}
+        if cached and all(p.exists() for p in cached.values()):
+            log.info(f"reusing cached mascot art for {stem}")
+            return {a: p for a, p in cached.items()}
+
         art = mascot.render_for_video(
             title=title, context=context, out_dir=video.parent,
-            stem=video.with_suffix("").name, aspects=wanted)
+            stem=stem, aspects=wanted)
         return art or {}
     except Exception as e:
         log.warning(f"mascot art skipped ({e}); using a normal thumbnail")
