@@ -145,19 +145,22 @@ def render_facts(
     out_dir.mkdir(parents=True, exist_ok=True)
     ar = aspect.replace("x", ":")
 
-    # Facts backdrops need speed + reliability, NOT character consistency, so
-    # prefer Z-Image Turbo over the global active USO (USO is single-image char
-    # consistency and intermittently hangs >300s — wrong tool here). Fall through:
-    # Z-Image Turbo -> active backend -> gradient.
-    gpu_utils.free_comfyui_vram()
+    # Facts backdrops follow the conceptual/comic prompts (a bee in a chef hat),
+    # so prefer Qwen-Image-Edit — it obeys the concept where Z-Image renders a
+    # generic pretty photo. Fall through: Qwen -> Z-Image Turbo -> active -> gradient.
+    from modules import gpu_memory
+    _GPU_LABEL = {"comfyui_qwen_edit": gpu_memory.QWEN_EDIT,
+                  "comfyui_zimage_turbo": gpu_memory.ZIMAGE}
     backend = None
-    for _bid in ("comfyui_zimage_turbo", None):
+    backend_label = None
+    for _bid in ("comfyui_qwen_edit", "comfyui_zimage_turbo", None):
         try:
             b = (image_backend.get_named_backend(_bid) if _bid
                  else image_backend.get_active_backend())
             ok, _msg = b.health_check()
             if ok:
                 backend = b
+                backend_label = _GPU_LABEL.get(_bid, gpu_memory.FLUX_USO)
                 _p(f"backdrops via {_bid or 'active backend'}")
                 break
             _p(f"{_bid or 'active'} unhealthy ({_msg}); trying next…")
@@ -165,6 +168,13 @@ def render_facts(
             _p(f"{_bid or 'active'} unavailable ({e}); trying next…")
     if backend is None:
         _p("no image backend healthy; using gradient backdrops.")
+
+    # Clear the card BEFORE loading the image model. Story-gen leaves Ollama
+    # resident (~12.6 GB); Qwen is ~13.5 GB and the two collide on a 16 GB card,
+    # which crashed the CUDA context in testing. acquire() evicts Ollama + frees
+    # whatever ComfyUI held (Wan from a prior reel).
+    if backend is not None:
+        gpu_memory.acquire(backend_label)
 
     _p(f"🖼️ building {len(beats)} backdrops ({'backend' if backend else 'gradient'})...")
     backgrounds: list[Path] = []
@@ -195,6 +205,10 @@ def render_facts(
 
     if _reused:
         _p(f"♻️ reused {_reused} existing backdrop(s)")
+
+    # Backdrops done — hand the card back so Wan (also ~13.6 GB) starts clean.
+    if backend is not None:
+        gpu_memory.release(backend_label)
 
     # ---- assemble: animate each cut (Wan I2V) OR Ken Burns stills ----
     want_wan = (rs.get_facts_video_mode() == "wan") if animate is None else animate
