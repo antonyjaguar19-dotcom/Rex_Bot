@@ -491,5 +491,30 @@ def render_horror(
             story, narration_path, durations, scene_images,
             ambient=ambient, progress_cb=progress_cb)
     out["narration_audio"] = narration_path
+
+    # Upload kit (title + thumbnail) from a clean still — the render carries
+    # burned-in subtitles.
+    _p("🖼️ building title + thumbnail…")
+    try:
+        from modules import publish_kit
+        video = out.get("16x9") or out.get("9x16")
+        if video:
+            context = "\n".join(b.get("narration", "")
+                                for b in story.get("beats", []))[:1500]
+            kit = publish_kit.attach(
+                Path(video),
+                fallback_title=story.get("title", "Horror Story"),
+                context=context,
+                description=(story.get("description") or "").strip(),
+                mode="horror story (dark, tense, adult audience)",
+                source_image=(Path(scene_images[0])
+                              if scene_images else None),
+            )
+            out["publish"] = kit
+            out["title"] = kit.get("title")
+            out["thumbnail"] = kit.get("thumb_16x9") or kit.get("thumb_9x16")
+    except Exception as e:
+        log.warning(f"publish kit skipped: {e}")
+
     _p("✅ horror video complete")
     return out

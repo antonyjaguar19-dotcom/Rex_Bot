@@ -2924,6 +2924,38 @@ def main_page():
                     ui.link("⬇ Download", _media_url(p)).props("download") \
                         .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
+                    _render_publish_kit(p)
+
+    def _render_publish_kit(video: Path):
+        """Title (copyable) + thumbnails (downloadable) written beside a final.
+        Silent for older renders that predate the publish kit."""
+        stem = video.with_suffix("")
+        tfile = Path(f"{stem}_title.txt")
+        if not tfile.exists():
+            return
+        title = tfile.read_text(encoding="utf-8").strip()
+        with ui.row().classes("items-center gap-2").style("margin-top:8px;"):
+            ui.label("Title").classes("text-sm font-bold opacity-80")
+            ui.button("📋 Copy", on_click=lambda j=json.dumps(title):
+                      ui.run_javascript(f"navigator.clipboard.writeText({j})")) \
+                .props("flat dense color=accent")
+        ui.input(value=title).props("readonly outlined dense") \
+            .classes("w-full").style("max-width:640px;")
+
+        thumbs = [Path(f"{stem}_thumb_9x16.jpg"), Path(f"{stem}_thumb_16x9.jpg")]
+        thumbs = [t for t in thumbs if t.exists()]
+        if not thumbs:
+            return
+        ui.label("Thumbnail — download and set it on upload") \
+            .classes("text-xs opacity-70").style("margin-top:6px;")
+        with ui.row().classes("gap-3 flex-wrap"):
+            for t in thumbs:
+                with ui.column().classes("gap-1 items-center"):
+                    ui.image(_media_url(t)).style(
+                        "width:150px;border-radius:8px;border:1px solid rgba(255,255,255,.1);")
+                    ui.link(f"⬇ {'9:16' if '9x16' in t.name else '16:9'}",
+                            _media_url(t)).props("download") \
+                        .classes("text-xs").style("color:#7cf;")
 
     def render_facts_reel():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
@@ -2944,6 +2976,10 @@ def main_page():
                     ui.link("⬇ Download", _media_url(p)).props("download") \
                         .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
+
+                # Upload kit: the title to paste and the thumbnail to set.
+                _render_publish_kit(p)
+
                 # Upload-ready description (copy-paste for YouTube/IG).
                 dfile = fdir / (p.stem.replace("_9x16", "") + "_description.txt")
                 if dfile.exists():
@@ -2975,6 +3011,7 @@ def main_page():
                     ui.link("⬇ Download", _media_url(p)).props("download") \
                         .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
+                _render_publish_kit(p)
 
     def render_queue():
         try:

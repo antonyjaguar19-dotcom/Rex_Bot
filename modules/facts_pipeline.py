@@ -237,5 +237,39 @@ def render_facts(
             _p(f"📝 description saved: {dfile.name}")
         except Exception as e:
             log.warning(f"description save failed: {e}")
+
+    # Upload kit: a pasteable title + a thumbnail you can set. Built from the
+    # second backdrop (the first is the hook card) because the RENDERED reel has
+    # read-along captions burned in. Never allowed to fail the render.
+    _p("🖼️ building title + thumbnail…")
+    out.update(_attach_publish_kit(story, out, backgrounds))
     _p("✅ facts reel complete")
     return out
+
+
+def _attach_publish_kit(story: dict, out: dict, backgrounds: list) -> dict:
+    """Title + thumbnails beside the finished reel. Best-effort, never raises."""
+    try:
+        from modules import publish_kit
+        video = out.get("9x16") or out.get("16x9")
+        if not video:
+            return {}
+        still = None
+        if backgrounds:
+            still = Path(backgrounds[1] if len(backgrounds) > 1 else backgrounds[0])
+        context = "\n".join(
+            b.get("narration", "") for b in story.get("beats", [])
+        )[:1500]
+        kit = publish_kit.attach(
+            Path(video),
+            fallback_title=story.get("title", "Facts"),
+            context=context,
+            description=(story.get("description") or "").strip(),
+            mode="facts short (true facts, fast cuts)",
+            source_image=still,
+        )
+        return {"publish": kit, "title": kit.get("title"),
+                "thumbnail": kit.get("thumb_9x16") or kit.get("thumb_16x9")}
+    except Exception as e:
+        log.warning(f"publish kit skipped: {e}")
+        return {}

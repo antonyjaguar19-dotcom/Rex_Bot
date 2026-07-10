@@ -862,7 +862,7 @@ def assemble_audio_first(script_id: str, progress_cb: Optional[Callable] = None)
     except Exception as e:
         log.exception(f"Card prep failed (continuing without cards): {e}")
 
-    return {
+    result = {
         "script_id": script_id,
         "shot_count": len(clips),
         "9x16": outputs["9x16"],
@@ -871,6 +871,33 @@ def assemble_audio_first(script_id: str, progress_cb: Optional[Callable] = None)
         "total_duration_sec": total_dur,
         "wall_sec": round(time.time() - _asm_start, 1),
     }
+
+    # Upload kit: pasteable title + settable thumbnail, built from shot 1's
+    # storyboard frame (the render has subtitles + end card burned in).
+    try:
+        from modules import publish_kit
+        import json as _json
+        _spath = PROJECT_ROOT / "04_Outputs" / "scripts" / f"script_{script_id}.json"
+        script = (_json.loads(_spath.read_text(encoding="utf-8"))
+                  if _spath.exists() else {})
+        sb_dir = PROJECT_ROOT / "04_Outputs" / "storyboards" / script_id
+        stills = sorted(sb_dir.glob("shot*_first.png")) if sb_dir.exists() else []
+        context = "\n".join(s.get("narration", "")
+                            for s in script.get("shots", []))[:1200]
+        kit = publish_kit.attach(
+            Path(outputs["9x16"]),
+            fallback_title=script.get("title", f"Story {script_id}"),
+            context=context,
+            mode="kids animated story short",
+            source_image=stills[0] if stills else None,
+        )
+        result["publish"] = kit
+        result["title"] = kit.get("title")
+        result["thumbnail"] = kit.get("thumb_9x16") or kit.get("thumb_16x9")
+    except Exception as e:
+        log.warning(f"publish kit skipped: {e}")
+
+    return result
 
 
 # ==============================================================================

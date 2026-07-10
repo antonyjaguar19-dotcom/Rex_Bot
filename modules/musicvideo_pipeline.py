@@ -190,5 +190,29 @@ def render_musicvideo(
     gpu_utils.free_comfyui_vram()
     outputs = mva.assemble_musicvideo(song, song_audio, scene_images, progress_cb)
     outputs["song_audio"] = song_audio
+
+    # Upload kit (title + thumbnail). Built from a scene still, not the render:
+    # the finished video has lyric captions and the logo burned in.
+    _p("🖼️ building title + thumbnail…")
+    try:
+        from modules import publish_kit
+        video = outputs.get("9x16") or outputs.get("16x9")
+        if video:
+            kit = publish_kit.attach(
+                Path(video),
+                fallback_title=song.get("title", "Music Video"),
+                context=f"Song style: {song.get('song_style', '')}\n"
+                        f"Theme: {song.get('theme', '')}\n"
+                        f"Lyrics:\n{(song.get('lyrics') or '')[:900]}",
+                description=(song.get("description") or "").strip(),
+                mode="music video",
+                source_image=Path(scene_images[0]) if scene_images else None,
+            )
+            outputs["publish"] = kit
+            outputs["title"] = kit.get("title")
+            outputs["thumbnail"] = kit.get("thumb_9x16") or kit.get("thumb_16x9")
+    except Exception as e:
+        log.warning(f"publish kit skipped: {e}")
+
     _p("✅ music video complete")
     return outputs

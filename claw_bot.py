@@ -4811,6 +4811,32 @@ async def _post_reel(channel, path, caption: str = ""):
             f"{caption}\n📁 `{p.name}` ({size_mb:.1f} MB) — too large to upload. "
             f"Full-quality file saved at:\n`{p}`")
 
+    await _post_publish_kit(channel, p)
+
+
+async def _post_publish_kit(channel, video: Path):
+    """Post the upload kit written beside a finished video: the title to paste
+    and the thumbnail to set. Silent when the kit is missing (older renders)."""
+    try:
+        stem = video.with_suffix("")
+        # A compressed _discord.mp4 shares the original's kit.
+        if stem.name.endswith("_discord"):
+            stem = stem.with_name(stem.name[: -len("_discord")])
+        title_file = Path(f"{stem}_title.txt")
+        if not title_file.exists():
+            return
+        title = title_file.read_text(encoding="utf-8").strip()
+
+        thumbs = [Path(f"{stem}_thumb_9x16.jpg"), Path(f"{stem}_thumb_16x9.jpg")]
+        files = [discord.File(str(t)) for t in thumbs if t.exists()]
+
+        msg = f"📌 **Title** (paste this):\n```\n{title}\n```"
+        if files:
+            msg += "🖼️ **Thumbnail** — download and set it on upload."
+        await channel.send(msg, files=files or None)
+    except Exception:
+        log.exception("could not post publish kit")
+
 
 @bot.command(name="facts", aliases=["make_facts", "fact"])
 @_gpu_job("facts reel")

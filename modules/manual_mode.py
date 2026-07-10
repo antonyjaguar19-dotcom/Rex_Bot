@@ -636,6 +636,24 @@ def assemble(proj: dict, aspects: Optional[list] = None,
         finals[aspect] = final_path
         log.info(f"Manual final [{aspect}]: {final_path}")
 
+        # Upload kit beside each final. Manual shots have no burned-in captions,
+        # but shot 1's still is still the cleanest source for a thumbnail.
+        try:
+            from modules import publish_kit
+            first_img = abs_path(proj, proj["shots"][0]["image"]) if proj["shots"] else None
+            context = "\n".join(
+                s.get("narration") or s.get("prompt") or "" for s in proj["shots"]
+            )[:1200]
+            publish_kit.attach(
+                final_path,
+                fallback_title=proj.get("name") or f"Manual {proj['_id']}",
+                context=context,
+                mode="manually directed short",
+                source_image=first_img,
+            )
+        except Exception as e:
+            log.warning(f"publish kit skipped: {e}")
+
     save_project(proj)
     return finals
 
