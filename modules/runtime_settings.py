@@ -520,11 +520,16 @@ def set_facts_voice_speed(speed: float) -> None:
 
 
 def get_facts_video_mode() -> str:
-    """'kenburns' = pan/zoom stills (fast, stable). 'wan' = animate each cut with
-    Wan I2V (cinematic, heavy — can OOM; pipeline falls back to kenburns). Default
-    'kenburns'."""
+    """'wan' = animate each cut with Wan I2V (cinematic, ~2-4 min per clip).
+    'kenburns' = pan/zoom stills (fast, stable).
+
+    Default 'wan': the animated cut is what makes a facts reel look made rather
+    than assembled, and gpu_memory now keeps Wan from sharing the card with
+    Ollama or the thumbnail model. The pipeline still falls back to Ken Burns on
+    an OOM, so the reel always lands.
+    """
     v = _load().get("facts_video_mode")
-    return v if v in ("kenburns", "wan") else "kenburns"
+    return v if v in ("kenburns", "wan") else "wan"
 
 
 def set_facts_video_mode(mode: str) -> None:

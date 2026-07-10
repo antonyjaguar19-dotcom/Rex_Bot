@@ -1,7 +1,7 @@
 """Full facts-shorts e2e from a TOPIC: write facts -> kokoro narration ->
 mood backdrops -> 9x16 Ken Burns + big centered text -> final mp4.
 
-Run: venv\Scripts\python run_facts_e2e.py "topic" [n_facts]
+Run: venv\Scripts\python run_facts_e2e.py "topic" [n_facts] [--animate|--kenburns]
      venv\Scripts\python run_facts_e2e.py --reuse <facts_id>
 """
 import sys
@@ -44,8 +44,15 @@ def main():
 def _run(fw, fp):
 
     args = sys.argv[1:]
-    animate = "--animate" in args
-    args = [a for a in args if a != "--animate"]
+    # Honour runtime_settings by default (now 'wan'). The old default forced
+    # animate=False, so an e2e run silently skipped Wan and proved nothing about
+    # the four-model collision it was meant to exercise.
+    animate = None
+    if "--animate" in args:
+        animate = True
+    if "--kenburns" in args:
+        animate = False
+    args = [a for a in args if a not in ("--animate", "--kenburns")]
     if args and args[0] == "--reuse":
         story = fw.load_facts(args[1])
         if not story:
@@ -59,7 +66,11 @@ def _run(fw, fp):
         log(f"story '{story['title']}' — {len(story['beats'])} beats in {time.time()-t0:.0f}s")
 
     t0 = time.time()
-    log(f"render mode: {'WAN animate' if animate else 'Ken Burns'}")
+    from modules import runtime_settings as _rs
+    _mode = ("WAN animate" if (animate is True
+             or (animate is None and _rs.get_facts_video_mode() == "wan"))
+             else "Ken Burns")
+    log(f"render mode: {_mode}" + (" (from runtime_settings)" if animate is None else " (forced)"))
     out = fp.render_facts(story, progress_cb=lambda m: log(m), animate=animate)
     vid = Path(out.get("9x16") or "")
     size = vid.stat().st_size / 1e6 if vid.exists() else 0
