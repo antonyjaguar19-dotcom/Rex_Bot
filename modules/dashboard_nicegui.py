@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets as pysecrets
 import sys
 import threading
@@ -44,8 +45,12 @@ from modules import sync_bridge as sbr
 from modules.theme_bank import get_random_theme, get_theme_count
 from modules.file_utils import atomic_write_json
 from modules import job_lock
+from modules import job_recovery as jr
 from modules import config_check
 from modules import manual_mode as mm
+
+# How often a running job rewrites its stage into the recovery register.
+CHECKPOINT_EVERY_SEC = 10.0
 
 # Common Kokoro voices (no list API in tts_engine; mirror control panel hints)
 VOICE_CHOICES = [
@@ -156,12 +161,33 @@ class State:
         self.facts: Optional[dict] = None      # facts-shorts pipeline: current reel
         self.facts_stage: str = "idle"         # facts stepper: write|voice|images|assemble|done
         self.music_stage: str = "idle"         # music stepper: lyrics|song|visuals|assemble|done
+        # Set by _bg_gpu while a job runs: {"id", "mode", "checkpointed"}.
+        self.active_job: Optional[dict] = None
 
     def push(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_lines.append(f"[{ts}] {line}")
         self.log_lines = self.log_lines[-300:]
         log.info(line)
+        self._checkpoint()
+
+    def _checkpoint(self):
+        """Persist the running job's stage as it progresses, so a resume after a
+        crash re-enters near where it died. Throttled — every progress line
+        would otherwise rewrite the register."""
+        job = self.active_job
+        if not job or not job.get("id"):
+            return
+        now = time.time()
+        if now - job.get("checkpointed", 0.0) < CHECKPOINT_EVERY_SEC:
+            return
+        job["checkpointed"] = now
+        mode = job["mode"]
+        stage = {"facts": self.facts_stage, "music": self.music_stage}.get(mode, self.stage)
+        try:
+            jr.checkpoint(job["id"], stage=stage, **_job_context_for(mode, self))
+        except Exception as e:
+            log.debug(f"checkpoint failed: {e}")
 
 
 S = State()
@@ -364,13 +390,61 @@ def _try_begin(label: str) -> bool:
     return True
 
 
+def _mode_for_label(label: str) -> str:
+    """Which tab owns this job. Labels are distinctive enough to route on."""
+    l = label.lower()
+    if l.startswith("manual"):
+        return "manual"
+    if "facts" in l:
+        return "facts"
+    if "horror" in l:
+        return "horror"
+    if any(k in l for k in ("song", "music video", "lyrics")):
+        return "music"
+    return "story"
+
+
+def _job_context_for(mode: str, state) -> dict:
+    """Enough on-disk identity to reload this job's state after a crash.
+
+    Each mode already persists its own JSON (script / facts / song / horror) and
+    manual keeps a project manifest — so only the id needs recording.
+    """
+    if mode == "story" and state.script_id:
+        return {"script_id": state.script_id}
+    if mode == "facts" and state.facts:
+        return {"facts_id": state.facts.get("_id") or state.facts.get("facts_id")}
+    if mode == "music" and state.song:
+        return {"song_id": state.song.get("_id") or state.song.get("song_id")}
+    if mode == "horror" and state.horror:
+        return {"horror_id": state.horror.get("_id") or state.horror.get("horror_id")}
+    if mode == "manual":
+        pid = mm.current_project_id()
+        return {"project_id": pid} if pid else {}
+    return {}
+
+
+def _job_context(mode: str) -> dict:
+    return _job_context_for(mode, S)
+
+
+def _current_stage(mode: str) -> str:
+    return {"facts": S.facts_stage, "music": S.music_stage}.get(mode, S.stage)
+
+
 def _bg_gpu(label: str, worker) -> None:
     """Queue a GPU job and run it when its turn comes, first-come-first-served.
 
     The wait happens on the worker thread — blocking the UI thread would freeze
     the browser session. `worker` keeps its own `finally: _end()`, which is what
     releases the lock (and may run on this same thread).
+
+    The job is also registered with job_recovery for the whole run, so a power
+    cut or a killed bot leaves a record its tab can offer to resume. finish()
+    runs even when the worker raises — a failed render is not an interrupted one.
     """
+    mode = _mode_for_label(label)
+
     def runner():
         try:
             job_lock.acquire_blocking(
@@ -383,7 +457,19 @@ def _bg_gpu(label: str, worker) -> None:
             return
         S.busy = True
         S.current_action = label
-        worker()
+        job_id = ""
+        try:
+            job_id = jr.begin(mode, label, stage=_current_stage(mode),
+                              context=_job_context(mode))
+        except Exception as e:
+            log.warning(f"recovery register failed: {e}")
+        S.active_job = {"id": job_id, "mode": mode, "checkpointed": 0.0}
+        try:
+            worker()
+        finally:
+            S.active_job = None
+            if job_id:
+                jr.finish(job_id)
     threading.Thread(target=runner, daemon=True).start()
 
 
@@ -1111,6 +1197,172 @@ def run_upscale_action(refresh_cb):
 
 
 # ==============================================================================
+# INTERRUPTED-JOB RECOVERY (Resume / Discard)
+# ==============================================================================
+# A power cut or a killed bot leaves a record in job_recovery. Each mode's tab
+# offers to resume it. Resume RESTARTS THE RECORDED STAGE — the artifacts of
+# finished stages (script JSON, storyboard frames, rendered clips) are on disk
+# and reused; the stage that died is re-run. It does not resume mid-frame.
+
+def resume_facts_render_action(story: dict, refresh_cb):
+    """Re-render a facts reel from its saved story JSON (skips the writing)."""
+    if not _try_begin("facts reel"):
+        return
+    S.facts = story
+    S.facts_stage = "voice"
+    S.push(f"Resuming facts reel — '{story.get('title')}'")
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import facts_pipeline as fp
+            out = fp.render_facts(story, progress_cb=lambda m: S.push(f"· {m}"))
+            S.facts_stage = "done"
+            S.push(f"✅ Facts reel ready: {Path(out.get('9x16')).name}")
+        except Exception as e:
+            S.push(f"Facts resume failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("facts reel", worker)
+
+
+def _resume_story(rec: dict, refresh_cb) -> Optional[str]:
+    sid = (rec.get("context") or {}).get("script_id")
+    if not sid:
+        return "no script id was recorded"
+    path = SCRIPTS_DIR / f"script_{sid}.json"
+    if not path.exists():
+        return f"script {sid} is gone from disk"
+    S.script = json.loads(path.read_text(encoding="utf-8"))
+    S.script_id = sid
+    stage = rec.get("stage") or "script"
+    # Re-enter at the stage that died. Earlier stages already left artifacts.
+    if stage in ("idle", "script", "prompts"):
+        approve_script_gen_prompts(refresh_cb)
+    elif stage == "storyboard":
+        approve_all_run_storyboard(refresh_cb)
+    elif stage == "video":
+        run_video(refresh_cb)
+    elif stage == "final":
+        assemble_final(refresh_cb)
+    else:
+        return f"unknown stage '{stage}'"
+    return None
+
+
+def _resume_facts(rec: dict, refresh_cb) -> Optional[str]:
+    fid = (rec.get("context") or {}).get("facts_id")
+    if not fid:
+        return "the reel died before its facts were written — start a new one"
+    from modules import facts_writer as fw
+    story = fw.load_facts(fid)
+    if not story:
+        return f"facts {fid} is gone from disk"
+    resume_facts_render_action(story, refresh_cb)
+    return None
+
+
+def _resume_music(rec: dict, refresh_cb) -> Optional[str]:
+    sid = (rec.get("context") or {}).get("song_id")
+    if not sid:
+        return "the song was never saved — start a new one"
+    from modules import song_generator as sgn
+    song = sgn.load_song(sid)
+    if not song:
+        return f"song {sid} is gone from disk"
+    S.song = song
+    render_musicvideo_action(refresh_cb)
+    return None
+
+
+def _resume_horror(rec: dict, refresh_cb) -> Optional[str]:
+    hid = (rec.get("context") or {}).get("horror_id")
+    if not hid:
+        return "the story was never saved — start a new one"
+    from modules import horror_writer as hw
+    story = hw.load_horror(hid)
+    if not story:
+        return f"horror story {hid} is gone from disk"
+    S.horror = story
+    render_horror_action(refresh_cb)
+    return None
+
+
+def _resume_manual(rec: dict, refresh_cb) -> Optional[str]:
+    ctx = rec.get("context") or {}
+    pid = ctx.get("project_id")
+    if not pid or not mm.load_project(pid):
+        return "the manual project is gone"
+    mm.set_current(pid)
+    label = (rec.get("label") or "").lower()
+    proj = mm.load_project(pid)
+    # Re-run the exact sub-job that died, when we can name it.
+    m = re.search(r"shot (\d+)", label)
+    if "animate" in label and m:
+        manual_animate_action(int(m.group(1)), refresh_cb)
+    elif "narration" in label and m:
+        manual_narrate_action(int(m.group(1)), None, refresh_cb)
+    elif "assembly" in label:
+        manual_assemble_action([proj.get("aspect_ratio", "16:9")], refresh_cb)
+    elif "music" in label:
+        tags = (proj.get("music") or {}).get("tags", "")
+        if not tags:
+            return "no music tags recorded — use the Music box"
+        manual_music_action(tags, "", refresh_cb)
+    else:
+        # image gen can't be replayed without the prompt; just reopen the board
+        S.push(f"Reopened manual project {pid} — the board is intact.")
+        refresh_cb()
+    return None
+
+
+_RESUMERS = {
+    "story": _resume_story,
+    "facts": _resume_facts,
+    "music": _resume_music,
+    "horror": _resume_horror,
+    "manual": _resume_manual,
+}
+
+
+def resume_job_action(job_id: str, refresh_cb):
+    rec = jr.get(job_id)
+    if not rec:
+        ui.notify("That job record is gone.", type="warning")
+        refresh_cb()
+        return
+    if not jr.is_interrupted(rec):
+        ui.notify("That job is running right now — nothing to resume.", type="warning")
+        return
+    resumer = _RESUMERS.get(rec.get("mode"))
+    if resumer is None:
+        ui.notify(f"No resume path for mode '{rec.get('mode')}'.", type="negative")
+        return
+    try:
+        problem = resumer(rec, refresh_cb)
+    except Exception as e:
+        log.exception("resume failed")
+        ui.notify(f"Resume failed: {e}", type="negative")
+        return
+    if problem:
+        ui.notify(f"Can't resume: {problem}", type="negative")
+        return
+    # Only clear the record once the replacement job is actually under way.
+    jr.discard(job_id)
+    S.push(f"Resumed interrupted job: {rec.get('label')}")
+    refresh_cb()
+
+
+def discard_job_action(job_id: str, refresh_cb):
+    rec = jr.get(job_id)
+    jr.discard(job_id)
+    S.push(f"Discarded interrupted job: {rec.get('label') if rec else job_id}")
+    ui.notify("Discarded — start a new job whenever you like.", type="info")
+    refresh_cb()
+
+
+# ==============================================================================
 # MANUAL MODE ACTIONS
 # ==============================================================================
 # Manual mode is direct-drive: user prompt → ComfyUI, no LLM chain. Current
@@ -1466,6 +1718,21 @@ def main_page():
         manual_panel = ui.tab_panel(tab_manual).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
+
+    # ============== INTERRUPTED-JOB BANNERS (one per mode tab) ==============
+    # Shown only when a job of that mode was left behind by a dead process:
+    # you shut the PC down, killed the bot, or lost power mid-render.
+    recovery_cards: dict = {}
+    recovery_bodies: dict = {}
+    for _mode in ("story", "facts", "music", "horror", "manual"):
+        with ui.card().classes("rex-card w-full") \
+                .style("border-left:4px solid #ffcf5c;") as _card:
+            with ui.row().classes("items-center"):
+                ui.label("⚠️ Interrupted job").classes("text-lg font-bold") \
+                    .style("color:#ffcf5c;")
+            recovery_bodies[_mode] = ui.column().classes("w-full gap-2")
+        _card.set_visibility(False)
+        recovery_cards[_mode] = _card
 
     # ============== STAGE STEPPER ==============
     stepper_row = ui.row().classes("w-full items-center justify-between") \
@@ -2227,6 +2494,14 @@ def main_page():
     card_manual.move(manual_panel)
     card_models.move(models_panel)
     card_queue.move(queue_panel)
+
+    # Recovery banners sit at the TOP of the tab that owns the job. Horror and
+    # story share the pipeline panel, so both land there.
+    recovery_cards["story"].move(pipeline_panel)
+    recovery_cards["horror"].move(pipeline_panel)
+    recovery_cards["facts"].move(facts_panel)
+    recovery_cards["music"].move(music_panel)
+    recovery_cards["manual"].move(manual_panel)
     card_tools.move(pipeline_panel)   # story-specific tools → inside Story
 
     # --- Mode-aware visibility: show ONLY the active mode's cards ---
@@ -2860,6 +3135,47 @@ def main_page():
                         ui.link(f"⬇ Download {aspect}", _media_url(fp)) \
                             .props("download").classes("text-xs").style("color:#7cf;")
 
+    def render_recovery():
+        """Offer Resume / Discard for jobs a dead process left behind."""
+        try:
+            interrupted = jr.list_interrupted()
+        except Exception as e:
+            log.warning(f"recovery scan failed: {e}")
+            return
+        sig = tuple((r["job_id"], r.get("stage", "")) for r in interrupted)
+        if not _changed("recovery", sig):
+            return
+
+        by_mode: dict = {}
+        for r in interrupted:
+            by_mode.setdefault(r.get("mode", "story"), []).append(r)
+
+        for mode, card in recovery_cards.items():
+            recs = by_mode.get(mode, [])
+            card.set_visibility(bool(recs))
+            body = recovery_bodies[mode]
+            body.clear()
+            if not recs:
+                continue
+            with body:
+                ui.label("This job was running when the bot stopped "
+                         "(shutdown, crash, or power loss).") \
+                    .classes("text-xs opacity-75")
+                for r in recs:
+                    jid = r["job_id"]
+                    with ui.element("div").classes("rex-shot-card w-full"):
+                        ui.label(jr.describe(r)).classes("text-sm font-bold")
+                        ui.label("Resume re-runs the stage it died in. Finished "
+                                 "stages keep their rendered files.") \
+                            .classes("text-xs opacity-60")
+                        with ui.row().classes("gap-2").style("margin-top:6px;"):
+                            ui.button("▶ Resume",
+                                      on_click=lambda j=jid: resume_job_action(j, full_refresh)) \
+                                .props("unelevated color=positive dense")
+                            ui.button("🗑 Discard & start new",
+                                      on_click=lambda j=jid: discard_job_action(j, full_refresh)) \
+                                .props("flat color=red dense")
+
     def render_log():
         text = "\n".join(S.log_lines[-30:]) or "(idle)"
         # escape angle brackets
@@ -2886,6 +3202,7 @@ def main_page():
             render_facts_reel()
             render_music_finals()
             render_manual()
+            render_recovery()
             render_queue()
             render_log()
         except Exception as e:

@@ -46,6 +46,7 @@ from modules import control_panel
 from modules import channel_cleanup
 from modules import approval_buttons
 from modules import job_lock
+from modules import job_recovery
 from modules.file_utils import atomic_write_json
 
 
@@ -260,6 +261,20 @@ scheduler = AsyncIOScheduler(timezone=IST)
 # HELPERS
 # ============================================================
 
+def _recovery_mode(label: str) -> str:
+    """Which dashboard tab should offer to resume this job if the PC dies."""
+    l = label.lower()
+    if l.startswith("manual"):
+        return "manual"
+    if "facts" in l:
+        return "facts"
+    if "horror" in l:
+        return "horror"
+    if any(k in l for k in ("song", "music")):
+        return "music"
+    return "story"
+
+
 def _gpu_job(label: str):
     """Queue a pipeline entrypoint on the shared GPU job queue.
 
@@ -290,6 +305,7 @@ def _gpu_job(label: str):
                     log.warning("Could not deliver queue notice")
 
             await job_lock.acquire_async(f"discord:{label}", on_queued=_announce)
+            job_id = ""
             try:
                 from modules import config_check
                 disk_ok, free_gb = config_check.check_disk_space()
@@ -302,8 +318,17 @@ def _gpu_job(label: str):
                     except Exception:
                         pass
                     return None
+                # Register for crash recovery: if the PC dies mid-render, the
+                # matching dashboard tab offers Resume / Discard on next boot.
+                try:
+                    job_id = job_recovery.begin(_recovery_mode(label), label)
+                except Exception as e:
+                    log.warning(f"recovery register failed: {e}")
                 return await fn(first, *args, **kwargs)
             finally:
+                # A job that merely RAISED is not interrupted — deregister it.
+                if job_id:
+                    job_recovery.finish(job_id)
                 job_lock.release()
         return wrapper
     return deco
@@ -1494,6 +1519,32 @@ async def on_ready():
     global BOT_START_TIME
     BOT_START_TIME = datetime.now(timezone.utc)
     log.info(f"Logged in as {bot.user}")
+
+    # Jobs left behind by a dead process (shutdown / crash / power loss).
+    # The dashboard tab for each mode offers Resume or Discard; announce them
+    # here too so they aren't missed.
+    try:
+        job_recovery.sweep_dead_records()
+        interrupted = job_recovery.list_interrupted()
+    except Exception as e:
+        log.warning(f"recovery scan failed: {e}")
+        interrupted = []
+    if interrupted:
+        log.warning(f"{len(interrupted)} interrupted job(s) awaiting resume/discard")
+        for guild in bot.guilds:
+            ch = get_channel_by_name(guild, "claw-bot") or get_channel_by_name(guild, "status")
+            if not ch:
+                continue
+            lines = [f"⚠️ **{len(interrupted)} interrupted job(s)** from a previous run:"]
+            lines += [f"• {job_recovery.describe(r)}  _(mode: {r.get('mode')})_"
+                      for r in interrupted[:5]]
+            lines.append("\nOpen the matching tab on the dashboard to **Resume** "
+                         "or **Discard & start new**.")
+            try:
+                await ch.send("\n".join(lines))
+            except Exception:
+                pass
+            break
 
     if not scheduler.running:
         scheduler.add_job(
@@ -4909,6 +4960,16 @@ async def cmd_queue(ctx):
                          f"— waiting {w['waiting_sec'] / 60:.1f} min")
     else:
         lines.append("\n🧾 Nothing queued.")
+
+    try:
+        interrupted = job_recovery.list_interrupted()
+    except Exception:
+        interrupted = []
+    if interrupted:
+        lines.append(f"\n⚠️ **Interrupted ({len(interrupted)})** — resume or discard "
+                     f"from the dashboard tab:")
+        for r in interrupted[:5]:
+            lines.append(f"• {job_recovery.describe(r)} _(mode: {r.get('mode')})_")
     await send_long_message(ctx.channel, "\n".join(lines))
 
 
