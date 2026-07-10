@@ -4749,6 +4749,7 @@ async def _post_reel(channel, path, caption: str = ""):
 
 
 @bot.command(name="facts", aliases=["make_facts", "fact"])
+@_gpu_job("facts reel")
 async def cmd_make_facts(ctx, *, topic: str = None):
     """Facts Shorts pipeline: write true facts about a topic → render a 9x16
     reel (energetic voice, creative images, read-along subs) → post to #videos."""
