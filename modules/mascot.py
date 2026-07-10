@@ -34,6 +34,12 @@ if str(_HERE) not in sys.path:
 
 log = logging.getLogger("claw_bot.mascot")
 
+
+class MascotGpuFault(RuntimeError):
+    """ComfyUI's CUDA context died. Not a per-image failure: every subsequent
+    render fails too, so a batch must stop instead of silently emitting
+    still-frame thumbnails that look like successes."""
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 ASSETS_DIR = PROJECT_ROOT / "02_Agent" / "assets"
 
@@ -249,6 +255,11 @@ def backend_healthy() -> tuple[bool, str]:
 _MODEL_RESIDENT = False
 
 
+def _set_resident(value: bool) -> None:
+    global _MODEL_RESIDENT
+    _MODEL_RESIDENT = value
+
+
 def prepare_gpu() -> None:
     """Evict everything else before loading a ~13.5 GB model on a 16 GB card.
 
@@ -270,7 +281,6 @@ def prepare_gpu() -> None:
 def release() -> None:
     """Hand the card back. Call once a batch of thumbnails is done, never
     between aspects — a cold reload costs ~4 min, a warm render 15 s."""
-    global _MODEL_RESIDENT
     try:
         from modules import gpu_utils
         gpu_utils.free_comfyui_vram()
@@ -278,7 +288,7 @@ def release() -> None:
     except Exception as e:
         log.warning(f"could not release VRAM: {e}")
     finally:
-        _MODEL_RESIDENT = False
+        _set_resident(False)
 
 
 def is_available() -> tuple[bool, str]:
@@ -483,14 +493,23 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             )
 
         if not getattr(result, "success", False):
+            if getattr(result, "fatal", False):
+                # The CUDA context is dead: every later render in this batch
+                # would silently fall back to a still and look like a success.
+                _set_resident(False)
+                raise MascotGpuFault(
+                    "ComfyUI hit a fatal GPU error (CUDA context lost). "
+                    "Restart ComfyUI before rendering more thumbnails."
+                )
             log.warning(f"mascot render failed ({getattr(result, 'error', '?')}); "
                         f"falling back to a still")
             return None
-        global _MODEL_RESIDENT
-        _MODEL_RESIDENT = True     # ComfyUI now holds OUR model — don't evict it
+        _set_resident(True)        # ComfyUI now holds OUR model — don't evict it
         log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid}, "
                  f"refs={len(refs)})")
         return Path(result.image_path)
+    except MascotGpuFault:
+        raise                      # never downgrade a dead GPU to "use a still"
     except Exception as e:
         log.warning(f"mascot render failed ({e}); falling back to a still")
         return None

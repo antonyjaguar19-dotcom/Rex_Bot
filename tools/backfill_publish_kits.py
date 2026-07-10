@@ -122,6 +122,13 @@ def main():
         kit = publish_kit.attach(video, fallback_title=title, context=context,
                                  description=desc, mode=mode, source_image=still,
                                  mascot_scene=scenes.get(video.name, ""))
+        if kit.get("mascot_fatal"):
+            # The CUDA context is gone. Every remaining video would silently get
+            # a still-frame thumbnail and the run would report success.
+            print(f"\n!! ABORTING: {kit['mascot_fatal']}")
+            print(f"!! {done} of {len(jobs)} done. Restart ComfyUI, then re-run "
+                  f"with --force; finished art is cached and will be reused.")
+            break
         print(f"   title : {kit.get('title')}")
         print(f"   source: {kit.get('thumb_source')}")
         if kit.get("mascot_scene"):

@@ -92,6 +92,26 @@ class GenResult:
     seed: int = 0
     error: Optional[str] = None
     backend_id: str = "comfyui_qwen_edit"
+    # True when the GPU/ComfyUI is now unusable, not just this one prompt.
+    # A CUDA illegal-access kills the context: every later prompt fails too, so
+    # a caller looping over many videos must STOP rather than quietly emit
+    # fallback art for the rest of the batch.
+    fatal: bool = False
+
+
+_FATAL_SIGNS = (
+    "illegal memory access",
+    "cuda error",
+    "cuda_error",
+    "out of memory",
+    "device-side assert",
+    "no cuda gpus are available",
+)
+
+
+def _is_fatal(text: str) -> bool:
+    t = (text or "").lower()
+    return any(s in t for s in _FATAL_SIGNS)
 
 
 # ==============================================================================
@@ -276,8 +296,14 @@ def generate(prompt: str, output_path: Path, aspect_ratio: str = "1:1",
         log.info(f"Qwen-Edit image saved: {output_path} ({_t.time() - t0:.0f}s)")
         return GenResult(success=True, image_path=output_path, seed=seed)
     except Exception as e:
-        log.warning(f"Qwen-Edit generation failed: {e}")
-        return GenResult(success=False, seed=seed, error=str(e))
+        fatal = _is_fatal(str(e))
+        if fatal:
+            # Keep the log readable: ComfyUI dumps every tensor in the error.
+            log.error("Qwen-Edit hit a FATAL GPU error (CUDA context is dead; "
+                      "ComfyUI must be restarted before it can render again)")
+        else:
+            log.warning(f"Qwen-Edit generation failed: {e}")
+        return GenResult(success=False, seed=seed, error=str(e)[:400], fatal=fatal)
     finally:
         for name in staged:
             _cleanup_staged(name)

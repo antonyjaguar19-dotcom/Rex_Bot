@@ -532,3 +532,59 @@ def test_abstract_topic_falls_back_to_a_neutral_scene():
 def test_concrete_topic_keeps_the_object_in_the_fallback():
     scene = mas.fallback_scene("Goldfish Facts", "goldfish recognize owners", "goldfish")
     assert "goldfish" in scene
+
+
+# ---------------------------------------------------------------- fatal GPU fault
+
+def test_fatal_signs_classify_a_dead_cuda_context():
+    from modules.image_backends import comfyui_qwen_edit as qwen
+    assert qwen._is_fatal("CUDA error: an illegal memory access was encountered")
+    assert qwen._is_fatal("torch.OutOfMemoryError: CUDA out of memory")
+    assert qwen._is_fatal("device-side assert triggered")
+    assert not qwen._is_fatal("Qwen produced no image")
+    assert not qwen._is_fatal("connection refused")
+
+
+def test_fatal_render_raises_instead_of_using_a_still(installed, tmp_path, monkeypatch):
+    """The bug: a dead CUDA context made 12 of 14 videos quietly fall back to a
+    still-frame thumbnail while the run reported '14 kits built, 0 failures'."""
+    from modules.image_backends import comfyui_qwen_edit as qwen
+
+    class R:
+        success = False
+        fatal = True
+        error = "CUDA error: an illegal memory access was encountered"
+    monkeypatch.setattr(qwen, "generate", lambda **k: R)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+
+    with pytest.raises(mas.MascotGpuFault):
+        mas.render_scene("scene", tmp_path / "o.png", seed=1)
+    assert mas._MODEL_RESIDENT is False, "a dead context is not a resident model"
+
+
+def test_non_fatal_render_failure_still_falls_back(installed, tmp_path, monkeypatch):
+    from modules.image_backends import comfyui_qwen_edit as qwen
+
+    class R:
+        success = False
+        fatal = False
+        error = "Qwen produced no image"
+    monkeypatch.setattr(qwen, "generate", lambda **k: R)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    assert mas.render_scene("scene", tmp_path / "o.png", seed=1) is None
+
+
+def test_publish_kit_surfaces_the_fatal_fault(tmp_path, monkeypatch):
+    import modules.runtime_settings as rs
+    monkeypatch.setattr(rs, "get_mascot_thumbnails_enabled", lambda: True)
+    monkeypatch.setattr(mas, "render_for_video",
+                        lambda **k: (_ for _ in ()).throw(
+                            mas.MascotGpuFault("CUDA context lost")))
+    video = tmp_path / "reel_9x16.mp4"
+    video.write_bytes(b"x")
+    kit = pk.attach(video, "T", context="ctx", aspects=("9x16",))
+    assert "CUDA context lost" in kit["mascot_fatal"]
+    assert kit["thumb_source"] != "mascot"      # still degrades for ONE video

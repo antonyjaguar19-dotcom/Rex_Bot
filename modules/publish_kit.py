@@ -344,6 +344,11 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
             stem=stem, aspects=wanted,
             release_after=not KEEP_MODEL_WARM, scene=scene or None)
         return art or {}
+    except mascot.MascotGpuFault as e:
+        # A single video may still ship with a still-frame thumbnail, but the
+        # caller must know the GPU is dead — a bulk run has to stop here.
+        log.error(f"{e}")
+        return {"_fatal": str(e)}
     except Exception as e:
         log.warning(f"mascot art skipped ({e}); using a normal thumbnail")
         return {}
@@ -397,6 +402,9 @@ def attach(video: Path,
         # video. Falls back to the clean still, then to a frame of the render.
         mascot_art = _mascot_art(video, title, context, mode, aspects,
                                  scene=mascot_scene)
+        if mascot_art.get("_fatal"):
+            kit["mascot_fatal"] = mascot_art["_fatal"]
+            mascot_art = {}
         if mascot_art:
             kit["thumb_source"] = "mascot"
             kit["mascot_scene"] = mascot_art.get("_scene", "")
