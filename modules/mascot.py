@@ -45,37 +45,60 @@ BACKEND_ID = "comfyui_uso"
 # Aspects USO renders natively (see comfyui_uso._RESOLUTION_TABLE).
 NATIVE_ASPECTS = {"16x9": "16:9", "9x16": "9:16", "1x1": "1:1"}
 
+# USO transfers POSE together with identity, and the reference is a T-pose. At
+# the default strength (1.0) every thumbnail came out as the same arms-out
+# stance with a prop floating at the mouth — no amount of negative prompting
+# broke it. Measured on the cake scene, same seed:
+#   1.00  identity perfect, T-pose locked, cake floats (no hand on it)
+#   0.80  identity perfect, still T-pose
+#   0.65  identity holds, real action pose — arm bent, cake gripped at the mouth
+#   0.50  identity BREAKS: blue eyes, spots gone, wrong species
+# 0.65 is the knee of the curve: the weakest reference that still is the mascot.
+POSE_LORA_STRENGTH = 0.65
+
+# USO ignores negative prompts (see the note below), so every constraint has to
+# be stated positively — including "not a T-pose", phrased as what we DO want.
 STYLE_SUFFIX = (
-    "subject large in frame and centered, cropped at the knees, "
+    "dynamic expressive action pose, exaggerated cartoon body language, "
+    "leaning into the action, elbows bent, both hands busy with the object, "
+    "big readable facial expression, three-quarter view, "
+    "subject large in frame, cropped at the knees, "
     "bold vivid solid color background, crisp studio lighting, high contrast, "
     "generous empty space at the bottom for a title, "
     "professional youtube thumbnail art, no text, no letters, no words"
 )
 
-# `logo` and `text` are NOT in here on purpose. The mascot wears a branded tee;
-# suppressing logos makes the model smear it into noise. Flux cannot render
-# legible small text either way, so the shirt reads as a graphic — which is what
-# we want — while a plain-shirt instruction would strip the brand entirely.
-NEGATIVE = (
-    "captions, subtitles, signature, watermark overlay, "
-    "extra characters, extra limbs, crowd, blurry, low quality, "
-    "deformed hands, cluttered background, busy background"
-)
+# NOTE: USO takes NO negative prompt. Its workflow wires ConditioningZeroOut
+# into the sampler's `negative` input (comfyui_uso.py node "48"), and the module
+# level generate() has no negative parameter — anything passed is discarded.
+# Flux-dev at cfg 1.0 works that way. So everything that shapes the image has to
+# live in the POSITIVE prompt above, and the pose is fixed by POSE_LORA_STRENGTH.
+# (This was learned the hard way: an anti-T-pose negative prompt did nothing.)
 
 _SCENE_SYS = (
-    "You design a single YouTube thumbnail image for a short video.\n"
+    "You design a single funny YouTube thumbnail image for a short video.\n"
     'Output ONLY valid JSON: {"scene": "..."}\n'
     "Rules:\n"
     "- The scene ALWAYS stars 'the mascot character'. Name it exactly that.\n"
-    "- The mascot must be interacting with ONE concrete object or creature "
-    "taken from the video's own content (hold it, point at it, stand beside it).\n"
-    "- Under 18 words. Describe only what is visible: subject, object, action, "
-    "expression.\n"
-    "- Do NOT describe the background or lighting — those are set for you.\n"
+    "- Give it a STRONG PHYSICAL ACTION with ONE concrete object or creature "
+    "from the video's content. Never 'standing next to' or 'holding' something "
+    "passively — make it DO something: eating it, chasing it, hiding it, "
+    "dodging it, hugging it, recoiling from it, being splashed by it.\n"
+    "- Add a big comic REACTION: caught in the act, guilty, shocked, delighted, "
+    "terrified, smug. The face must sell the joke.\n"
+    "- Comedy beats accuracy. Mischief is good.\n"
+    "- Under 20 words. Describe only what is visible: action, object, expression.\n"
+    "- Do NOT describe the background, lighting, or the camera — those are set "
+    "for you.\n"
     "- No text, captions, letters or numbers in the image.\n"
     "- No abstractions ('knowledge', 'curiosity'). Physical things only.\n"
-    'Example: {"scene": "the mascot character holding a small glass bowl with '
-    'an orange goldfish, eyes wide with surprise"}'
+    "Examples:\n"
+    '{"scene": "the mascot character caught mid-bite stuffing a huge slice of '
+    'chocolate cake into its mouth, cheeks bulging, eyes wide with guilt"}\n'
+    '{"scene": "the mascot character recoiling as a goldfish leaps out of its '
+    'bowl and splashes its face, mouth open in shock"}\n'
+    '{"scene": "the mascot character clinging to a fire hose as it whips '
+    'sideways, legs flying, panicked grin"}'
 )
 
 # The model keeps describing backgrounds anyway; strip them so STYLE_SUFFIX wins.
@@ -201,11 +224,13 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         log.info("no mascot image; skipping mascot thumbnail")
         return None
     try:
-        from modules import image_backend as ib
         from modules import gpu_utils
+        # The Backend CLASS reads lora_strength from models.json and ignores the
+        # argument, so call the adapter's module-level generate() — POSE_LORA_
+        # STRENGTH is the whole reason the mascot isn't stuck in a T-pose.
+        from modules.image_backends import comfyui_uso as uso
 
-        backend = ib.get_named_backend(BACKEND_ID)
-        ok, msg = backend.health_check()
+        ok, msg = backend_healthy()
         if not ok:
             log.warning(f"mascot thumbnail skipped: {msg}")
             return None
@@ -215,18 +240,21 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             seed = random.randint(1, 2**31 - 1)
 
         out_png.parent.mkdir(parents=True, exist_ok=True)
-        prompt = f"{scene}, {STYLE_SUFFIX}"
-        result = backend.generate(
-            prompt,
-            negative_prompt=NEGATIVE,
+        result = uso.generate(
+            prompt=f"{scene}, {STYLE_SUFFIX}",
+            output_path=out_png,
             aspect_ratio=NATIVE_ASPECTS.get(aspect, "9:16"),
-            output_filename=str(out_png),
             seed=seed,
+            lora_strength=POSE_LORA_STRENGTH,
             reference_image=ref,
         )
-        result = Path(result)
-        log.info(f"Mascot thumbnail base rendered: {result.name} ({aspect})")
-        return result
+        if not getattr(result, "success", False):
+            log.warning(f"mascot render failed ({getattr(result, 'error', '?')}); "
+                        f"falling back to a still")
+            return None
+        log.info(f"Mascot base rendered: {out_png.name} ({aspect}, "
+                 f"lora={POSE_LORA_STRENGTH})")
+        return Path(result.image_path)
     except Exception as e:
         log.warning(f"mascot render failed ({e}); falling back to a still")
         return None
