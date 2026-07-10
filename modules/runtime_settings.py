@@ -542,6 +542,25 @@ def set_facts_video_mode(mode: str) -> None:
     log.info(f"Facts video mode: {mode}")
 
 
+def get_facts_thumbnail_enabled() -> bool:
+    """Whether a facts reel gets a generated thumbnail at all.
+
+    The thumbnail is a whole extra stage — a title from the LLM plus one or two
+    ~25 s Qwen renders. On by default (a Short wants a cover), but skippable when
+    you only care about the video. The upload title and description are still
+    written; only the thumbnail image is skipped.
+    """
+    val = _load().get("facts_thumbnail")
+    return True if val is None else bool(val)
+
+
+def set_facts_thumbnail_enabled(enabled: bool) -> None:
+    data = _load()
+    data["facts_thumbnail"] = bool(enabled)
+    _save(data)
+    log.info(f"Facts thumbnail: {'ON' if enabled else 'OFF'}")
+
+
 _HORROR_QWEN_INSTRUCT = (
     "Read this aloud as a serious adult male narrator telling a horror story: "
     "slow, deep, calm and grave, with an unhurried, measured, steady delivery "

@@ -2059,6 +2059,14 @@ def main_page():
             facts_video_sel.on("update:model-value",
                                lambda e: rs.set_facts_video_mode(facts_video_sel.value))
 
+            facts_thumb_sw = ui.switch(
+                "Thumbnail", value=rs.get_facts_thumbnail_enabled()) \
+                .props("dense color=accent") \
+                .tooltip("Generate a cover image for the reel (adds a Qwen render). "
+                         "Off = title + description only.")
+            facts_thumb_sw.on("update:model-value",
+                              lambda e: rs.set_facts_thumbnail_enabled(facts_thumb_sw.value))
+
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 

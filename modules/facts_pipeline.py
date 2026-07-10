@@ -260,6 +260,7 @@ def _attach_publish_kit(story: dict, out: dict, backgrounds: list) -> dict:
         context = "\n".join(
             b.get("narration", "") for b in story.get("beats", [])
         )[:1500]
+        from modules import runtime_settings as rs
         kit = publish_kit.attach(
             Path(video),
             fallback_title=story.get("title", "Facts"),
@@ -267,6 +268,7 @@ def _attach_publish_kit(story: dict, out: dict, backgrounds: list) -> dict:
             description=(story.get("description") or "").strip(),
             mode="facts short (true facts, fast cuts)",
             source_image=still,
+            thumbnail=rs.get_facts_thumbnail_enabled(),
         )
         return {"publish": kit, "title": kit.get("title"),
                 "thumbnail": kit.get("thumb_9x16") or kit.get("thumb_16x9")}

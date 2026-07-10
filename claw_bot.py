@@ -1636,6 +1636,7 @@ async def on_ready():
                     "set_facts_voice":     cmd_set_facts_voice,
                     "set_facts_speed":     cmd_set_facts_speed,
                     "set_facts_video":     cmd_set_facts_video,
+                    "set_facts_thumbnail": cmd_set_facts_thumbnail,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5561,6 +5562,22 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="set_facts_thumbnail", aliases=["facts_thumbnail", "facts_thumb"])
+async def cmd_set_facts_thumbnail(ctx, switch: str = None):
+    """Toggle the facts-reel thumbnail: `!facts_thumb on|off`.
+
+    Off = title + description only, no cover image (skips the Qwen render)."""
+    if switch is None:
+        state = "on" if rs.get_facts_thumbnail_enabled() else "off"
+        await ctx.send(f"🖼️ Facts thumbnail: `{state}` — `!facts_thumb on|off`")
+        return
+    want = switch.strip().lower() in ("on", "true", "1", "yes", "enable")
+    rs.set_facts_thumbnail_enabled(want)
+    note = (" — reels get a generated cover" if want
+            else " — title + description only, no cover")
+    await ctx.send(f"✅ Facts thumbnail → `{'on' if want else 'off'}`{note}.")
 
 
 if __name__ == "__main__":

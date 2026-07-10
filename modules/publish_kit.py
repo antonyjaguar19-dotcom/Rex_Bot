@@ -712,8 +712,13 @@ def attach(video: Path,
            mode: str = "",
            source_image: Optional[Path] = None,
            aspects: Optional[tuple] = None,
-           mascot_scene: str = "") -> dict:
+           mascot_scene: str = "",
+           thumbnail: bool = True) -> dict:
     """Write title + thumbnails + description beside `video`. Never raises.
+
+    `thumbnail=False` writes the title and description but skips the thumbnail
+    image entirely — no LLM headline, no Qwen render. Use it when a mode's
+    thumbnail toggle is off; the reel still gets its paste-ready title.
 
     `source_image` should be the CLEAN still the video was built from (a facts
     backdrop, shot 1's storyboard frame, a music scene). Prefer it: the rendered
@@ -749,56 +754,64 @@ def attach(video: Path,
             except Exception as e:
                 log.warning(f"could not write description file: {e}")
 
-        # The few words that go ON the thumbnail — not the upload title. Written
-        # now, while Ollama is still resident: _mascot_art evicts it to load Qwen.
-        headline, headline_short = build_headline(title, context)
-        kit["headline_text"] = headline
-        kit["headline_short"] = headline_short
-        # Keep what we grounded against, so a later reroll grounds the same way.
-        if context.strip():
-            kit["context"] = context[:CONTEXT_MAX]
+        if not thumbnail:
+            # Title + description only. Skips the LLM headline and the Qwen
+            # render — the whole cost of a thumbnail — when the mode's toggle
+            # is off.
+            kit["thumb_source"] = "disabled"
+            log.info(f"publish kit: thumbnail disabled for {video.name}")
+        else:
+            # The few words that go ON the thumbnail — not the upload title.
+            # Written now, while Ollama is still resident: _mascot_art evicts it
+            # to load Qwen.
+            headline, headline_short = build_headline(title, context)
+            kit["headline_text"] = headline
+            kit["headline_short"] = headline_short
+            # Keep what we grounded against, so a later reroll grounds the same way.
+            if context.strip():
+                kit["context"] = context[:CONTEXT_MAX]
 
-        # Preferred art: the mascot, rendered by Qwen into a scene about this
-        # video. Falls back to the clean still, then to a frame of the render.
-        mascot_art = _mascot_art(video, title, context, mode, aspects,
-                                 scene=mascot_scene, headline=headline,
-                                 headline_short=headline_short)
-        if mascot_art.get("_fatal"):
-            kit["mascot_fatal"] = mascot_art["_fatal"]
-            mascot_art = {}
-        if mascot_art:
-            kit["thumb_source"] = "mascot"
-            kit["mascot_scene"] = mascot_art.get("_scene", "")
+            # Preferred art: the mascot, rendered by Qwen into a scene about this
+            # video. Falls back to the clean still, then to a frame of the render.
+            mascot_art = _mascot_art(video, title, context, mode, aspects,
+                                     scene=mascot_scene, headline=headline,
+                                     headline_short=headline_short)
+            if mascot_art.get("_fatal"):
+                kit["mascot_fatal"] = mascot_art["_fatal"]
+                mascot_art = {}
+            if mascot_art:
+                kit["thumb_source"] = "mascot"
+                kit["mascot_scene"] = mascot_art.get("_scene", "")
 
-        grabbed = None
-        frame = None
-        if not mascot_art:
-            if source_image and Path(source_image).exists():
-                frame = Path(source_image)
-                kit["thumb_source"] = "still"
-            else:
-                grabbed = grab_frame(video, Path(f"{stem}_frame.png"))
-                frame = grabbed
-                kit["thumb_source"] = "video frame"
+            grabbed = None
+            frame = None
+            if not mascot_art:
+                if source_image and Path(source_image).exists():
+                    frame = Path(source_image)
+                    kit["thumb_source"] = "still"
+                else:
+                    grabbed = grab_frame(video, Path(f"{stem}_frame.png"))
+                    frame = grabbed
+                    kit["thumb_source"] = "video frame"
 
-        baked = bool(mascot_art.get("_baked_headline")) if mascot_art else False
-        kit["headline"] = "baked into the art" if baked else "overlaid"
-        for aspect in aspects:
-            size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
-            base = mascot_art.get(aspect) if mascot_art else frame
-            if not base:
-                continue
-            out = Path(f"{stem}_thumb_{aspect}.jpg")
-            done = (save_thumbnail(Path(base), out, size) if baked
-                    else render_thumbnail(Path(base), title, out, size))
-            if done:
-                kit[f"thumb_{aspect}"] = str(out)
+            baked = bool(mascot_art.get("_baked_headline")) if mascot_art else False
+            kit["headline"] = "baked into the art" if baked else "overlaid"
+            for aspect in aspects:
+                size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
+                base = mascot_art.get(aspect) if mascot_art else frame
+                if not base:
+                    continue
+                out = Path(f"{stem}_thumb_{aspect}.jpg")
+                done = (save_thumbnail(Path(base), out, size) if baked
+                        else render_thumbnail(Path(base), title, out, size))
+                if done:
+                    kit[f"thumb_{aspect}"] = str(out)
 
-        if grabbed:                          # only delete what we created
-            try:
-                grabbed.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if grabbed:                          # only delete what we created
+                try:
+                    grabbed.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         try:
             Path(f"{stem}_publish.json").write_text(

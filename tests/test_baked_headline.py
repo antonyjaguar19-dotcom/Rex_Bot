@@ -251,6 +251,7 @@ def test_render_for_video_bakes_the_hook_not_the_long_title(installed, tmp_path,
     monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
     monkeypatch.setattr(mas, "release", lambda: None)
     monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
     monkeypatch.setattr(mas, "render_scene",
                         lambda s, p, **k: (seen.update(k),
                                            Image.new("RGB", (8, 8)).save(p), p)[2])
@@ -295,6 +296,7 @@ def test_render_for_video_records_what_each_aspect_actually_says(installed, tmp_
     monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
     monkeypatch.setattr(mas, "release", lambda: None)
     monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
     monkeypatch.setattr(mas, "render_scene",
                         lambda s, p, **k: (Image.new("RGB", (8, 8)).save(p), p)[1])
     art = mas.render_for_video("Bee Facts", "ctx", tmp_path, "s",
