@@ -60,6 +60,24 @@ def test_load_missing_returns_none(world):
     assert mm.load_project("nope") is None
 
 
+# ---------------------------------------------------------------- upload names
+
+def test_safe_filename_strips_paths():
+    # a browser can send a name carrying directories; only the basename is used
+    assert mm.safe_filename("cat.png") == "cat.png"
+    assert mm.safe_filename("../../etc/passwd") == "passwd"
+    assert mm.safe_filename("foo/bar/baz.jpg") == "baz.jpg"
+    assert mm.safe_filename(r"C:\windows\system32\evil.png") == "evil.png"
+
+
+def test_safe_filename_handles_junk():
+    assert mm.safe_filename("") == "upload.png"
+    assert mm.safe_filename(None) == "upload.png"
+    assert mm.safe_filename("..") == "upload.png"
+    assert mm.safe_filename(".") == "upload.png"
+    assert len(mm.safe_filename("x" * 400)) <= 120
+
+
 # ---------------------------------------------------------------- delete
 
 def test_delete_project_removes_everything(world, tmp_path):

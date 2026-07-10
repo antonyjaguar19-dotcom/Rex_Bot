@@ -124,6 +124,19 @@ def list_projects() -> list[tuple[str, str]]:
     return out
 
 
+def safe_filename(raw: str) -> str:
+    """Strip any directory component from an uploaded filename.
+
+    A browser (or a crafted request) can send 'foo/../../evil.png'. Only the
+    bare basename is ever used to build a path inside the project.
+    """
+    name = Path(str(raw or "")).name.strip()
+    name = name.replace("\\", "_").replace("/", "_")
+    if not name or name in (".", ".."):
+        return "upload.png"
+    return name[:120]
+
+
 def project_stats(pid: str) -> dict:
     """What a delete would destroy: file count, MB, shot count. For confirm UIs."""
     pdir = project_dir(pid)

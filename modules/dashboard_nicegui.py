@@ -2082,16 +2082,18 @@ def main_page():
             .classes("w-full").props("outlined dark dense")
 
         with ui.row().classes("w-full gap-2 items-center flex-wrap"):
-            def _on_ref_upload(e):
+            # NiceGUI 3.x: the payload is e.file (a FileUpload); .save() is async.
+            async def _on_ref_upload(e):
                 proj = _manual_proj()
                 if proj is None:
                     ui.notify("Create a project first.", type="negative")
                     return
-                dest = mm.project_dir(proj["_id"]) / "images" / f"ref_{int(time.time())}_{e.name}"
+                fname = mm.safe_filename(e.file.name)
+                dest = mm.project_dir(proj["_id"]) / "images" / f"ref_{int(time.time())}_{fname}"
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(e.content.read())
+                await e.file.save(dest)
                 MANUAL_REF["path"] = str(dest)
-                ui.notify(f"Reference set: {e.name}", type="positive")
+                ui.notify(f"Reference set: {fname}", type="positive")
             ui.upload(label="Reference image (optional — USO/Kontext/IPA use it)",
                       auto_upload=True, on_upload=_on_ref_upload) \
                 .props("accept=image/* dense").style("max-width: 320px;")
@@ -2101,16 +2103,18 @@ def main_page():
                 ui.notify("Reference cleared.", type="info")
             ui.button("✖ Clear ref", on_click=_clear_ref).props("flat dense")
 
-            def _on_shot_upload(e):
+            async def _on_shot_upload(e):
                 proj = _manual_proj()
                 if proj is None:
                     ui.notify("Create a project first.", type="negative")
                     return
-                tmp = mm.project_dir(proj["_id"]) / "images" / f"up_{int(time.time())}_{e.name}"
+                fname = mm.safe_filename(e.file.name)
+                tmp = mm.project_dir(proj["_id"]) / "images" / f"up_{int(time.time())}_{fname}"
                 tmp.parent.mkdir(parents=True, exist_ok=True)
-                tmp.write_bytes(e.content.read())
-                shot = mm.add_shot(proj, tmp, prompt=f"(uploaded) {e.name}")
-                S.push(f"Uploaded {e.name} → shot {shot['n']}")
+                await e.file.save(tmp)
+                shot = mm.add_shot(proj, tmp, prompt=f"(uploaded) {fname}")
+                S.push(f"Uploaded {fname} → shot {shot['n']}")
+                ui.notify(f"Added as shot {shot['n']}", type="positive")
                 full_refresh()
             ui.upload(label="Upload image straight to board",
                       auto_upload=True, on_upload=_on_shot_upload) \
