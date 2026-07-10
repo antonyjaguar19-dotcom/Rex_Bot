@@ -70,8 +70,13 @@ MODEL_VRAM_GB = {
 # and warning about it every single time would just teach you to ignore the log.
 WORKING_HEADROOM_GB = 1.5
 
-# Warn only when the load is genuinely marginal — the shape of the CUDA fault.
-MIN_FREE_AFTER_LOAD_GB = 0.5
+# What actually predicts the CUDA fault is not "free >= weights" — Qwen's 13.5 GB
+# loads happily onto a card with 13.4 GB free, because ComfyUI streams and
+# offloads. It is whether ComfyUI has any WORKING room at all. The illegal
+# memory access fired at 0.2 GB; a healthy 8-clip Wan run sat at 13.4 GB.
+# A 16 GB card minus a 1.5 GB reserve can never show more than ~14.4 GB free,
+# so a "weights + margin" threshold could never be met and warned on every run.
+CRITICAL_FREE_GB = 2.0
 
 # CUDA hands memory back asynchronously; re-measure once before crying wolf.
 SETTLE_SEC = 2.0
@@ -166,22 +171,22 @@ def acquire(label: str) -> None:
              f"{free_gb():.1f} GB free, resident={resident_model()})")
     evict_all()
 
-    # Freeing is asynchronous: ComfyUI returns from /free before CUDA has
-    # actually handed the memory back, and a caller's own torch allocator may
-    # still be holding cached blocks. Measuring immediately reported "0.6 GB
-    # free" on a card that settled to 14.4 GB a moment later — a warning that
-    # was pure noise.
+    # Freeing is asynchronous: ComfyUI returns from /free before CUDA has handed
+    # the memory back, and the caller's own torch allocator may still hold
+    # cached blocks. Measuring immediately reported "0.6 GB free" on a card that
+    # settled to 14.4 GB a moment later.
     have = free_gb()
-    if have < want + MIN_FREE_AFTER_LOAD_GB:
+    if have < CRITICAL_FREE_GB:
         time.sleep(SETTLE_SEC)
         have = free_gb()
 
-    if have < want + MIN_FREE_AFTER_LOAD_GB:
+    if have < CRITICAL_FREE_GB:
         # Not fatal — ComfyUI offloads — but this is the exact shape of the
-        # failure that killed the CUDA context, so say so.
-        log.warning(f"GPU: only {have:.1f} GB free for {label} "
-                    f"({want:.1f} GB of weights). Expect offloading; a CUDA "
-                    f"illegal-access is possible if ComfyUI has no reserve.")
+        # failure that killed the CUDA context mid-batch.
+        log.warning(f"GPU: only {have:.1f} GB free before loading {label} "
+                    f"({want:.1f} GB of weights). ComfyUI has no working room; "
+                    f"a CUDA illegal-access is likely. Is something else "
+                    f"holding the card?")
     _set_resident(label)
 
 

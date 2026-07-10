@@ -87,6 +87,11 @@ def test_forget_drops_state_without_freeing(clean):
 
 # ---------------------------------------------------------------- headroom
 
+def test_critical_threshold_sits_between_the_two_observed_runs():
+    """0.2 GB killed the context; 13.4 GB ran eight Wan clips cleanly."""
+    assert 0.2 < gm.CRITICAL_FREE_GB < 13.4
+
+
 def test_needs_gb_is_weights_only():
     """ComfyUI reserves its own working room via --reserve-vram, so adding it
     here too would warn on every healthy load and teach you to ignore the log."""
@@ -94,18 +99,25 @@ def test_needs_gb_is_weights_only():
     assert gm.needs_gb("something_unknown") == pytest.approx(8.0)
 
 
-def test_a_normal_tight_load_does_not_warn(clean, monkeypatch, caplog):
-    monkeypatch.setattr(gm, "free_gb", lambda: 14.4)     # the real card, idle
-    with caplog.at_level("WARNING"):
-        gm.acquire(gm.QWEN_EDIT)                          # 13.5 GB of weights
-    assert "only" not in caplog.text
-
-
-def test_low_headroom_warns_but_proceeds(clean, monkeypatch, caplog):
-    monkeypatch.setattr(gm, "free_gb", lambda: 0.2)      # the 211 MB case
+@pytest.mark.parametrize("free", [14.4, 13.4, 2.5])
+def test_a_normal_load_does_not_warn(clean, monkeypatch, caplog, free):
+    """13.4 GB free loaded a 13.5 GB model fine in a real 8-clip Wan run:
+    ComfyUI streams and offloads. 'free >= weights' was never the right test,
+    and a card capped at ~14.4 GB free could never satisfy it."""
+    monkeypatch.setattr(gm, "free_gb", lambda: free)
+    monkeypatch.setattr(gm.time, "sleep", lambda s: None)
     with caplog.at_level("WARNING"):
         gm.acquire(gm.QWEN_EDIT)
-    assert "only 0.2 GB free" in caplog.text
+    assert "no working room" not in caplog.text
+
+
+def test_no_working_room_warns_but_proceeds(clean, monkeypatch, caplog):
+    """The 211 MB case: this is what actually killed the CUDA context."""
+    monkeypatch.setattr(gm, "free_gb", lambda: 0.2)
+    monkeypatch.setattr(gm.time, "sleep", lambda s: None)
+    with caplog.at_level("WARNING"):
+        gm.acquire(gm.QWEN_EDIT)
+    assert "no working room" in caplog.text
     assert gm.resident_model() == gm.QWEN_EDIT           # ComfyUI can still offload
 
 
@@ -161,7 +173,7 @@ def test_a_slow_free_is_remeasured_before_warning(clean, monkeypatch, caplog):
     monkeypatch.setattr(gm.time, "sleep", lambda s: None)
     with caplog.at_level("WARNING"):
         gm.acquire(gm.QWEN_EDIT)
-    assert "only" not in caplog.text, "must re-measure before warning"
+    assert "no working room" not in caplog.text, "must re-measure before warning"
 
 
 def test_a_genuinely_full_card_still_warns(clean, monkeypatch, caplog):
@@ -169,4 +181,4 @@ def test_a_genuinely_full_card_still_warns(clean, monkeypatch, caplog):
     monkeypatch.setattr(gm.time, "sleep", lambda s: None)
     with caplog.at_level("WARNING"):
         gm.acquire(gm.QWEN_EDIT)
-    assert "only 0.2 GB free" in caplog.text
+    assert "no working room" in caplog.text
