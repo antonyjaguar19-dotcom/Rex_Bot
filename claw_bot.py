@@ -261,27 +261,35 @@ scheduler = AsyncIOScheduler(timezone=IST)
 # ============================================================
 
 def _gpu_job(label: str):
-    """Gate a pipeline entrypoint behind the shared GPU job lock.
+    """Queue a pipeline entrypoint on the shared GPU job queue.
 
-    Cross-frontend: the same lock is claimed by the dashboard's workers, so
-    a Discord command can't start rendering while the web UI is mid-job and
-    vice versa. The first positional arg must be a channel, ctx, or
-    interaction (anything with .send or .channel.send) so the busy notice
-    has somewhere to go.
+    Cross-frontend FIFO: the same queue is used by the dashboard's workers, so
+    Discord and the web UI take turns rather than colliding. Submit three
+    renders and they run in the order they arrived — nothing is turned away.
+
+    The wait is `await`ed, never blocked: all Discord handlers share the bot's
+    event-loop thread, so a blocking wait here would freeze the whole bot.
+    The first positional arg must be a channel, ctx, or interaction (anything
+    with .send or .channel.send) so the queue notice has somewhere to go.
     """
     def deco(fn):
         @functools.wraps(fn)
         async def wrapper(first, *args, **kwargs):
             target = getattr(first, "channel", None) or first
-            if not job_lock.acquire(f"discord:{label}"):
+
+            async def _announce(pos: int):
+                ahead = max(0, pos - 1)
+                who = job_lock.holder_label()
+                msg = (f"🧾 **Queued** — `{label}` is #{pos} in line."
+                       f"\nRunning now: **{who}**"
+                       + (f" · {ahead} job(s) ahead of you." if ahead else
+                          " · you're next."))
                 try:
-                    await target.send(
-                        f"⏳ GPU busy with **{job_lock.holder_label()}** — "
-                        f"try again when it finishes."
-                    )
+                    await target.send(msg)
                 except Exception:
-                    log.warning("Could not deliver GPU-busy notice")
-                return None
+                    log.warning("Could not deliver queue notice")
+
+            await job_lock.acquire_async(f"discord:{label}", on_queued=_announce)
             try:
                 from modules import config_check
                 disk_ok, free_gb = config_check.check_disk_space()
@@ -4877,6 +4885,31 @@ def _mm_proj():
     manual_mode = _mm()
     pid = manual_mode.current_project_id()
     return manual_mode.load_project(pid) if pid else None
+
+
+@bot.command(name="queue", aliases=["jobs", "gpu"])
+async def cmd_queue(ctx):
+    """Show what's on the GPU right now and who's waiting behind it."""
+    holder = job_lock.current()
+    waiting = job_lock.queue_snapshot()
+    if not holder and not waiting:
+        await ctx.send("💤 GPU idle — nothing queued.")
+        return
+    lines = []
+    if holder:
+        ran = time.time() - float(holder.get("started", time.time()))
+        lines.append(f"▶️ **Running:** `{holder.get('label', '?')}` "
+                     f"({ran / 60:.1f} min, pid {holder.get('pid')})")
+    else:
+        lines.append("▶️ **Running:** (nothing)")
+    if waiting:
+        lines.append(f"\n🧾 **Queued ({len(waiting)})** — first come, first served:")
+        for w in waiting:
+            lines.append(f"`{w['position']}.` {w['label']} "
+                         f"— waiting {w['waiting_sec'] / 60:.1f} min")
+    else:
+        lines.append("\n🧾 Nothing queued.")
+    await send_long_message(ctx.channel, "\n".join(lines))
 
 
 @bot.command(name="mnew", aliases=["manual_new"])

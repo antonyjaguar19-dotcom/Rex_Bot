@@ -345,31 +345,50 @@ def _bg(fn, *args, **kwargs):
 
 
 def _try_begin(label: str) -> bool:
-    """Claim the dashboard busy flag + the shared GPU job lock.
+    """Admission check before queueing a GPU job.
 
-    The job lock is cross-frontend: it also blocks while a Discord command
-    or the daily scheduler is rendering. Returns False (and notifies) when
-    anything else holds the GPU.
+    No longer claims the lock — jobs QUEUE now (see _bg_gpu). This runs on the
+    UI thread, so it must never block: the actual wait happens in the worker.
+    Returns False only when the job can't be accepted at all (low disk).
     """
-    if S.busy:
-        ui.notify("⏳ Already busy.", type="warning")
-        return False
-    if not job_lock.acquire(f"dashboard:{label}"):
-        ui.notify(f"⏳ GPU busy: {job_lock.holder_label()}", type="warning")
-        return False
     disk_ok, free_gb = config_check.check_disk_space()
     if not disk_ok:
-        job_lock.release()
         ui.notify(f"⚠️ Low disk: only {free_gb} GB free — clear 04_Outputs first.",
                   type="negative")
         return False
-    S.busy = True
-    S.current_action = label
+    depth = job_lock.queue_depth()
+    if S.busy or depth:
+        who = job_lock.holder_label()
+        ui.notify(f"🧾 Queued behind {who}"
+                  + (f" (+{depth} waiting)" if depth else "") + ".", type="info")
     return True
 
 
+def _bg_gpu(label: str, worker) -> None:
+    """Queue a GPU job and run it when its turn comes, first-come-first-served.
+
+    The wait happens on the worker thread — blocking the UI thread would freeze
+    the browser session. `worker` keeps its own `finally: _end()`, which is what
+    releases the lock (and may run on this same thread).
+    """
+    def runner():
+        try:
+            job_lock.acquire_blocking(
+                f"dashboard:{label}",
+                on_queued=lambda pos: S.push(f"🧾 Queued '{label}' — #{pos} in line "
+                                             f"(running: {job_lock.holder_label()})"),
+            )
+        except Exception as e:                     # QueueTimeout or worse
+            S.push(f"Could not start '{label}': {e}")
+            return
+        S.busy = True
+        S.current_action = label
+        worker()
+    threading.Thread(target=runner, daemon=True).start()
+
+
 def _end():
-    """Counterpart of _try_begin — call from the worker's finally block."""
+    """Counterpart of _bg_gpu — call from the worker's finally block."""
     S.busy = False
     S.current_action = ""
     job_lock.release()
@@ -412,7 +431,7 @@ def generate_script_action(theme: str, culture: str, style: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("script generation", worker)
 
 
 def revise_script_action(feedback: str, refresh_cb):
@@ -435,7 +454,7 @@ def revise_script_action(feedback: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("script revision", worker)
 
 
 # ----------------------------------------------------------------------------
@@ -466,13 +485,18 @@ def generate_song_action(theme: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("song generation", worker)
 
 
 def rewrite_song_lyrics_action(instruction: str, refresh_cb):
     if not S.song:
         ui.notify("❌ No song loaded.", type="negative")
         return
+    # Queued like any other GPU job: this loads Qwen (~12.6 GB) into VRAM, and
+    # doing that beside a running Wan render is what turned a 90s clip into 16 min.
+    if not _try_begin("lyrics rewrite"):
+        return
+
     def worker():
         try:
             from modules import song_generator as sgn
@@ -481,8 +505,9 @@ def rewrite_song_lyrics_action(instruction: str, refresh_cb):
         except Exception as e:
             S.push(f"Lyrics rewrite failed: {e}")
         finally:
+            _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("lyrics rewrite", worker)
 
 
 def render_musicvideo_action(refresh_cb):
@@ -520,7 +545,7 @@ def render_musicvideo_action(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("music video render", worker)
 
 
 # ----------------------------------------------------------------------------
@@ -551,7 +576,7 @@ def generate_horror_action(theme: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("horror writing", worker)
 
 
 def render_horror_action(refresh_cb):
@@ -575,7 +600,7 @@ def render_horror_action(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("horror render", worker)
 
 
 def generate_facts_action(topic: str, refresh_cb):
@@ -619,7 +644,7 @@ def generate_facts_action(topic: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("facts reel", worker)
 
 
 def approve_script_gen_prompts(refresh_cb):
@@ -648,7 +673,7 @@ def approve_script_gen_prompts(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("prompt generation", worker)
 
 
 def approve_all_run_storyboard(refresh_cb):
@@ -686,7 +711,7 @@ def approve_all_run_storyboard(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("storyboard render", worker)
 
 
 def run_video(refresh_cb):
@@ -760,7 +785,7 @@ def run_video(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("video render", worker)
 
 
 def assemble_final(refresh_cb):
@@ -785,7 +810,7 @@ def assemble_final(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("final assembly", worker)
 
 
 def update_shot_prompt(shot_num: int, kind: str, new_text: str, reseed: bool = True):
@@ -879,7 +904,7 @@ def ai_rewrite_narration(shot_num: int, instruction: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("narration rewrite", worker)
 
 
 def regen_storyboard_shot(shot_num: int, refresh_cb):
@@ -911,7 +936,7 @@ def regen_storyboard_shot(shot_num: int, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"storyboard regen shot {shot_num}", worker)
 
 
 def add_shot_action(position: int, brief: str, refresh_cb):
@@ -945,7 +970,7 @@ def add_shot_action(position: int, brief: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"add shot {position}", worker)
 
 
 def add_breathing_shot_action(position: int, image_prompt: str,
@@ -987,7 +1012,7 @@ def add_breathing_shot_action(position: int, image_prompt: str,
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"breathing shot {position}", worker)
 
 
 def regen_video_shot(shot_num: int, refresh_cb):
@@ -1059,7 +1084,7 @@ def regen_video_shot(shot_num: int, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"video regen shot {shot_num}", worker)
 
 
 def run_upscale_action(refresh_cb):
@@ -1082,7 +1107,7 @@ def run_upscale_action(refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("upscale", worker)
 
 
 # ==============================================================================
@@ -1142,7 +1167,7 @@ def manual_gen_image_action(prompt: str, backend_id: Optional[str],
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("manual image gen", worker)
 
 
 def manual_add_last_to_board(refresh_cb, duration: float = 5.0):
@@ -1193,7 +1218,7 @@ def manual_animate_action(shot_n: int, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"manual animate shot {shot_n}", worker)
 
 
 def manual_narrate_action(shot_n: int, voice: Optional[str], refresh_cb):
@@ -1223,7 +1248,7 @@ def manual_narrate_action(shot_n: int, voice: Optional[str], refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu(f"manual narration shot {shot_n}", worker)
 
 
 def manual_music_action(tags: str, duration_text: str, refresh_cb):
@@ -1253,7 +1278,7 @@ def manual_music_action(tags: str, duration_text: str, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("manual music gen", worker)
 
 
 def manual_delete_project_action(pid: str, refresh_cb):
@@ -1303,7 +1328,7 @@ def manual_assemble_action(aspects: list, refresh_cb):
         finally:
             _end()
             refresh_cb()
-    _bg(worker)
+    _bg_gpu("manual assembly", worker)
 
 
 # ==============================================================================
@@ -1398,9 +1423,17 @@ def main_page():
         status_label = ui.label("Idle").classes("text-sm font-bold")
 
     def _refresh_status():
+        waiting = job_lock.queue_depth()
+        queued = f"  ·  🧾 {waiting} queued" if waiting else ""
         if S.busy:
             status_spinner.set_visibility(True)
-            status_label.text = f"⏳ Running: {S.current_action}…  (watch the log below)"
+            status_label.text = (f"⏳ Running: {S.current_action}…  "
+                                 f"(watch the log below){queued}")
+            status_label.style("color:#ffcf5c;")
+        elif waiting:
+            # Another front-end (Discord / scheduler) holds the GPU.
+            status_spinner.set_visibility(True)
+            status_label.text = f"⏳ Waiting for {job_lock.holder_label()}{queued}"
             status_label.style("color:#ffcf5c;")
         else:
             status_spinner.set_visibility(False)
