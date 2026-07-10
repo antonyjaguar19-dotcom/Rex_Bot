@@ -311,7 +311,7 @@ def render_thumbnail(frame: Path, title: str, out_jpg: Path,
 
 
 def _mascot_art(video: Path, title: str, context: str, mode: str,
-                aspects: tuple) -> dict:
+                aspects: tuple, scene: str = "") -> dict:
     """Branded mascot artwork for this video, or {} when unavailable/disabled.
 
     Silent no-op until a mascot image exists, so this costs nothing before you
@@ -342,7 +342,7 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
         art = mascot.render_for_video(
             title=title, context=context, out_dir=video.parent,
             stem=stem, aspects=wanted,
-            release_after=not KEEP_MODEL_WARM)
+            release_after=not KEEP_MODEL_WARM, scene=scene or None)
         return art or {}
     except Exception as e:
         log.warning(f"mascot art skipped ({e}); using a normal thumbnail")
@@ -359,7 +359,8 @@ def attach(video: Path,
            description: str = "",
            mode: str = "",
            source_image: Optional[Path] = None,
-           aspects: tuple = ("16x9", "9x16")) -> dict:
+           aspects: tuple = ("16x9", "9x16"),
+           mascot_scene: str = "") -> dict:
     """Write title + thumbnails + description beside `video`. Never raises.
 
     `source_image` should be the CLEAN still the video was built from (a facts
@@ -394,7 +395,8 @@ def attach(video: Path,
 
         # Preferred art: the mascot, rendered by USO into a scene about this
         # video. Falls back to the clean still, then to a frame of the render.
-        mascot_art = _mascot_art(video, title, context, mode, aspects)
+        mascot_art = _mascot_art(video, title, context, mode, aspects,
+                                 scene=mascot_scene)
         if mascot_art:
             kit["thumb_source"] = "mascot"
             kit["mascot_scene"] = mascot_art.get("_scene", "")

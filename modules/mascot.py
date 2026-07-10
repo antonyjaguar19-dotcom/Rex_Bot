@@ -135,6 +135,11 @@ _SCENE_SYS = (
     "- Add a big comic REACTION: caught in the act, guilty, shocked, delighted, "
     "terrified, smug. The face must sell the joke.\n"
     "- Comedy beats accuracy. Mischief is good.\n"
+    "- This is a FRIENDLY BRAND MASCOT. Never show violence, weapons, blood, "
+    "gore, body organs, death, hate, drugs, alcohol or adult content — not even "
+    "as a joke, and not even when the video is about those subjects.\n"
+    "- If the topic is abstract (love, hatred, time, money), do NOT stage the "
+    "abstraction. Use a harmless everyday object, or just a big reaction.\n"
     "- Under 20 words. Describe only what is visible: action, object, expression.\n"
     "- Do NOT describe the background, lighting, or the camera — those are set "
     "for you.\n"
@@ -313,16 +318,83 @@ def _topic_noun(title: str, context: str, topic: str = "") -> str:
     return "a glowing question mark"
 
 
+# The scene prompt tells the model to be physical and funny. On a concrete topic
+# (goldfish, cake) that lands. On an ABSTRACT one it takes the instruction
+# literally and stages the abstraction: asked for "Hatred's Hidden Costs" it
+# wrote "the mascot caught trying to type hate speech on a laptop"; asked for
+# "Love: The Hidden Truths" it wrote "stuffing a heart-shaped liver into its
+# mouth". Neither is anything you would put a branded character in.
+#
+# Freeform image prompts already go through safety_filter (see manual_mode).
+# Mascot scenes did not — this is that gate.
+_SCENE_BANNED = (
+    # hate / harassment
+    "hate speech", "hate", "hateful", "racist", "slur", "nazi", "swastika",
+    # violence / weapons / gore
+    "gun", "rifle", "pistol", "weapon", "knife", "stab", "shoot", "shooting",
+    "blood", "bloody", "gore", "corpse", "wound", "kill", "killing", "murder",
+    "bomb", "explosive", "war", "torture",
+    # anatomy that reads as gore on a cartoon
+    "liver", "organ", "organs", "intestine", "guts", "brain matter", "eyeball",
+    "flesh", "carcass",
+    # self-harm
+    "suicide", "self-harm", "hang", "hanging", "noose",
+    # adult / substances
+    "nude", "naked", "sexual", "sexy", "erotic", "drug", "drugs", "cocaine",
+    "heroin", "cigarette", "smoking", "alcohol", "beer", "vodka", "whiskey",
+)
+
+_NEUTRAL_SCENE = ("the mascot character shrugging with both paws up, "
+                  "one eyebrow raised, puzzled curious expression")
+
+
+def scene_violation(scene: str) -> Optional[str]:
+    """The banned term a scene contains, or None. Whole-word matching, so
+    'hangar' does not trip 'hang' and 'organic' does not trip 'organ'."""
+    text = (scene or "").lower()
+    for term in _SCENE_BANNED:
+        if re.search(rf"\b{re.escape(term)}\b", text):
+            return term
+    return None
+
+
 def fallback_scene(title: str, context: str = "", topic: str = "") -> str:
-    """Deterministic scene when the LLM can't be reached. Deliberately plain —
-    it never invents anything beyond a noun already in the video."""
+    """Deterministic scene when the LLM can't be reached or wrote something
+    unusable. Deliberately plain — it never invents anything beyond a noun
+    already in the video, and never stages an abstraction."""
     noun = _topic_noun(title, context, topic)
+    if scene_violation(noun):
+        # e.g. topic "hatred" -> do not put the mascot next to hatred.
+        return _NEUTRAL_SCENE
     return (f"the mascot character standing next to {noun}, "
             f"friendly pose, plain bold background")
 
 
+def _clean_scene(raw_scene: str) -> str:
+    scene = re.sub(r"\s+", " ", (raw_scene or "")).strip(' "\'')
+    if not scene:
+        return ""
+    if "mascot" not in scene.lower():
+        scene = f"the mascot character with {scene}"
+    # A scene that smuggles text into the image defeats the title overlay.
+    scene = re.sub(r'\b(text|caption|words?|letters?|title)\b', "", scene, flags=re.I)
+    # ...and a scene that dictates its own background overrides STYLE_SUFFIX,
+    # which is what turned a "bold vivid" brief into flat white.
+    scene = _BG_RE.sub("", scene)
+    scene = re.sub(r"\s+", " ", scene).strip(" ,")
+    if len(scene.split()) > 40:
+        scene = " ".join(scene.split()[:40])
+    return scene
+
+
 def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
-    """Ask the LLM for one concrete mascot scene. Falls back, never raises."""
+    """Ask the LLM for one concrete mascot scene. Falls back, never raises.
+
+    The scene is SAFETY-GATED. "Be physical and funny" applied to an abstract
+    topic produces things you would never brand: hatred became "typing hate
+    speech on a laptop", love became "stuffing a heart-shaped liver into its
+    mouth". A violating scene is re-rolled once, then replaced with a plain one.
+    """
     fb = fallback_scene(title, context, topic)
     if not context.strip():
         return fb
@@ -334,24 +406,25 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
             f"Video content:\n{context[:900]}\n\n"
             f"Describe the thumbnail scene."
         )
-        raw = _call_llm(prompt, _SCENE_SYS, role="creative")
-        scene = (_extract_json(raw).get("scene") or "").strip()
-        scene = re.sub(r"\s+", " ", scene).strip(' "\'')
-        if not scene:
-            raise ValueError("empty scene")
-        if "mascot" not in scene.lower():
-            scene = f"the mascot character with {scene}"
-        # A scene that smuggles text into the image defeats the title overlay.
-        scene = re.sub(r'\b(text|caption|words?|letters?|title)\b', "", scene,
-                       flags=re.I)
-        # ...and a scene that dictates its own background overrides STYLE_SUFFIX,
-        # which is what turned a "bold vivid" brief into flat white.
-        scene = _BG_RE.sub("", scene)
-        scene = re.sub(r"\s+", " ", scene).strip(" ,")
-        if len(scene.split()) > 40:
-            scene = " ".join(scene.split()[:40])
-        log.info(f"Mascot scene: {scene}")
-        return scene
+        for attempt in (1, 2):
+            raw = _call_llm(prompt, _SCENE_SYS, role="creative")
+            scene = _clean_scene(_extract_json(raw).get("scene") or "")
+            if not scene:
+                continue
+            bad = scene_violation(scene)
+            if not bad:
+                log.info(f"Mascot scene: {scene}")
+                return scene
+            log.warning(f"Mascot scene rejected (contains {bad!r}): {scene}")
+            prompt += (
+                "\n\nYour previous scene was rejected: it depicted something "
+                "unsuitable for a friendly brand mascot. Never show violence, "
+                "weapons, gore, body organs, hate, drugs or adult content. "
+                "If the topic is abstract, use a harmless everyday object "
+                "instead, or simply have the mascot react with a big expression."
+            )
+        log.warning(f"Mascot scene unusable after 2 tries; using '{fb}'")
+        return fb
     except Exception as e:
         log.warning(f"Mascot scene LLM failed ({e}); using '{fb}'")
         return fb
@@ -426,7 +499,8 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
 def render_for_video(title: str, context: str, out_dir: Path, stem: str,
                      topic: str = "", aspects: tuple = ("9x16", "16x9"),
                      seed: Optional[int] = None,
-                     release_after: bool = True) -> dict:
+                     release_after: bool = True,
+                     scene: Optional[str] = None) -> dict:
     """One mascot scene, rendered at each aspect. {aspect: Path} — may be empty.
 
     The SAME seed and scene are used for every aspect so the two thumbnails are
@@ -436,6 +510,11 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
     ComfyUI held are evicted, then every aspect renders while the model stays
     warm. `release_after=False` keeps it resident — use that when looping over
     many videos (a bulk backfill), and call release() once at the end.
+
+    `scene` lets a bulk caller pre-write EVERY scene with the LLM, unload Ollama
+    once, and then render the whole batch without ever reloading it. Ollama
+    (12.6 GB) and Qwen (13.5 GB) cannot both sit on a 16 GB card, so alternating
+    between them per video would thrash.
     """
     available, why = is_available()
     if not available:
@@ -443,7 +522,8 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
         return {}
 
     # 1. LLM first, while the GPU still belongs to whoever had it.
-    scene = scene_prompt(title, context, topic)
+    if not scene:
+        scene = scene_prompt(title, context, topic)
     if seed is None:
         seed = random.randint(1, 2**31 - 1)
 

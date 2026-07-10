@@ -91,6 +91,24 @@ def main():
     if uses_gpu:
         publish_kit.KEEP_MODEL_WARM = True
 
+    # PHASE 1 — let the bot write every thumbnail scene while Ollama is loaded.
+    # Doing this per-video would force Ollama (12.6 GB) and Qwen (13.5 GB) to
+    # take turns on a 16 GB card: two model loads per video instead of none.
+    scenes: dict = {}
+    if uses_gpu:
+        from modules import mascot as _mas
+        from modules import gpu_utils as _gpu
+        print("writing thumbnail scenes with the LLM…")
+        for video, title, context, desc, mode, still in jobs:
+            if not args.force and Path(f"{video.with_suffix('')}_title.txt").exists():
+                continue
+            s = _mas.scene_prompt(title, context, "")
+            scenes[video.name] = s
+            print(f"  {video.name[:34]:36} {s}")
+        print("\nunloading the LLM before the image model loads…")
+        _gpu.free_ollama_vram()
+        print()
+
     done = skipped = 0
     try:
       for video, title, context, desc, mode, still in jobs:
@@ -102,7 +120,8 @@ def main():
             print(f"   would use still: {still.name if still else '(video frame)'}")
             continue
         kit = publish_kit.attach(video, fallback_title=title, context=context,
-                                 description=desc, mode=mode, source_image=still)
+                                 description=desc, mode=mode, source_image=still,
+                                 mascot_scene=scenes.get(video.name, ""))
         print(f"   title : {kit.get('title')}")
         print(f"   source: {kit.get('thumb_source')}")
         if kit.get("mascot_scene"):

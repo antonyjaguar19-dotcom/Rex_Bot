@@ -439,3 +439,96 @@ def test_angle_set_alone_is_a_valid_install(assets):
     assert mas.mascot_path().name == "mascot_front.png"
     ok, why = mas.is_available()
     assert "no mascot image" not in why
+
+
+def test_prewritten_scene_skips_the_llm(installed, tmp_path, monkeypatch):
+    """Bulk runs write every scene up front, then unload Ollama. Passing the
+    scene back in must not re-invoke the LLM (which would reload 12.6 GB)."""
+    called = []
+    monkeypatch.setattr(mas, "scene_prompt", lambda *a, **k: called.append(1) or "x")
+    monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
+    monkeypatch.setattr(mas, "release", lambda: None)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(mas, "render_scene",
+                        lambda s, p, **k: (Image.new("RGB", (8, 8)).save(p), p)[1])
+
+    art = mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16",),
+                               scene="the mascot character eating cake")
+    assert not called, "a pre-written scene must not call the LLM again"
+    assert art["_scene"] == "the mascot character eating cake"
+
+
+def test_missing_scene_still_calls_the_llm(installed, tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(mas, "scene_prompt", lambda *a, **k: called.append(1) or "written")
+    monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
+    monkeypatch.setattr(mas, "release", lambda: None)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(mas, "render_scene",
+                        lambda s, p, **k: (Image.new("RGB", (8, 8)).save(p), p)[1])
+    art = mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16",))
+    assert called == [1]
+    assert art["_scene"] == "written"
+
+
+# ---------------------------------------------------------------- scene safety
+
+def test_scene_violation_catches_the_real_offenders():
+    """Both of these were actually produced by the LLM on real reels."""
+    assert mas.scene_violation(
+        "the mascot character caught with its tongue stuck to a forbidden sign "
+        "while trying to type hate speech on a laptop") == "hate speech"
+    assert mas.scene_violation(
+        "the mascot character stuffing a heart-shaped liver into its mouth, "
+        "cheeks bulging") == "liver"
+
+
+@pytest.mark.parametrize("scene,bad", [
+    ("the mascot character holding a gun", "gun"),
+    ("the mascot character covered in blood", "blood"),
+    ("the mascot character smoking a cigarette", "cigarette"),
+    ("the mascot character holding a knife", "knife"),
+])
+def test_scene_violation_blocks_unbrandable_imagery(scene, bad):
+    assert mas.scene_violation(scene) == bad
+
+
+@pytest.mark.parametrize("scene", [
+    "the mascot character eating a slice of chocolate cake",
+    "the mascot character dodging a flying goldfish",
+    "the mascot character in a hangar next to an organic apple",   # hang/organ
+])
+def test_scene_violation_allows_normal_scenes(scene):
+    assert mas.scene_violation(scene) is None, "whole-word matching only"
+
+
+def test_unsafe_llm_scene_is_rerolled_then_falls_back(monkeypatch):
+    import modules.script_generator as sg
+    calls = []
+    monkeypatch.setattr(sg, "_call_llm", lambda *a, **k: calls.append(1) or
+                        '{"scene": "the mascot character holding a gun"}')
+    out = mas.scene_prompt("Hatred", "a video about hatred", "hatred")
+    assert len(calls) == 2, "one re-roll before giving up"
+    assert mas.scene_violation(out) is None
+    assert "gun" not in out
+
+
+def test_unsafe_first_try_then_safe_second_is_accepted(monkeypatch):
+    import modules.script_generator as sg
+    seq = ['{"scene": "the mascot character covered in blood"}',
+           '{"scene": "the mascot character hugging a giant heart balloon"}']
+    monkeypatch.setattr(sg, "_call_llm", lambda *a, **k: seq.pop(0))
+    out = mas.scene_prompt("Love", "a video about love", "love")
+    assert "heart balloon" in out
+
+
+def test_abstract_topic_falls_back_to_a_neutral_scene():
+    """'the mascot standing next to hatred' is not a thumbnail."""
+    scene = mas.fallback_scene("Hatred's Hidden Costs", "hate is costly", "hate")
+    assert mas.scene_violation(scene) is None
+    assert scene == mas._NEUTRAL_SCENE
+
+
+def test_concrete_topic_keeps_the_object_in_the_fallback():
+    scene = mas.fallback_scene("Goldfish Facts", "goldfish recognize owners", "goldfish")
+    assert "goldfish" in scene
