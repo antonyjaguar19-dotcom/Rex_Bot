@@ -131,8 +131,10 @@ def test_attach_writes_the_whole_kit(video, still):
     assert kit["title"] == "Goldfish Facts"
     assert kit["thumb_source"] == "still"
     for suffix in ("_title.txt", "_description.txt", "_publish.json",
-                   "_thumb_16x9.jpg", "_thumb_9x16.jpg"):
+                   "_thumb_9x16.jpg"):
         assert (stem.parent / f"{stem.name}{suffix}").exists(), suffix
+    # The fixture video is 9x16-only, so no landscape cover is rendered.
+    assert not (stem.parent / f"{stem.name}_thumb_16x9.jpg").exists()
     saved = json.loads((stem.parent / f"{stem.name}_publish.json").read_text())
     assert saved["title"] == "Goldfish Facts"
 
@@ -140,7 +142,7 @@ def test_attach_writes_the_whole_kit(video, still):
 def test_attach_uses_video_frame_when_no_still(video):
     kit = pk.attach(video, "T", description="", mode="facts")
     assert kit["thumb_source"] == "video frame"
-    assert Path_exists(kit.get("thumb_16x9"))
+    assert Path_exists(kit.get("thumb_9x16"))
     # the intermediate frame must be cleaned up
     assert not (video.with_suffix("").parent /
                 (video.stem + "_frame.png")).exists()

@@ -309,6 +309,50 @@ def build_headline(title: str, context: str = "") -> tuple:
 # THUMBNAIL
 # ==============================================================================
 
+# Aspect suffix on every finished video: facts_20260710_184745_9x16.mp4
+_ASPECT_RE = re.compile(r"_(9x16|16x9|1x1)(?:_|$)")
+
+# The two thumbnails a platform will take. A 1x1 video still gets the portrait
+# cover — nothing consumes a square thumbnail.
+THUMB_ASPECTS = ("16x9", "9x16")
+
+
+def _probe_orientation(video: Path) -> str:
+    """9x16 or 16x9, straight from the stream dimensions."""
+    from modules.assembly import FFPROBE_EXE
+    try:
+        out = subprocess.run(
+            [str(FFPROBE_EXE), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+             str(video)],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+        w, h = (int(x) for x in out.split("x")[:2])
+        return "9x16" if h > w else "16x9"
+    except Exception as e:
+        log.warning(f"could not probe {video.name} ({e}); assuming 9x16")
+        return "9x16"
+
+
+def video_aspects(video: Path) -> tuple:
+    """Which thumbnails this render actually needs.
+
+    Every caller used to take the default ("16x9", "9x16"), so a facts reel —
+    which only ever exists as 9x16 — paid a second ~25 s Qwen render for a
+    landscape thumbnail nothing could use, and horror (16x9 only) got a portrait
+    one. A render's thumbnails should match the videos it produced, so we look
+    for the siblings assembly wrote: <base>_9x16.mp4, _16x9.mp4, _1x1.mp4.
+    """
+    base = _ASPECT_RE.sub("_", video.stem).rstrip("_")
+    found = set()
+    for sibling in video.parent.glob(f"{base}_*.mp4"):
+        m = _ASPECT_RE.search(sibling.stem + "_")
+        if m:
+            found.add(m.group(1))
+    wanted = tuple(a for a in THUMB_ASPECTS if a in found)
+    # No aspect suffix at all (manual mode names its own files): ask the stream.
+    return wanted or (_probe_orientation(video),)
+
+
 def _ffmpeg() -> Path:
     from modules.assembly import FFMPEG_EXE
     return FFMPEG_EXE
@@ -557,7 +601,7 @@ def latest_videos(limit: int = 10) -> list:
 
 
 def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
-                         aspects: tuple = ("16x9", "9x16"),
+                         aspects: Optional[tuple] = None,
                          headline: Optional[str] = None) -> dict:
     """Re-render one video's mascot artwork, optionally from YOUR scene.
 
@@ -593,6 +637,12 @@ def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
     if not title:
         tf = Path(f"{stem}_title.txt")
         title = tf.read_text(encoding="utf-8").strip() if tf.exists() else video.stem
+
+    # Re-render exactly the thumbnails this video already has, so a reroll never
+    # invents a landscape cover for a portrait-only reel.
+    if not aspects:
+        have = tuple(a for a in THUMB_ASPECTS if kit.get(f"thumb_{a}"))
+        aspects = have or video_aspects(video)
 
     # Cached art would be reused verbatim — the point of the cache, and exactly
     # wrong here.
@@ -661,7 +711,7 @@ def attach(video: Path,
            description: str = "",
            mode: str = "",
            source_image: Optional[Path] = None,
-           aspects: tuple = ("16x9", "9x16"),
+           aspects: Optional[tuple] = None,
            mascot_scene: str = "") -> dict:
     """Write title + thumbnails + description beside `video`. Never raises.
 
@@ -678,6 +728,10 @@ def attach(video: Path,
             log.warning(f"publish kit: {video} does not exist")
             return kit
         stem = video.with_suffix("")
+        # A 9x16-only reel has no use for a landscape thumbnail, and rendering
+        # one costs a second ~25 s Qwen pass.
+        aspects = tuple(aspects) if aspects else video_aspects(video)
+        kit["aspects"] = list(aspects)
 
         title = build_title(fallback_title, context, mode)
         kit["title"] = title
