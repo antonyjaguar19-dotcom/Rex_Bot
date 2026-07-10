@@ -308,3 +308,134 @@ def test_release_runs_even_when_a_render_raises(installed, tmp_path, monkeypatch
     with pytest.raises(RuntimeError):
         mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16",))
     assert released == [1], "a crash must not leak 13.5 GB of VRAM"
+
+
+# ---------------------------------------------------------------- residency
+
+def test_prepare_gpu_does_not_evict_our_own_resident_model(monkeypatch):
+    """The bug this guards: ensure_vram_free(14GB) sees a card holding a
+    resident 13.5GB Qwen, decides ~1GB free is not enough, and frees ComfyUI --
+    evicting the model it is about to use. A 14-video warm batch then paid the
+    4-minute cold load 14 times."""
+    import modules.gpu_utils as gu
+    calls = []
+    monkeypatch.setattr(gu, "free_ollama_vram", lambda *a, **k: calls.append("ollama"))
+    monkeypatch.setattr(gu, "ensure_vram_free", lambda **k: calls.append("evict"))
+
+    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+    mas.prepare_gpu()
+    assert calls == [], "must not evict when our model is already loaded"
+
+    monkeypatch.setattr(mas, "_MODEL_RESIDENT", False)
+    mas.prepare_gpu()
+    assert calls == ["ollama", "evict"]
+
+
+def test_release_clears_residency(monkeypatch):
+    import modules.gpu_utils as gu
+    monkeypatch.setattr(gu, "free_comfyui_vram", lambda: (True, "freed"))
+    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+    mas.release()
+    assert mas._MODEL_RESIDENT is False
+
+
+def test_release_clears_residency_even_if_freeing_fails(monkeypatch):
+    import modules.gpu_utils as gu
+    monkeypatch.setattr(gu, "free_comfyui_vram",
+                        lambda: (_ for _ in ()).throw(RuntimeError("comfy down")))
+    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+    mas.release()      # must not raise
+    assert mas._MODEL_RESIDENT is False
+
+
+# ---------------------------------------------------------------- multi-angle refs
+
+def test_mascot_refs_defaults_to_the_front_view_only(assets):
+    """Measured: extra angles make Qwen copy a reference stance instead of
+    acting out the scene, and the comic expression is what sells a thumbnail."""
+    for n in mas.MASCOT_ANGLE_NAMES:
+        Image.new("RGB", (64, 64)).save(assets / n)
+    assert [p.name for p in mas.mascot_refs()] == ["mascot_front.png"]
+
+
+def test_mascot_refs_prefers_the_angle_set(assets):
+    for n in mas.MASCOT_ANGLE_NAMES:
+        Image.new("RGB", (64, 64)).save(assets / n)
+    refs = mas.mascot_refs(3)
+    assert [p.name for p in refs] == ["mascot_front.png",
+                                      "mascot_threequarter.png",
+                                      "mascot_side.png"]
+    assert all("back" not in p.name for p in refs), "back view has no face or logo"
+
+
+def test_mascot_refs_falls_back_to_the_single_image(installed):
+    assert [p.name for p in mas.mascot_refs(3)] == ["mascot.png"]
+
+
+def test_mascot_refs_respects_the_cap(assets):
+    for n in mas.MASCOT_ANGLE_NAMES:
+        Image.new("RGB", (64, 64)).save(assets / n)
+    assert len(mas.mascot_refs(1)) == 1
+    assert len(mas.mascot_refs(3)) == 3      # never 4: Qwen takes image1..image3
+
+
+def test_render_scene_sends_the_front_ref_to_qwen(assets, tmp_path, monkeypatch):
+    for n in mas.MASCOT_ANGLE_NAMES:
+        Image.new("RGB", (64, 64)).save(assets / n)
+    Image.new("RGB", (64, 64)).save(assets / "mascot.png")
+
+    from modules.image_backends import comfyui_qwen_edit as qwen
+    seen = {}
+
+    class R:
+        success = True
+        image_path = None
+    def fake(**kw):
+        seen.update(kw)
+        Image.new("RGB", (8, 8)).save(kw["output_path"])
+        R.image_path = kw["output_path"]
+        return R
+    monkeypatch.setattr(qwen, "generate", fake)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+
+    mas.render_scene("scene", tmp_path / "o.png", seed=1)
+    assert len(seen["reference_images"]) == 1     # front only, by default
+    assert "reference_image" not in seen          # Qwen wants the list form
+
+    seen.clear()
+    mas.render_scene("scene", tmp_path / "o2.png", seed=1,
+                     reference_images=[assets / n for n in mas.MASCOT_ANGLE_NAMES[:3]])
+    assert len(seen["reference_images"]) == 3     # explicit multi-ref still works
+
+
+def test_uso_fallback_gets_only_one_reference(assets, tmp_path, monkeypatch):
+    for n in mas.MASCOT_ANGLE_NAMES:
+        Image.new("RGB", (64, 64)).save(assets / n)
+
+    from modules.image_backends import comfyui_uso as uso
+    seen = {}
+
+    class R:
+        success = True
+        image_path = None
+    def fake(**kw):
+        seen.update(kw)
+        Image.new("RGB", (8, 8)).save(kw["output_path"])
+        R.image_path = kw["output_path"]
+        return R
+    monkeypatch.setattr(uso, "generate", fake)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.FALLBACK_BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+
+    mas.render_scene("scene", tmp_path / "o.png", seed=1)
+    assert "reference_images" not in seen     # USO is single-reference only
+    assert seen["reference_image"].name == "mascot_front.png"
+
+
+def test_angle_set_alone_is_a_valid_install(assets):
+    """Dropping in only mascot_front.png must not silently disable the feature."""
+    Image.new("RGB", (64, 64)).save(assets / "mascot_front.png")
+    assert mas.mascot_path().name == "mascot_front.png"
+    ok, why = mas.is_available()
+    assert "no mascot image" not in why

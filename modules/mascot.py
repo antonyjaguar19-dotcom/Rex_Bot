@@ -40,6 +40,21 @@ ASSETS_DIR = PROJECT_ROOT / "02_Agent" / "assets"
 # Checked in priority order — the first that exists wins.
 MASCOT_NAMES = ("mascot.png", "mascot.jpg", "mascot.jpeg", "mascot.webp")
 
+# Optional extra angles. Qwen-Edit takes at most 3 references, so the back view
+# is deliberately last: it carries no face and no chest logo, which are the two
+# things identity transfer keys on. Front + three-quarter + side covers every
+# camera angle a thumbnail needs.
+#
+# These must be SEPARATE FILES. Do not stitch them into a contact sheet: a
+# 4-view grid reference annihilated the character in testing (the subject
+# vanished, leaving a disembodied hand holding the prop).
+MASCOT_ANGLE_NAMES = (
+    "mascot_front.png",
+    "mascot_threequarter.png",
+    "mascot_side.png",
+    "mascot_back.png",
+)
+
 BACKEND_ID = "comfyui_qwen_edit"     # Apache-2.0, pose-free, legible logo
 FALLBACK_BACKEND_ID = "comfyui_uso"  # Flux.1-dev, NON-COMMERCIAL — last resort
 
@@ -76,22 +91,30 @@ REQUIRED_FREE_GB = 14.0
 # Qwen honours negative conditioning (USO discards it — its workflow wires
 # ConditioningZeroOut into the sampler's negative input).
 NEGATIVE = (
+    # The caption-bar family. Qwen will happily render a black title bar with
+    # garbled words and a counterfeit YouTube play button unless told not to.
+    "caption bar, title bar, subtitle bar, banner, lower third, letterbox bars, "
+    "youtube logo, play button, ui overlay, watermark, signature, "
+    "text, letters, words, numbers, "
+    # Everything else.
     "blurry, low quality, deformed hands, extra limbs, extra characters, "
-    "text, letters, watermark, logo overlay, signature, frame, border, "
-    "t-pose, arms spread wide, stiff symmetrical standing pose, "
+    "frame, border, t-pose, arms spread wide, stiff symmetrical standing pose, "
     "cluttered background, busy background"
 )
 
 # Stated positively as well as in NEGATIVE, because the fallback backend (USO)
 # discards negatives entirely — see the note further down.
+# Do NOT say "youtube thumbnail" or "space for a title" here. Qwen is a
+# text-rendering model: asked for thumbnail art it obligingly PAINTS a caption
+# bar and a fake YouTube logo across the bottom — garbled words, real trademark.
+# Describe the picture, never the format it will end up in.
 STYLE_SUFFIX = (
     "dynamic expressive action pose, exaggerated cartoon body language, "
     "leaning into the action, elbows bent, both hands busy with the object, "
-    "big readable facial expression, three-quarter view, "
-    "subject large in frame, cropped at the knees, "
-    "bold vivid solid color background, crisp studio lighting, high contrast, "
-    "generous empty space at the bottom for a title, "
-    "professional youtube thumbnail art, no text, no letters, no words"
+    "big readable facial expression, "
+    "full body visible, subject fills the frame, "
+    "bold vivid solid color background, empty uncluttered lower area, "
+    "crisp studio lighting, high contrast, 3d character key art"
 )
 
 # NOTE: the FALLBACK backend (USO) takes no negative prompt. Its workflow wires
@@ -137,12 +160,52 @@ _BG_RE = re.compile(
 # ==============================================================================
 
 def mascot_path() -> Optional[Path]:
-    """The mascot reference image, or None when it hasn't been added yet."""
+    """The primary mascot reference, or None when none has been added yet.
+
+    Falls back to the front angle: an angle set alone is a perfectly good
+    install, and without this the whole feature silently no-ops when someone
+    drops in mascot_front.png but no mascot.png.
+    """
     for name in MASCOT_NAMES:
         p = ASSETS_DIR / name
         if p.exists() and p.stat().st_size > 0:
             return p
+    for name in MASCOT_ANGLE_NAMES:
+        p = ASSETS_DIR / name
+        if p.exists() and p.stat().st_size > 0:
+            return p
     return None
+
+
+def mascot_refs(max_refs: int = 1) -> list:
+    """The reference images to condition on, best first.
+
+    ONE front reference by default, and that is a measured choice, not laziness.
+    Qwen-Edit accepts three (image1..image3), and feeding it front +
+    three-quarter + side makes it *copy a reference's stance* instead of acting
+    out the scene. Same six scenes, same seeds:
+
+        scene            1 ref                     3 refs
+        -----            -----                     ------
+        run + look back  panicked, mid-stride,     calm profile jog, small in
+                         fills the frame           frame, no look-back
+        lift overhead    straining, teeth gritted  fine, but subject shrinks
+        point at a       three-quarter, jaw        correct profile, flat
+        black hole       dropped                   expression
+        cake, caught     guilty, cheeks bulging    good
+
+    A front view already gives Qwen every profile and back-turn we asked for.
+    The extra angles only add pose priors that compete with the prompt, and the
+    comic expression is what sells a thumbnail. The plumbing stays: pass
+    `reference_images=` explicitly, or raise max_refs, when a scene really needs
+    the far side of the character.
+    """
+    angles = [ASSETS_DIR / n for n in MASCOT_ANGLE_NAMES]
+    angles = [p for p in angles if p.exists() and p.stat().st_size > 0]
+    if angles:
+        return angles[:max_refs]
+    single = mascot_path()
+    return [single] if single else []
 
 
 def active_backend_id() -> str:
@@ -172,12 +235,25 @@ def backend_healthy() -> tuple[bool, str]:
 # VRAM RESIDENCY — see the policy note at the top of the constants block
 # ==============================================================================
 
+# True once OUR model is the thing loaded in ComfyUI. Without this, prepare_gpu
+# evicts the very model it is about to use: ensure_vram_free(14 GB) looks at a
+# card holding a resident 13.5 GB Qwen, sees ~1 GB free, and frees ComfyUI. A
+# 14-video "warm" batch paid the 4-minute cold load 14 times.
+# Only meaningful while the GPU job lock is held — that is what guarantees no
+# other pipeline swapped a different model in behind our back.
+_MODEL_RESIDENT = False
+
+
 def prepare_gpu() -> None:
     """Evict everything else before loading a ~13.5 GB model on a 16 GB card.
 
     Ollama first: the scene prompt has already been written by then, so its
     12.6 GB is dead weight. Then ComfyUI's current model (Wan / Flux / Z-Image).
+    No-op when our own model is already resident — see _MODEL_RESIDENT.
     """
+    if _MODEL_RESIDENT:
+        log.debug("mascot model already resident; skipping VRAM pre-flight")
+        return
     try:
         from modules import gpu_utils
         gpu_utils.free_ollama_vram()
@@ -189,12 +265,15 @@ def prepare_gpu() -> None:
 def release() -> None:
     """Hand the card back. Call once a batch of thumbnails is done, never
     between aspects — a cold reload costs ~4 min, a warm render 15 s."""
+    global _MODEL_RESIDENT
     try:
         from modules import gpu_utils
         gpu_utils.free_comfyui_vram()
         log.info("mascot: released ComfyUI VRAM")
     except Exception as e:
         log.warning(f"could not release VRAM: {e}")
+    finally:
+        _MODEL_RESIDENT = False
 
 
 def is_available() -> tuple[bool, str]:
@@ -310,12 +389,15 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         target = NATIVE_ASPECTS.get(aspect, "9:16")
         bid = active_backend_id()
 
+        # One front reference by default — see mascot_refs() for the measurement.
+        refs = reference_images or mascot_refs()
+
         if bid == BACKEND_ID:
             from modules.image_backends import comfyui_qwen_edit as qwen
             result = qwen.generate(
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
                 seed=seed, negative_prompt=NEGATIVE,
-                reference_image=ref, reference_images=reference_images,
+                reference_images=[str(p) for p in refs],
             )
         else:
             # The USO Backend CLASS reads lora_strength from models.json and
@@ -324,14 +406,17 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             result = uso.generate(
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
                 seed=seed, lora_strength=POSE_LORA_STRENGTH,
-                reference_image=ref, reference_images=reference_images,
+                reference_image=refs[0] if refs else ref,
             )
 
         if not getattr(result, "success", False):
             log.warning(f"mascot render failed ({getattr(result, 'error', '?')}); "
                         f"falling back to a still")
             return None
-        log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid})")
+        global _MODEL_RESIDENT
+        _MODEL_RESIDENT = True     # ComfyUI now holds OUR model — don't evict it
+        log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid}, "
+                 f"refs={len(refs)})")
         return Path(result.image_path)
     except Exception as e:
         log.warning(f"mascot render failed ({e}); falling back to a still")
