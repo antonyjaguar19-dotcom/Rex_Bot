@@ -35,14 +35,15 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ## 2. File Structure (every .py, one line)
 
-### `02_Agent/` root — mostly STALE duplicates of `modules/` (TODO #1). Live edits go to `modules/`.
+### `02_Agent/` root — entrypoints + harnesses only. Live module edits go to `modules/`.
 - `claw_bot.py` — **MAIN**. Discord bot, command handlers, approval-button wiring, persistent state, dashboard auto-launch.
 - `agent.py` — channel-scoped chat memory.
 - `agent_router.py` — Qwen router: chat → tool calls.
 - `status_check.py` — phase-by-phase install/health report.
 - `inspect_workflow.py` / `preflight_phase4.py` — one-off tools.
-- `test_*.py` — one-off sanity tests.
-- STALE dups: `approval_buttons.py` `clip_generator.py` `comfyui_*.py` `control_panel.py` `image_backend.py` `video_backend.py` `music_generator.py` `pending_feedback.py` `prompt_polisher.py` `runtime_settings.py` `safety_filter.py` `script_generator.py` `storyboard_generator.py` `storyboard_workflow.py` `tts_engine.py` `upscaler.py` `video_workflow.py`.
+- CLI bridges (isolated venvs, driven over subprocess): `qwen_tts_cli.py`, `chatterbox_cli.py`, `whisperx_align_cli.py`.
+- Render harnesses: `run_kids_e2e.py` `run_horror_e2e.py` `run_music_e2e.py` `run_facts_e2e.py` `run_voice_samples.py` `run_voice_music_samples.py` `qa_styles_run.py` `test_lora_e2e_run.py` (LoRA resume path).
+- Real test suite = `tests/` (pytest, no GPU). 13 legacy root `test_*.py` one-offs deleted 2026-07-10 (in git history).
 
 ### `02_Agent/modules/` — LIVE code
 - `__init__.py` — empty pkg marker.
@@ -100,6 +101,14 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `comfyui_wan22_14B.py` — **ACTIVE** Wan 2.2 14B I2V dual-UNet fp8; optional lightx2v 4-step LoRA (default OFF).
 
 ---
+
+## 3c. Repo cleanup (2026-07-10)
+Swept `E:\Rexjaw_VFX` for dead files. **Nothing hard-deleted except pure caches** — everything else moved to `_quarantine_20260710/` (137 files, 19.8 MB). Delete that folder when you're happy; restore from it if something breaks.
+- **Hard-deleted (regenerable):** `.nicegui/` root + `02_Agent/` (22k session-storage files), `.pytest_cache` ×2, repo `__pycache__` ×8. Dashboard sessions reset → re-login once.
+- **Quarantined:** `Rexvfx_Bot-main/` (stale GitHub zip extract of this repo), `gitignore` (the dotless dead file from the old bug), `AI_Training/` (superseded by `07_Training/`), `test/` (a Topaz Video AI project), `assets/espeak-ng.msi` (spent installer — TTS uses `00_Tools/espeak-ng`), `flux2*_current.json`, `bot_tool_code.txt` + `PROJECT_CODE_DUMP.txt` + `PROJECT_SNAPSHOT.md` (regenerable via `generate_tree.py`), `qwen-context.md`, `venc activation.txt`, `02_Agent/.qwen-history.json`, `polish_test.log`, `ERexjaw_VFX_tmp_sig.txt`, `02_Agent/04_Outputs/` (stray nested test wavs), and 90 one-off logs from `06_Logs/` (kept claw_bot/launcher/comfyui/ollama).
+- **git rm'd (recoverable from history):** 13 legacy root `test_*.py` one-offs. Kept `run_*_e2e.py`, `qa_styles_run.py`, `test_lora_e2e_run.py`.
+- **Deliberately kept:** `03_Assets/music/` (empty but is `music_generator`'s fallback lib), `06_Memory/` (live agent memory), `07_Training/` (6.5 GB, LoRA datasets — referenced by `modules/lora/*`), `00_Tools/` (4.9 GB toolchain), `02_Agent/assets/watermark.png`, `tools/status_post.py`, `CLAUDE.original.md`, `claw_bot_cheatsheet.md`, root `requirements.txt`.
+- **Verified after:** 241 tests green, `claw_bot` imports, `config_check.validate_configs()` returns `[]`, music/agent dirs resolve.
 
 ## 3m. What We Changed (2026-07-10) — MANUAL MODE (5th pipeline)
 Direct-drive mode: user prompts ComfyUI straight, no LLM chain. Commit 5160b80 on `feat/horror-story-mode`. 241 tests green. **Bot restart needed.**
