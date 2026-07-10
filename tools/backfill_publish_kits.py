@@ -86,6 +86,11 @@ def main():
                                         f"{job_lock.holder_label()}"))
         print("GPU acquired.\n")
 
+    # Keep the 13.5 GB mascot model resident across the whole batch: cold load
+    # ~4 min, warm render ~15 s. Released once, in the finally below.
+    if uses_gpu:
+        publish_kit.KEEP_MODEL_WARM = True
+
     done = skipped = 0
     try:
       for video, title, context, desc, mode, still in jobs:
@@ -106,6 +111,8 @@ def main():
         done += 1
     finally:
         if uses_gpu:
+            from modules import mascot as _mas
+            _mas.release()            # hand the 13.5 GB back
             job_lock.release()
 
     print(f"\n{done} kit(s) built, {skipped} already had one, {len(jobs)} candidate(s).")

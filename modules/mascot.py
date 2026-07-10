@@ -40,24 +40,50 @@ ASSETS_DIR = PROJECT_ROOT / "02_Agent" / "assets"
 # Checked in priority order — the first that exists wins.
 MASCOT_NAMES = ("mascot.png", "mascot.jpg", "mascot.jpeg", "mascot.webp")
 
-BACKEND_ID = "comfyui_uso"
+BACKEND_ID = "comfyui_qwen_edit"     # Apache-2.0, pose-free, legible logo
+FALLBACK_BACKEND_ID = "comfyui_uso"  # Flux.1-dev, NON-COMMERCIAL — last resort
 
-# Aspects USO renders natively (see comfyui_uso._RESOLUTION_TABLE).
+# Aspects both backends render natively.
 NATIVE_ASPECTS = {"16x9": "16:9", "9x16": "9:16", "1x1": "1:1"}
 
+# --- Legacy USO knob -------------------------------------------------------
 # USO transfers POSE together with identity, and the reference is a T-pose. At
 # the default strength (1.0) every thumbnail came out as the same arms-out
-# stance with a prop floating at the mouth — no amount of negative prompting
-# broke it. Measured on the cake scene, same seed:
+# stance with a prop floating at the mouth. Measured on the cake scene, one seed:
 #   1.00  identity perfect, T-pose locked, cake floats (no hand on it)
 #   0.80  identity perfect, still T-pose
 #   0.65  identity holds, real action pose — arm bent, cake gripped at the mouth
 #   0.50  identity BREAKS: blue eyes, spots gone, wrong species
-# 0.65 is the knee of the curve: the weakest reference that still is the mascot.
+# Only used on the fallback path now; Qwen-Edit needs no such compromise.
 POSE_LORA_STRENGTH = 0.65
 
-# USO ignores negative prompts (see the note below), so every constraint has to
-# be stated positively — including "not a T-pose", phrased as what we DO want.
+# --- VRAM residency --------------------------------------------------------
+# Qwen-Image-Edit fp8 is ~13.5 GB resident on a 16 GB card. It cannot coexist
+# with Wan 2.2 14B (~13.6 GB) or a loaded Ollama model (~12.6 GB) — that
+# collision is what once turned a 90 s Wan clip into 16 minutes of PCIe
+# thrashing. The policy is one big model at a time:
+#
+#   1. write the scene with Ollama FIRST, then unload it
+#   2. free whatever ComfyUI is holding (Wan / Z-Image / Flux)
+#   3. render every aspect back-to-back while Qwen stays warm (15 s each)
+#   4. release ComfyUI so the next pipeline stage starts on an empty card
+#
+# Cold load is ~4 min, warm render 15 s — so step 3 batches, and step 4 happens
+# once per video, not once per image.
+MODEL_VRAM_GB = 13.5
+REQUIRED_FREE_GB = 14.0
+
+# Qwen honours negative conditioning (USO discards it — its workflow wires
+# ConditioningZeroOut into the sampler's negative input).
+NEGATIVE = (
+    "blurry, low quality, deformed hands, extra limbs, extra characters, "
+    "text, letters, watermark, logo overlay, signature, frame, border, "
+    "t-pose, arms spread wide, stiff symmetrical standing pose, "
+    "cluttered background, busy background"
+)
+
+# Stated positively as well as in NEGATIVE, because the fallback backend (USO)
+# discards negatives entirely — see the note further down.
 STYLE_SUFFIX = (
     "dynamic expressive action pose, exaggerated cartoon body language, "
     "leaning into the action, elbows bent, both hands busy with the object, "
@@ -68,12 +94,11 @@ STYLE_SUFFIX = (
     "professional youtube thumbnail art, no text, no letters, no words"
 )
 
-# NOTE: USO takes NO negative prompt. Its workflow wires ConditioningZeroOut
-# into the sampler's `negative` input (comfyui_uso.py node "48"), and the module
-# level generate() has no negative parameter — anything passed is discarded.
-# Flux-dev at cfg 1.0 works that way. So everything that shapes the image has to
-# live in the POSITIVE prompt above, and the pose is fixed by POSE_LORA_STRENGTH.
-# (This was learned the hard way: an anti-T-pose negative prompt did nothing.)
+# NOTE: the FALLBACK backend (USO) takes no negative prompt. Its workflow wires
+# ConditioningZeroOut into the sampler's `negative` input (comfyui_uso.py node
+# "48") and its generate() has no negative parameter — anything passed is
+# discarded. Flux-dev at cfg 1.0 works that way. On that path the pose is fixed
+# by POSE_LORA_STRENGTH instead. Qwen-Edit honours NEGATIVE properly.
 
 _SCENE_SYS = (
     "You design a single funny YouTube thumbnail image for a short video.\n"
@@ -120,12 +145,56 @@ def mascot_path() -> Optional[Path]:
     return None
 
 
+def active_backend_id() -> str:
+    """Qwen-Edit when it's usable, else the non-commercial USO fallback."""
+    try:
+        from modules import image_backend as ib
+        ok, _ = ib.get_named_backend(BACKEND_ID).health_check()
+        if ok:
+            return BACKEND_ID
+    except Exception as e:
+        log.warning(f"{BACKEND_ID} unusable ({e}); falling back to {FALLBACK_BACKEND_ID} "
+                    f"— NOTE: that model is non-commercial")
+    return FALLBACK_BACKEND_ID
+
+
 def backend_healthy() -> tuple[bool, str]:
     try:
         from modules import image_backend as ib
-        return ib.get_named_backend(BACKEND_ID).health_check()
+        bid = active_backend_id()
+        ok, msg = ib.get_named_backend(bid).health_check()
+        return ok, f"{bid}: {msg}"
     except Exception as e:
-        return False, f"{BACKEND_ID} unavailable: {e}"
+        return False, f"no usable image backend: {e}"
+
+
+# ==============================================================================
+# VRAM RESIDENCY — see the policy note at the top of the constants block
+# ==============================================================================
+
+def prepare_gpu() -> None:
+    """Evict everything else before loading a ~13.5 GB model on a 16 GB card.
+
+    Ollama first: the scene prompt has already been written by then, so its
+    12.6 GB is dead weight. Then ComfyUI's current model (Wan / Flux / Z-Image).
+    """
+    try:
+        from modules import gpu_utils
+        gpu_utils.free_ollama_vram()
+        gpu_utils.ensure_vram_free(min_gb=REQUIRED_FREE_GB, force_ollama_unload=True)
+    except Exception as e:
+        log.warning(f"VRAM pre-flight failed ({e}); rendering anyway")
+
+
+def release() -> None:
+    """Hand the card back. Call once a batch of thumbnails is done, never
+    between aspects — a cold reload costs ~4 min, a warm render 15 s."""
+    try:
+        from modules import gpu_utils
+        gpu_utils.free_comfyui_vram()
+        log.info("mascot: released ComfyUI VRAM")
+    except Exception as e:
+        log.warning(f"could not release VRAM: {e}")
 
 
 def is_available() -> tuple[bool, str]:
@@ -214,8 +283,13 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
 # ==============================================================================
 
 def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
-                 seed: Optional[int] = None) -> Optional[Path]:
-    """Render `scene` with the mascot as USO's identity reference.
+                 seed: Optional[int] = None,
+                 reference_images: Optional[list] = None) -> Optional[Path]:
+    """Render `scene` with the mascot as the identity reference.
+
+    `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
+    by Qwen-Edit. Pass SEPARATE images, never a collage: a grid reference
+    destroys the subject — verified, the character vanished entirely.
 
     Returns None (never raises) when the mascot or the backend is unavailable.
     """
@@ -224,36 +298,40 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         log.info("no mascot image; skipping mascot thumbnail")
         return None
     try:
-        from modules import gpu_utils
-        # The Backend CLASS reads lora_strength from models.json and ignores the
-        # argument, so call the adapter's module-level generate() — POSE_LORA_
-        # STRENGTH is the whole reason the mascot isn't stuck in a T-pose.
-        from modules.image_backends import comfyui_uso as uso
-
         ok, msg = backend_healthy()
         if not ok:
             log.warning(f"mascot thumbnail skipped: {msg}")
             return None
 
-        gpu_utils.ensure_vram_free(min_gb=6.0)
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
-
         out_png.parent.mkdir(parents=True, exist_ok=True)
-        result = uso.generate(
-            prompt=f"{scene}, {STYLE_SUFFIX}",
-            output_path=out_png,
-            aspect_ratio=NATIVE_ASPECTS.get(aspect, "9:16"),
-            seed=seed,
-            lora_strength=POSE_LORA_STRENGTH,
-            reference_image=ref,
-        )
+        prompt = f"{scene}, {STYLE_SUFFIX}"
+        target = NATIVE_ASPECTS.get(aspect, "9:16")
+        bid = active_backend_id()
+
+        if bid == BACKEND_ID:
+            from modules.image_backends import comfyui_qwen_edit as qwen
+            result = qwen.generate(
+                prompt=prompt, output_path=out_png, aspect_ratio=target,
+                seed=seed, negative_prompt=NEGATIVE,
+                reference_image=ref, reference_images=reference_images,
+            )
+        else:
+            # The USO Backend CLASS reads lora_strength from models.json and
+            # ignores the argument, so call its module-level generate().
+            from modules.image_backends import comfyui_uso as uso
+            result = uso.generate(
+                prompt=prompt, output_path=out_png, aspect_ratio=target,
+                seed=seed, lora_strength=POSE_LORA_STRENGTH,
+                reference_image=ref, reference_images=reference_images,
+            )
+
         if not getattr(result, "success", False):
             log.warning(f"mascot render failed ({getattr(result, 'error', '?')}); "
                         f"falling back to a still")
             return None
-        log.info(f"Mascot base rendered: {out_png.name} ({aspect}, "
-                 f"lora={POSE_LORA_STRENGTH})")
+        log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid})")
         return Path(result.image_path)
     except Exception as e:
         log.warning(f"mascot render failed ({e}); falling back to a still")
@@ -262,26 +340,46 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
 
 def render_for_video(title: str, context: str, out_dir: Path, stem: str,
                      topic: str = "", aspects: tuple = ("9x16", "16x9"),
-                     seed: Optional[int] = None) -> dict:
+                     seed: Optional[int] = None,
+                     release_after: bool = True) -> dict:
     """One mascot scene, rendered at each aspect. {aspect: Path} — may be empty.
 
     The SAME seed and scene are used for every aspect so the two thumbnails are
     recognisably the same artwork, not two unrelated images.
+
+    Memory: the scene is written by Ollama FIRST, then Ollama and whatever
+    ComfyUI held are evicted, then every aspect renders while the model stays
+    warm. `release_after=False` keeps it resident — use that when looping over
+    many videos (a bulk backfill), and call release() once at the end.
     """
     available, why = is_available()
     if not available:
         log.info(f"mascot thumbnails off: {why}")
         return {}
+
+    # 1. LLM first, while the GPU still belongs to whoever had it.
     scene = scene_prompt(title, context, topic)
     if seed is None:
         seed = random.randint(1, 2**31 - 1)
+
+    # 2. Evict Ollama + ComfyUI's current model before loading ~13.5 GB.
+    prepare_gpu()
+
+    # 3. Render every aspect warm.
     out: dict = {}
-    for aspect in aspects:
-        png = out_dir / f"{stem}_mascot_{aspect}.png"
-        got = render_scene(scene, png, aspect=aspect, seed=seed)
-        if got:
-            out[aspect] = got
+    try:
+        for aspect in aspects:
+            png = out_dir / f"{stem}_mascot_{aspect}.png"
+            got = render_scene(scene, png, aspect=aspect, seed=seed)
+            if got:
+                out[aspect] = got
+    finally:
+        # 4. Give the card back so the next pipeline stage starts clean.
+        if release_after:
+            release()
+
     if out:
         out["_scene"] = scene
         out["_seed"] = seed
+        out["_backend"] = active_backend_id()
     return out

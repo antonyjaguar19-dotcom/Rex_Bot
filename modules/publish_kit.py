@@ -48,6 +48,11 @@ WATERMARK_PNG = PROJECT_ROOT / "02_Agent" / "assets" / "watermark.png"
 THUMB_16X9 = (1280, 720)
 THUMB_9X16 = (1080, 1920)
 
+# Bulk tools flip this so the mascot model stays resident across many videos.
+# A pipeline rendering ONE video leaves it False: the next stage (Wan, Z-Image)
+# needs the card back, and on 16 GB they cannot coexist.
+KEEP_MODEL_WARM = False
+
 # YouTube hard-caps titles at 100 chars; short ones read better on mobile.
 TITLE_MAX = 80
 # YouTube rejects custom thumbnails over 2 MB.
@@ -332,9 +337,12 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
             log.info(f"reusing cached mascot art for {stem}")
             return {a: p for a, p in cached.items()}
 
+        # KEEP_MODEL_WARM is set by bulk tools that loop over many videos; a
+        # cold reload of the 13.5 GB model costs ~4 min, a warm render 15 s.
         art = mascot.render_for_video(
             title=title, context=context, out_dir=video.parent,
-            stem=stem, aspects=wanted)
+            stem=stem, aspects=wanted,
+            release_after=not KEEP_MODEL_WARM)
         return art or {}
     except Exception as e:
         log.warning(f"mascot art skipped ({e}); using a normal thumbnail")

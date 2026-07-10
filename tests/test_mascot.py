@@ -194,3 +194,117 @@ def test_publish_kit_uses_mascot_art_when_available(tmp_path, monkeypatch):
     assert kit["thumb_source"] == "mascot"
     assert kit["mascot_scene"] == "mascot with a goldfish"
     assert Image.open(kit["thumb_9x16"]).size == pk.THUMB_9X16
+
+
+# ---------------------------------------------------------------- backend choice
+
+def test_qwen_is_preferred_when_healthy(monkeypatch):
+    import modules.image_backend as ib
+
+    class Ok:
+        def health_check(self): return True, "alive"
+    monkeypatch.setattr(ib, "get_named_backend", lambda bid: Ok())
+    assert mas.active_backend_id() == mas.BACKEND_ID == "comfyui_qwen_edit"
+
+
+def test_falls_back_to_uso_when_qwen_unusable(monkeypatch):
+    import modules.image_backend as ib
+
+    def loader(bid):
+        if bid == mas.BACKEND_ID:
+            raise RuntimeError("qwen model missing")
+        class Ok:
+            def health_check(self): return True, "alive"
+        return Ok()
+    monkeypatch.setattr(ib, "get_named_backend", loader)
+    assert mas.active_backend_id() == mas.FALLBACK_BACKEND_ID == "comfyui_uso"
+
+
+def test_render_scene_routes_to_qwen(installed, tmp_path, monkeypatch):
+    from modules.image_backends import comfyui_qwen_edit as qwen
+    seen = {}
+
+    class R:
+        success = True
+        image_path = tmp_path / "o.png"
+    def fake(**kw):
+        seen.update(kw)
+        Image.new("RGB", (8, 8)).save(kw["output_path"])
+        R.image_path = kw["output_path"]
+        return R
+    monkeypatch.setattr(qwen, "generate", fake)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+
+    out = mas.render_scene("a scene", tmp_path / "o.png", aspect="9x16", seed=7)
+    assert out
+    assert seen["aspect_ratio"] == "9:16"
+    assert seen["seed"] == 7
+    assert seen["negative_prompt"] == mas.NEGATIVE     # qwen honours negatives
+    assert "lora_strength" not in seen                 # that is a USO-only knob
+
+
+def test_render_scene_routes_to_uso_fallback(installed, tmp_path, monkeypatch):
+    from modules.image_backends import comfyui_uso as uso
+    seen = {}
+
+    class R:
+        success = True
+        image_path = tmp_path / "o.png"
+    def fake(**kw):
+        seen.update(kw)
+        Image.new("RGB", (8, 8)).save(kw["output_path"])
+        return R
+    monkeypatch.setattr(uso, "generate", fake)
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.FALLBACK_BACKEND_ID)
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+
+    mas.render_scene("a scene", tmp_path / "o.png", seed=7)
+    assert seen["lora_strength"] == mas.POSE_LORA_STRENGTH
+
+
+# ---------------------------------------------------------------- memory policy
+
+def test_render_for_video_writes_scene_before_touching_the_gpu(installed, tmp_path, monkeypatch):
+    """Ollama must be unloaded AFTER the scene is written, not before."""
+    order = []
+    monkeypatch.setattr(mas, "scene_prompt", lambda *a, **k: order.append("llm") or "scene")
+    monkeypatch.setattr(mas, "prepare_gpu", lambda: order.append("evict"))
+    monkeypatch.setattr(mas, "release", lambda: order.append("release"))
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+
+    def fake_render(scene, png, aspect="9x16", seed=None, reference_images=None):
+        order.append(f"render:{aspect}")
+        Image.new("RGB", (8, 8)).save(png)
+        return png
+    monkeypatch.setattr(mas, "render_scene", fake_render)
+
+    mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16", "16x9"))
+    assert order == ["llm", "evict", "render:9x16", "render:16x9", "release"]
+
+
+def test_release_after_false_keeps_the_model_warm(installed, tmp_path, monkeypatch):
+    released = []
+    monkeypatch.setattr(mas, "scene_prompt", lambda *a, **k: "scene")
+    monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
+    monkeypatch.setattr(mas, "release", lambda: released.append(1))
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(mas, "render_scene",
+                        lambda s, p, **k: (Image.new("RGB", (8, 8)).save(p), p)[1])
+
+    mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16",),
+                         release_after=False)
+    assert not released, "bulk runs must keep the model resident"
+
+
+def test_release_runs_even_when_a_render_raises(installed, tmp_path, monkeypatch):
+    released = []
+    monkeypatch.setattr(mas, "scene_prompt", lambda *a, **k: "scene")
+    monkeypatch.setattr(mas, "prepare_gpu", lambda: None)
+    monkeypatch.setattr(mas, "release", lambda: released.append(1))
+    monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(mas, "render_scene",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        mas.render_for_video("T", "ctx", tmp_path, "s", aspects=("9x16",))
+    assert released == [1], "a crash must not leak 13.5 GB of VRAM"
