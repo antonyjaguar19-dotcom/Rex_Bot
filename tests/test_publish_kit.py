@@ -40,6 +40,19 @@ def no_llm(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
 
 
+@pytest.fixture(autouse=True)
+def no_mascot(monkeypatch, tmp_path):
+    """Never touch the real mascot asset or the GPU from these tests.
+
+    Once 02_Agent/assets/mascot.png existed, attach() started calling USO for
+    real: the suite went from seconds to minutes and depended on ComfyUI being
+    up. Tests must not depend on installed assets.
+    """
+    import modules.mascot as mas
+    monkeypatch.setattr(mas, "ASSETS_DIR", tmp_path / "no_assets")
+    monkeypatch.setattr(mas, "render_for_video", lambda **k: {})
+
+
 # ---------------------------------------------------------------- title
 
 def test_clean_title_strips_quotes_hashtags_and_newlines():

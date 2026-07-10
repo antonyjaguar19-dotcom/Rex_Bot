@@ -46,15 +46,20 @@ BACKEND_ID = "comfyui_uso"
 NATIVE_ASPECTS = {"16x9": "16:9", "9x16": "9:16", "1x1": "1:1"}
 
 STYLE_SUFFIX = (
-    "vivid saturated colors, crisp studio lighting, bold simple background, "
-    "high contrast, centered subject, leave empty space at the bottom, "
-    "professional thumbnail art, no text, no letters, no words"
+    "subject large in frame and centered, cropped at the knees, "
+    "bold vivid solid color background, crisp studio lighting, high contrast, "
+    "generous empty space at the bottom for a title, "
+    "professional youtube thumbnail art, no text, no letters, no words"
 )
 
+# `logo` and `text` are NOT in here on purpose. The mascot wears a branded tee;
+# suppressing logos makes the model smear it into noise. Flux cannot render
+# legible small text either way, so the shirt reads as a graphic — which is what
+# we want — while a plain-shirt instruction would strip the brand entirely.
 NEGATIVE = (
-    "text, letters, words, captions, watermark, logo, signature, "
-    "extra characters, crowd, blurry, low quality, deformed hands, "
-    "cluttered background"
+    "captions, subtitles, signature, watermark overlay, "
+    "extra characters, extra limbs, crowd, blurry, low quality, "
+    "deformed hands, cluttered background, busy background"
 )
 
 _SCENE_SYS = (
@@ -64,12 +69,19 @@ _SCENE_SYS = (
     "- The scene ALWAYS stars 'the mascot character'. Name it exactly that.\n"
     "- The mascot must be interacting with ONE concrete object or creature "
     "taken from the video's own content (hold it, point at it, stand beside it).\n"
-    "- Under 22 words. Describe only what is visible: subject, object, action.\n"
+    "- Under 18 words. Describe only what is visible: subject, object, action, "
+    "expression.\n"
+    "- Do NOT describe the background or lighting — those are set for you.\n"
     "- No text, captions, letters or numbers in the image.\n"
     "- No abstractions ('knowledge', 'curiosity'). Physical things only.\n"
     'Example: {"scene": "the mascot character holding a small glass bowl with '
-    'an orange goldfish, smiling, plain teal background"}'
+    'an orange goldfish, eyes wide with surprise"}'
 )
+
+# The model keeps describing backgrounds anyway; strip them so STYLE_SUFFIX wins.
+_BG_RE = re.compile(
+    r",?\s*(on|against|with|in front of)?\s*a?\s*"
+    r"(plain|solid|simple|clean|bold|blurred)?\s*[\w-]*\s*background\b[^,]*", re.I)
 
 
 # ==============================================================================
@@ -160,7 +172,11 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
             scene = f"the mascot character with {scene}"
         # A scene that smuggles text into the image defeats the title overlay.
         scene = re.sub(r'\b(text|caption|words?|letters?|title)\b', "", scene,
-                       flags=re.I).strip()
+                       flags=re.I)
+        # ...and a scene that dictates its own background overrides STYLE_SUFFIX,
+        # which is what turned a "bold vivid" brief into flat white.
+        scene = _BG_RE.sub("", scene)
+        scene = re.sub(r"\s+", " ", scene).strip(" ,")
         if len(scene.split()) > 40:
             scene = " ".join(scene.split()[:40])
         log.info(f"Mascot scene: {scene}")

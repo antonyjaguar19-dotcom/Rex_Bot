@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
 _HERE = Path(__file__).parent.parent.resolve()
 if str(_HERE) not in sys.path:
@@ -237,9 +237,14 @@ def render_thumbnail(frame: Path, title: str, out_jpg: Path,
         w, h = size
         img = _fit_cover(Image.open(frame).convert("RGB"), w, h)
 
-        # Darken the lower third so the title reads on bright frames.
+        # Darken the lower third so the title reads. A fixed opacity is wrong:
+        # over a white studio background the text still fought the plate, while
+        # a dark frame went muddy. Scale the scrim to what is actually there.
+        band = img.crop((0, int(h * 0.72), w, h)).convert("L")
+        brightness = ImageStat.Stat(band).mean[0]
+        opacity = int(min(245, max(170, 150 + brightness * 0.42)))
         dark = Image.new("RGB", (w, h), (0, 0, 0))
-        img = Image.composite(dark, img, _scrim((w, h), 0.55, 215))
+        img = Image.composite(dark, img, _scrim((w, h), 0.55, opacity))
 
         draw = ImageDraw.Draw(img)
         margin = int(w * 0.06)

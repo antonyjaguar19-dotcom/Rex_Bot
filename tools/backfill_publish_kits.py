@@ -21,6 +21,7 @@ import logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 from modules import publish_kit  # noqa: E402
+from modules import job_lock  # noqa: E402
 
 PROJECT_ROOT = _AGENT.parent
 FINAL_DIR = PROJECT_ROOT / "04_Outputs" / "final"
@@ -74,8 +75,20 @@ def main():
     if args.limit:
         jobs = jobs[: args.limit]
 
+    # Mascot art is a real GPU render. Take the shared queue so this can't
+    # collide with a reel the bot is rendering — it waits its turn instead.
+    uses_gpu = ok and not args.no_mascot and not args.dry_run
+    if uses_gpu:
+        print("waiting for the GPU queue…")
+        job_lock.acquire_blocking(
+            "tools:backfill publish kits",
+            on_queued=lambda pos: print(f"  queued #{pos} behind "
+                                        f"{job_lock.holder_label()}"))
+        print("GPU acquired.\n")
+
     done = skipped = 0
-    for video, title, context, desc, mode, still in jobs:
+    try:
+      for video, title, context, desc, mode, still in jobs:
         if not args.force and Path(f"{video.with_suffix('')}_title.txt").exists():
             skipped += 1
             continue
@@ -91,6 +104,9 @@ def main():
             print(f"   scene : {kit['mascot_scene']}")
         print(f"   thumb : {Path(kit['thumb_9x16']).name if kit.get('thumb_9x16') else 'FAILED'}")
         done += 1
+    finally:
+        if uses_gpu:
+            job_lock.release()
 
     print(f"\n{done} kit(s) built, {skipped} already had one, {len(jobs)} candidate(s).")
 
