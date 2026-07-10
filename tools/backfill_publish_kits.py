@@ -51,9 +51,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="rebuild existing kits")
+    ap.add_argument("--only", help="one facts id, e.g. 20260709_233013")
+    ap.add_argument("--limit", type=int, help="stop after N videos")
+    ap.add_argument("--no-mascot", action="store_true",
+                    help="skip USO mascot art (fast; uses the video's own still)")
     args = ap.parse_args()
 
+    if args.no_mascot:
+        import modules.runtime_settings as rs
+        _orig = rs.get_mascot_thumbnails_enabled
+        rs.get_mascot_thumbnails_enabled = lambda: False    # process-local only
+
+    from modules import mascot
+    ok, why = mascot.is_available()
+    print(f"mascot: {'ON — ' + why if ok and not args.no_mascot else 'off (' + why + ')'}")
+    if ok and not args.no_mascot:
+        print("  note: one USO render per aspect per video (~2-3 min each)\n")
+
     jobs = list(_facts_jobs())
+    if args.only:
+        jobs = [j for j in jobs if args.only in j[0].name]
+    if args.limit:
+        jobs = jobs[: args.limit]
+
     done = skipped = 0
     for video, title, context, desc, mode, still in jobs:
         if not args.force and Path(f"{video.with_suffix('')}_title.txt").exists():
@@ -65,8 +85,11 @@ def main():
             continue
         kit = publish_kit.attach(video, fallback_title=title, context=context,
                                  description=desc, mode=mode, source_image=still)
-        print(f"   title: {kit.get('title')}")
-        print(f"   thumb: {Path(kit['thumb_9x16']).name if kit.get('thumb_9x16') else 'FAILED'}")
+        print(f"   title : {kit.get('title')}")
+        print(f"   source: {kit.get('thumb_source')}")
+        if kit.get("mascot_scene"):
+            print(f"   scene : {kit['mascot_scene']}")
+        print(f"   thumb : {Path(kit['thumb_9x16']).name if kit.get('thumb_9x16') else 'FAILED'}")
         done += 1
 
     print(f"\n{done} kit(s) built, {skipped} already had one, {len(jobs)} candidate(s).")

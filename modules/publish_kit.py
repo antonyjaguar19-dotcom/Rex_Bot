@@ -287,6 +287,31 @@ def render_thumbnail(frame: Path, title: str, out_jpg: Path,
         return None
 
 
+def _mascot_art(video: Path, title: str, context: str, mode: str,
+                aspects: tuple) -> dict:
+    """Branded mascot artwork for this video, or {} when unavailable/disabled.
+
+    Silent no-op until a mascot image exists, so this costs nothing before you
+    add one. Never raises: a GPU hiccup here just means an ordinary thumbnail.
+    """
+    try:
+        from modules import runtime_settings as rs
+        if not rs.get_mascot_thumbnails_enabled():
+            return {}
+    except Exception:
+        pass
+    try:
+        from modules import mascot
+        wanted = tuple(a for a in aspects if a in mascot.NATIVE_ASPECTS)
+        art = mascot.render_for_video(
+            title=title, context=context, out_dir=video.parent,
+            stem=video.with_suffix("").name, aspects=wanted)
+        return art or {}
+    except Exception as e:
+        log.warning(f"mascot art skipped ({e}); using a normal thumbnail")
+        return {}
+
+
 # ==============================================================================
 # ONE CALL PER FINISHED VIDEO
 # ==============================================================================
@@ -330,28 +355,38 @@ def attach(video: Path,
             except Exception as e:
                 log.warning(f"could not write description file: {e}")
 
-        # A clean still beats a frame of the finished video, which carries the
-        # reel's own burned-in captions.
-        grabbed = None
-        if source_image and Path(source_image).exists():
-            frame = Path(source_image)
-            kit["thumb_source"] = "still"
-        else:
-            grabbed = grab_frame(video, Path(f"{stem}_frame.png"))
-            frame = grabbed
-            kit["thumb_source"] = "video frame"
+        # Preferred art: the mascot, rendered by USO into a scene about this
+        # video. Falls back to the clean still, then to a frame of the render.
+        mascot_art = _mascot_art(video, title, context, mode, aspects)
+        if mascot_art:
+            kit["thumb_source"] = "mascot"
+            kit["mascot_scene"] = mascot_art.get("_scene", "")
 
-        if frame:
-            for aspect in aspects:
-                size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
-                out = Path(f"{stem}_thumb_{aspect}.jpg")
-                if render_thumbnail(frame, title, out, size):
-                    kit[f"thumb_{aspect}"] = str(out)
-            if grabbed:                      # only delete what we created
-                try:
-                    grabbed.unlink(missing_ok=True)
-                except Exception:
-                    pass
+        grabbed = None
+        frame = None
+        if not mascot_art:
+            if source_image and Path(source_image).exists():
+                frame = Path(source_image)
+                kit["thumb_source"] = "still"
+            else:
+                grabbed = grab_frame(video, Path(f"{stem}_frame.png"))
+                frame = grabbed
+                kit["thumb_source"] = "video frame"
+
+        for aspect in aspects:
+            size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
+            base = mascot_art.get(aspect) if mascot_art else frame
+            if not base:
+                continue
+            out = Path(f"{stem}_thumb_{aspect}.jpg")
+            if render_thumbnail(Path(base), title, out, size):
+                kit[f"thumb_{aspect}"] = str(out)
+
+        if grabbed:                          # only delete what we created
+            try:
+                grabbed.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         try:
             Path(f"{stem}_publish.json").write_text(
@@ -359,8 +394,9 @@ def attach(video: Path,
         except Exception as e:
             log.warning(f"could not write publish.json: {e}")
 
-        log.info(f"Publish kit ready for {video.name}: "
-                 f"title + {sum(1 for k in kit if k.startswith('thumb_'))} thumbnail(s)")
+        n_thumbs = sum(1 for k in kit if k.startswith("thumb_") and k != "thumb_source")
+        log.info(f"Publish kit ready for {video.name}: title + {n_thumbs} "
+                 f"thumbnail(s) from the {kit.get('thumb_source', '?')}")
     except Exception as e:
         log.warning(f"publish kit failed for {video} (render is unaffected): {e}")
     return kit

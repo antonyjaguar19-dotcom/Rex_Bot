@@ -4934,6 +4934,84 @@ async def cmd_make_facts(ctx, *, topic: str = None):
         pass
 
 
+@bot.command(name="mascot")
+async def cmd_mascot(ctx, switch: str = None):
+    """Mascot thumbnails: `!mascot` status · `!mascot on|off` · attach an image
+    to this command to INSTALL it as the mascot reference."""
+    from modules import mascot as mas
+
+    # An attached image becomes the mascot reference.
+    if ctx.message.attachments:
+        att = ctx.message.attachments[0]
+        if not (att.content_type or "").startswith("image"):
+            await ctx.send("Attach an image file.")
+            return
+        mas.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+        dest = mas.ASSETS_DIR / "mascot.png"
+        backup = None
+        if dest.exists():
+            backup = mas.ASSETS_DIR / "mascot_previous.png"
+            dest.replace(backup)
+        await att.save(dest)
+        note = f" (previous saved as `{backup.name}`)" if backup else ""
+        await ctx.send(f"✅ Mascot installed: `{dest.name}`{note}\n"
+                       f"Thumbnails will now star it. Preview: `!mascot_test bees`")
+        return
+
+    if switch:
+        s = switch.strip().lower()
+        if s not in ("on", "off"):
+            await ctx.send("Usage: `!mascot on|off` (or attach an image)")
+            return
+        rs.set_mascot_thumbnails_enabled(s == "on")
+        await ctx.send(f"✅ Mascot thumbnails **{s.upper()}**.")
+        return
+
+    ok, why = mas.is_available()
+    enabled = rs.get_mascot_thumbnails_enabled()
+    p = mas.mascot_path()
+    lines = [f"🎭 **Mascot thumbnails:** {'ON' if enabled else 'OFF'}",
+             f"Reference image: {'`' + p.name + '`' if p else '❌ none'}",
+             f"Renderer: {'✅ ' if ok else '❌ '}{why}"]
+    if not p:
+        lines.append(f"\nAdd one by attaching an image to `!mascot`, or save it to:\n"
+                     f"`{mas.ASSETS_DIR / 'mascot.png'}`")
+    await ctx.send("\n".join(lines))
+    if p:
+        try:
+            await ctx.send(file=discord.File(str(p)))
+        except Exception:
+            pass
+
+
+@bot.command(name="mascot_test", aliases=["test_mascot"])
+@_gpu_job("mascot preview")
+async def cmd_mascot_test(ctx, *, topic: str = None):
+    """Render one mascot thumbnail preview for a topic. `!mascot_test goldfish`"""
+    from modules import mascot as mas
+    ok, why = mas.is_available()
+    if not ok:
+        await ctx.send(f"❌ {why}")
+        return
+    topic = (topic or "goldfish").strip()
+    status = await ctx.send(f"🎭 Rendering a mascot thumbnail for **{topic}**…")
+    try:
+        scene = await asyncio.to_thread(
+            mas.scene_prompt, f"{topic.title()} Facts",
+            f"Surprising facts about {topic}.", topic)
+        out = PROJECT_ROOT / "04_Outputs" / f"mascot_test_{int(time.time())}.png"
+        png = await asyncio.to_thread(mas.render_scene, scene, out, "9x16")
+    except Exception as e:
+        log.exception("mascot test failed")
+        await status.edit(content=f"❌ Mascot preview failed: `{e}`")
+        return
+    if not png:
+        await status.edit(content="❌ Mascot render returned nothing (see logs).")
+        return
+    await status.edit(content=f"🎭 Scene: _{scene}_")
+    await ctx.send(file=discord.File(str(png)))
+
+
 @bot.command(name="set_facts_voice", aliases=["facts_voice"])
 async def cmd_set_facts_voice(ctx, voice: str = None):
     """Set the facts narrator voice (af_bella / af_nicole / af_sky / am_adam / am_michael)."""

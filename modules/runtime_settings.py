@@ -678,6 +678,22 @@ def set_reference_mode_enabled(enabled: bool) -> None:
 
 # --- USO character-consistency backend (kids + music) ---
 
+def get_mascot_thumbnails_enabled() -> bool:
+    """Whether finished videos get a branded MASCOT thumbnail (USO renders the
+    mascot in a scene about the video) instead of a frame from the video itself.
+    Default True — it no-ops harmlessly until a mascot image exists at
+    02_Agent/assets/mascot.png."""
+    val = _load().get("mascot_thumbnails")
+    return True if val is None else bool(val)
+
+
+def set_mascot_thumbnails_enabled(enabled: bool) -> None:
+    data = _load()
+    data["mascot_thumbnails"] = bool(enabled)
+    _save(data)
+    log.info(f"Mascot thumbnails: {'ON' if enabled else 'OFF'}")
+
+
 def get_uso_mode_enabled() -> bool:
     """Whether kids storyboards + music videos render via the USO backend
     (Flux.1-dev + USO LoRA, single-image subject consistency). Default True.
