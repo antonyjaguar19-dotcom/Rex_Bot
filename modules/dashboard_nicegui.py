@@ -1231,11 +1231,12 @@ def run_upscale_action(refresh_cb):
     _bg_gpu("upscale", worker)
 
 
-def regen_thumbnail_action(video: Path, scene: str, refresh_cb):
+def regen_thumbnail_action(video: Path, scene: str, refresh_cb, headline: str = ""):
     """Re-render one video's mascot thumbnail from an edited scene ('' = re-roll).
 
-    The safety check runs on the UI thread so a bad scene is refused instantly,
-    before the job ever joins the GPU queue.
+    `headline` are the words rendered INTO the artwork by the image model; empty
+    keeps the ones already stored. The safety check runs on the UI thread so a
+    bad scene is refused instantly, before the job ever joins the GPU queue.
     """
     from modules import mascot as mas
     scene = (scene or "").strip()
@@ -1247,13 +1248,15 @@ def regen_thumbnail_action(video: Path, scene: str, refresh_cb):
             return
     if not _try_begin("thumbnail regen"):
         return
+    headline = (headline or "").strip()
     S.push(f"Thumbnail regen — {video.name}"
-           + (f": {scene[:60]}" if scene else " (bot re-roll)"))
+           + (f": {scene[:60]}" if scene else " (bot re-roll)")
+           + (f' | text: "{headline}"' if headline else ""))
     refresh_cb()
 
     def worker():
         try:
-            kit = pk.regenerate_thumbnail(video, scene)
+            kit = pk.regenerate_thumbnail(video, scene, headline=headline or None)
             S.push(f"✅ New thumbnail — scene: {kit.get('mascot_scene', '')[:70]}")
         except ValueError as e:
             S.push(f"Scene rejected: {e}")

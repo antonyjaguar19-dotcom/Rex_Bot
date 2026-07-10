@@ -124,7 +124,7 @@ def test_scene_prompt_truncates_a_rambling_answer(monkeypatch):
 def test_render_for_video_uses_one_scene_and_seed_for_every_aspect(installed, tmp_path, monkeypatch):
     calls = []
 
-    def fake_render(scene, out_png, aspect="9x16", seed=None):
+    def fake_render(scene, out_png, aspect="9x16", seed=None, headline=""):
         calls.append((scene, aspect, seed))
         Image.new("RGB", (64, 64)).save(out_png)
         return out_png
@@ -273,7 +273,8 @@ def test_render_for_video_writes_scene_before_touching_the_gpu(installed, tmp_pa
     monkeypatch.setattr(mas, "release", lambda: order.append("release"))
     monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
 
-    def fake_render(scene, png, aspect="9x16", seed=None, reference_images=None):
+    def fake_render(scene, png, aspect="9x16", seed=None, reference_images=None,
+                    headline=""):
         order.append(f"render:{aspect}")
         Image.new("RGB", (8, 8)).save(png)
         return png

@@ -94,8 +94,42 @@ POSE_LORA_STRENGTH = 0.65
 MODEL_VRAM_GB = 13.5
 REQUIRED_FREE_GB = 14.0
 
-# Qwen honours negative conditioning (USO discards it — its workflow wires
-# ConditioningZeroOut into the sampler's negative input).
+# Qwen is a text-rendering model, so it can draw the TITLE into the artwork
+# instead of us stamping it on afterwards. Measured on the bee reel, one seed:
+#   "BEE FACTS"                      -> perfect
+#   "Bees Have 5 Eyes"               -> perfect, numeral and all
+#   "Worker Bees Flap Wings 230x/sec" -> perfect, wrapped to two lines by itself
+# It sizes and places the type as part of the composition, which a PIL overlay
+# can never do. Long titles are likelier to garble, so past BAKE_MAX_CHARS we
+# fall back to the overlay.
+BAKE_MAX_CHARS = 44
+
+# The banned-text clauses are dropped when baking — they would fight the headline.
+# What replaces them bans the *overlay look*: flat type pasted on the picture is
+# exactly what we are trying to get away from.
+NEGATIVE_BAKED = (
+    "youtube logo, play button, ui overlay, watermark, signature, "
+    "misspelled text, gibberish text, distorted letters, duplicate text, "
+    "flat text overlay, sticker text, subtitle caption, caption bar, title bar, "
+    "plain flat sans-serif caption, text pasted on top of the image, "
+    "character covering the letters, letters hidden behind the character, "
+    "character centred in front of the text, cropped letters, "
+    "blurry, low quality, deformed hands, extra limbs, extra characters, "
+    "frame, border, t-pose, arms spread wide, stiff symmetrical standing pose, "
+    "cluttered background, busy background"
+)
+
+# Style without the "no text" clauses. The background stays simple and the
+# character stays off-centre, because the letters need somewhere to live.
+STYLE_BAKED = (
+    "dynamic off-balance action pose, exaggerated cartoon body language, "
+    "leaning into the action, one arm raised, asymmetrical stance, "
+    "big readable facial expression, full body visible, "
+    "bold vivid solid color background, crisp studio lighting, high contrast, "
+    "3d character key art, cinematic title card"
+)
+
+
 NEGATIVE = (
     # The caption-bar family. Qwen will happily render a black title bar with
     # garbled words and a counterfeit YouTube play button unless told not to.
@@ -371,6 +405,92 @@ def scene_violation(scene: str) -> Optional[str]:
     return None
 
 
+def can_bake(title: str) -> bool:
+    """Is this headline short enough for the model to spell reliably?"""
+    from modules.publish_kit import strip_emoji
+    t = strip_emoji(title or "")
+    return 0 < len(t) <= BAKE_MAX_CHARS
+
+
+# Qwen composes to the centre by default. "Off to one side" in prose did not move
+# it — the mascot stood across the words twice. Naming the REGION each element
+# owns does move it, and the region has to differ by aspect: a portrait frame
+# stacks (text above, character below), a landscape frame splits (text right,
+# character left).
+_BAKE_LAYOUT = {
+    # Portrait took four tries. A tall frame cannot hold a four-word phrase and a
+    # full-body character at the same scale, and every way of saying "fit" failed
+    # differently:
+    #   "letters fill the upper half"      -> line 3 spilled behind the mascot
+    #   "the phrase sits ENTIRELY above"   -> Qwen DELETED the last two words
+    #   "on two lines across the top half" -> it drew the whole phrase TWICE
+    # What works is giving the type room (two thirds, three lines) and making the
+    # character small enough to live under it.
+    "9x16": ("the letters fill the upper half of the frame on one or two lines, "
+             "no word is left out and the phrase appears exactly once, and the "
+             "character stands in the lower half of the frame, below all of the "
+             "letters"),
+    "16x9": ("every word of the phrase sits entirely within the right half of "
+             "the frame and the character stands on the far left of the frame, "
+             "clear of the words"),
+    "1x1":  ("all of the words are written on two lines across the upper half of "
+             "the frame, no word is left out, and the character stands below "
+             "the letters"),
+}
+
+
+# A 9:16 frame holding a full-body character has room for about two words of
+# giant type. Given four, Qwen silently drops the last two — the art then stops
+# saying what the kit records. Rather than let that happen invisibly, shorten the
+# phrase ourselves and record what each aspect really says. 16:9 has the width
+# for the whole hook.
+PORTRAIT_MAX_WORDS = 2
+PORTRAIT_MAX_CHARS = 14
+
+
+def fit_headline(headline: str, aspect: str, short: Optional[str] = None) -> str:
+    """The words this aspect can actually render whole.
+
+    Portrait gets the LLM's short form ("5 Eyes"), never a chopped headline
+    ("Bees Have"). With no short form supplied, the full headline is used: a
+    smaller point size beats a mutilated phrase.
+    """
+    if aspect != "9x16":
+        return headline
+    if short and len(short) <= PORTRAIT_MAX_CHARS:
+        return short
+    if len(headline) <= PORTRAIT_MAX_CHARS:
+        return headline
+    return short or headline
+
+
+def bake_clause(title: str, aspect: str = "9x16") -> str:
+    """The instruction that builds the headline INTO the artwork.
+
+    Asking for "white sans-serif letters across the bottom" only makes the model
+    paint the overlay we were trying to escape — flat type sitting on the picture.
+    So the letters are described as objects in the scene: they have volume, they
+    take the scene's light, they cast shadows, and the character stands among
+    them. That is the difference between a caption and a title treatment.
+    """
+    from modules.publish_kit import strip_emoji
+    t = strip_emoji(title).strip()
+    return (f'the words "{t}" are built into the scene itself as giant chunky '
+            f"three-dimensional block letters standing upright on the ground "
+            f"behind the character, the letters have real thickness and volume, "
+            f"lit by the same light as the character and casting soft shadows onto "
+            f"the ground, sculpted in the same art style and colour palette as the "
+            f"character, "
+            # Learned the hard way: "the character overlaps the letters" put the
+            # mascot dead centre with its body across the words — "230 FLAPS"
+            # read as "2?0 F??S". The character has to clear the type, and only
+            # an explicit region moves it.
+            f"{_BAKE_LAYOUT.get(aspect, _BAKE_LAYOUT['9x16'])}, "
+            f"the character does not cover any letter, every letter is completely "
+            f"visible and unobstructed, the words are perfectly spelled, large and "
+            f"instantly readable")
+
+
 def fallback_scene(title: str, context: str = "", topic: str = "") -> str:
     """Deterministic scene when the LLM can't be reached or wrote something
     unusable. Deliberately plain — it never invents anything beyond a noun
@@ -449,7 +569,8 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
 
 def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  seed: Optional[int] = None,
-                 reference_images: Optional[list] = None) -> Optional[Path]:
+                 reference_images: Optional[list] = None,
+                 headline: str = "") -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -471,9 +592,18 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         if seed is None:
             seed = random.randint(1, 2**31 - 1)
         out_png.parent.mkdir(parents=True, exist_ok=True)
-        prompt = f"{scene}, {STYLE_SUFFIX}"
         target = NATIVE_ASPECTS.get(aspect, "9:16")
         bid = active_backend_id()
+
+        # Bake the headline into the art when the backend can spell it. USO
+        # cannot (Flux garbles small text), so it always gets the overlay.
+        baked = bool(headline) and bid == BACKEND_ID and can_bake(headline)
+        if baked:
+            prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"
+            negative = NEGATIVE_BAKED
+        else:
+            prompt = f"{scene}, {STYLE_SUFFIX}"
+            negative = NEGATIVE
 
         # One front reference by default — see mascot_refs() for the measurement.
         refs = reference_images or mascot_refs()
@@ -482,7 +612,7 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             from modules.image_backends import comfyui_qwen_edit as qwen
             result = qwen.generate(
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
-                seed=seed, negative_prompt=NEGATIVE,
+                seed=seed, negative_prompt=negative,
                 reference_images=[str(p) for p in refs],
             )
         else:
@@ -510,7 +640,7 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             return None
         # gpu_memory already marked us resident in prepare_gpu().
         log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid}, "
-                 f"refs={len(refs)})")
+                 f"refs={len(refs)}, headline={'baked' if baked else 'overlay'})")
         return Path(result.image_path)
     except MascotGpuFault:
         raise                      # never downgrade a dead GPU to "use a still"
@@ -523,7 +653,9 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
                      topic: str = "", aspects: tuple = ("9x16", "16x9"),
                      seed: Optional[int] = None,
                      release_after: bool = True,
-                     scene: Optional[str] = None) -> dict:
+                     scene: Optional[str] = None,
+                     headline: Optional[str] = None,
+                     headline_short: Optional[str] = None) -> dict:
     """One mascot scene, rendered at each aspect. {aspect: Path} — may be empty.
 
     The SAME seed and scene are used for every aspect so the two thumbnails are
@@ -555,12 +687,23 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
 
     # 3. Render every aspect warm.
     out: dict = {}
+    # The headline is the short hook, not the upload title: a 47-character title
+    # baked into the art renders as tiny type. Callers that pass nothing get the
+    # title, and can_bake() then decides.
+    headline = headline if headline is not None else title
+    baked = bool(headline) and active_backend_id() == BACKEND_ID and can_bake(headline)
     try:
         for aspect in aspects:
             png = out_dir / f"{stem}_mascot_{aspect}.png"
-            got = render_scene(scene, png, aspect=aspect, seed=seed)
+            shown = fit_headline(headline, aspect, headline_short) if baked else ""
+            got = render_scene(scene, png, aspect=aspect, seed=seed,
+                               headline=shown)
             if got:
                 out[aspect] = got
+                if shown:
+                    # What this aspect ACTUALLY says — portrait may carry fewer
+                    # words than landscape.
+                    out.setdefault("_headline_shown", {})[aspect] = shown
     finally:
         # 4. Give the card back so the next pipeline stage starts clean.
         if release_after:
@@ -570,4 +713,5 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
         out["_scene"] = scene
         out["_seed"] = seed
         out["_backend"] = active_backend_id()
+        out["_baked_headline"] = baked   # publish_kit must not paint over it
     return out

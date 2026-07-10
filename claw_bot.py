@@ -4954,10 +4954,12 @@ async def _send_thumb(channel, kit: dict, note: str = ""):
 async def cmd_thumb(ctx, video_id: str = None, *, scene: str = None):
     """Show or REGENERATE a video's thumbnail.
 
-    `!thumb`                     list recent videos
-    `!thumb <id>`                show its current thumbnail + scene
-    `!thumb <id> <your scene>`   re-render with YOUR description
-    `!thumb <id> reroll`         let the bot invent a new scene
+    `!thumb`                       list recent videos
+    `!thumb <id>`                  show its current thumbnail + scene
+    `!thumb <id> <your scene>`     re-render with YOUR description
+    `!thumb <id> reroll`           let the bot invent a new scene
+    `!thumb <id> text: 5 Eyes`     change the words IN the art, keep the scene
+    `!thumb <id> <scene> | 5 Eyes` your scene AND your words
     """
     from modules import publish_kit as pk
 
@@ -4993,18 +4995,36 @@ async def cmd_thumb(ctx, video_id: str = None, *, scene: str = None):
     await _regen_thumb(ctx, video, scene.strip())
 
 
+def _split_scene_and_text(arg: str):
+    """`scene | headline`, or `text: headline` to keep the current scene."""
+    low = arg.lower()
+    for tag in ("text:", "words:", "headline:"):
+        if low.startswith(tag):
+            return "", arg[len(tag):].strip()
+    if "|" in arg:
+        scene, _, headline = arg.partition("|")
+        return scene.strip(), headline.strip()
+    return arg.strip(), ""
+
+
 @_gpu_job("thumbnail regen")
 async def _regen_thumb(ctx, video, scene: str):
     from modules import publish_kit as pk
     from modules import mascot as mas
 
+    scene, headline = _split_scene_and_text(scene)
     reroll = scene.lower() in ("reroll", "re-roll", "random", "again")
-    status = await ctx.send(
-        f"🎨 {'Re-rolling the scene' if reroll else 'Rendering your scene'} "
-        f"for `{video.name}`… (~1 min)")
+    if not scene and headline:
+        # Keep the artwork's scene, change only the words baked into it.
+        scene = (pk.load_kit(video) or {}).get("mascot_scene", "")
+    what = ("Re-rolling the scene" if reroll
+            else "Rendering your scene" if not headline
+            else f'Rendering with "{headline}"')
+    status = await ctx.send(f"🎨 {what} for `{video.name}`… (~1 min)")
     try:
         kit = await asyncio.to_thread(
-            pk.regenerate_thumbnail, video, "" if reroll else scene)
+            pk.regenerate_thumbnail, video, "" if reroll else scene,
+            None, None, ("16x9", "9x16"), headline or None)
     except ValueError as e:                      # unsafe scene
         await status.edit(content=f"❌ {e}")
         return

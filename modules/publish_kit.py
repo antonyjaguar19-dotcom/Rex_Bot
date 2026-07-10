@@ -134,6 +134,14 @@ def _title_is_grounded(title: str, context: str, fallback: str) -> bool:
         log.warning(f"Title claim '{word}' is not in the video's content — rejecting "
                     f"title {title!r}")
         return False
+
+    # _WORD_RE only matches letters, so "Bees Have 9 Eyes" was 'grounded' while
+    # the script said five. An invented number is the most visible lie we print.
+    for num in re.findall(r"\d+", title):
+        if num not in f"{context}\n{fallback}":
+            log.warning(f"Title number '{num}' is not in the video's content — "
+                        f"rejecting title {title!r}")
+            return False
     return True
 
 
@@ -172,6 +180,129 @@ def build_title(fallback: str, context: str = "", mode: str = "") -> str:
     title = from_llm or fallback
     log.info(f"Title: {title}" + ("" if from_llm else " (LLM title rejected)"))
     return title
+
+
+
+_HEADLINE_SYS = (
+    "You write the few words printed ON a video thumbnail.\n"
+    'Output ONLY valid JSON: {"headline": "...", "short": "..."}\n'
+    "Rules:\n"
+    "- headline: 2 to 4 words, at most 24 characters.\n"
+    "- short: the SAME hook squeezed to at most 2 words and 14 characters, for\n"
+    "  the tall phone thumbnail. It must still be a meaningful phrase on its own.\n"
+    "  Never a truncation: 'Bees Have 5 Eyes' -> '5 Eyes', not 'Bees Have'.\n"
+    "- Neither is the video title: they are the hook you read at a glance.\n"
+    "- Both must read as natural English, not keywords jammed together:\n"
+    "  'Bees 230 Flaps' is wrong, '230 Flaps A Second' is right.\n"
+    "- Must be true to the content. Never invent a fact or a number.\n"
+    "- No punctuation except a question mark. No emoji, no hashtags, no quotes.\n"
+    'Examples: {"headline": "230 Flaps A Second", "short": "230 Flaps"}\n'
+    '          {"headline": "Bees Have 5 Eyes", "short": "5 Eyes"}'
+)
+
+HEADLINE_MAX = 24
+HEADLINE_SHORT_MAX = 14
+
+
+def _clean_headline(text: str) -> str:
+    t = strip_emoji((text or "").strip().strip('"').strip("'"))
+    t = re.sub(r"[#*_`]", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" .,:;-")
+    return t
+
+
+CONTEXT_MAX = 2000
+
+
+def _kit_context(kit: dict) -> str:
+    """What the video actually says, for grounding a rerolled headline.
+
+    attach() grounds against the narration but used to throw it away, so a reroll
+    fell back to the description — a 222-character caption. The hook
+    "230 Flaps A Second" was then rejected because the caption never says
+    "second", only the narration does. Old kits have no stored context and still
+    get the caption; new ones ground against the same text attach used.
+    """
+    if kit.get("context"):
+        return kit["context"]
+    parts = [kit.get("description", "")]
+    df = kit.get("description_file")
+    if not parts[0] and df and Path(df).exists():
+        try:
+            parts[0] = Path(df).read_text(encoding="utf-8")
+        except Exception:
+            pass
+    parts.append(kit.get("title", ""))
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _short_fallback(headline: str) -> str:
+    """A short form for the portrait frame, when the LLM didn't give a usable one.
+
+    Chopping trailing words is how you get "Bees Have" out of "Bees Have 5 Eyes",
+    so we only accept a prefix that still says something: it has to end on a word
+    that carries meaning, not on a verb or article. If nothing qualifies, return
+    the full headline — a smaller point size beats a mutilated sentence.
+    """
+    words = headline.split()
+    if len(headline) <= HEADLINE_SHORT_MAX:
+        return headline
+
+    # The payload sits at the END of "Bees Have [5 Eyes]" and at the START of
+    # "[230 Flaps] A Second", so try both, tail first. A fragment that begins or
+    # ends on a filler word ("A Second", "Bees Have") says nothing.
+    candidates = [words[-2:], words[:2], words[-1:], words[:1]]
+    for cand_words in candidates:
+        cand = " ".join(cand_words)
+        if not cand or len(cand) > HEADLINE_SHORT_MAX:
+            continue
+        if cand_words[0].lower() in _GENERIC_WORDS:
+            continue
+        if cand_words[-1].lower() in _GENERIC_WORDS:
+            continue
+        return cand
+    return headline
+
+
+def build_headline(title: str, context: str = "") -> tuple:
+    """The words printed ON the thumbnail: (headline, short).
+
+    Not the upload title. A YouTube title runs to 80 characters; the thumbnail
+    wants a hook you can read at a glance, and a 9:16 frame holding a full-body
+    mascot has room for about two words of giant type — given four, the image
+    model silently drops the last two. So we ask for both forms at once and let
+    each aspect use the one it can render whole.
+
+    Grounded like the title: an invented word or number is rejected, and we fall
+    back to the title's own opening words.
+    """
+    fallback = _clean_headline(" ".join(_clean_title(title).split()[:4]))[:HEADLINE_MAX]
+    if not context.strip():
+        return fallback, _short_fallback(fallback)
+    try:
+        from modules.script_generator import _call_llm, _extract_json
+        prompt = (f"Video title: {title}\n\nContent:\n{context[:900]}\n\n"
+                  f"Write the thumbnail headline.")
+        for _ in (1, 2):
+            raw = _call_llm(prompt, _HEADLINE_SYS, role="creative")
+            data = _extract_json(raw)
+            cand = _clean_headline(data.get("headline", ""))
+            short = _clean_headline(data.get("short", ""))
+            if not cand or len(cand) > HEADLINE_MAX:
+                continue
+            if not _title_is_grounded(cand, context, title):
+                log.info(f"Headline rejected (ungrounded): {cand}")
+                prompt += ("\n\nThat invented something the video never says. "
+                           "Use the video's own words and numbers.")
+                continue
+            if (not short or len(short) > HEADLINE_SHORT_MAX
+                    or not _title_is_grounded(short, context, title)):
+                short = _short_fallback(cand)
+            log.info(f"Headline: {cand}  (short: {short})")
+            return cand, short
+    except Exception as e:
+        log.warning(f"Headline LLM failed ({e}); using '{fallback}'")
+    return fallback, _short_fallback(fallback)
 
 
 # ==============================================================================
@@ -247,6 +378,25 @@ def strip_emoji(text: str) -> str:
     return re.sub(r"\s+", " ", _EMOJI_RE.sub("", text)).strip(" -–—·,")
 
 
+def save_thumbnail(frame: Path, out_jpg: Path,
+                   size: tuple[int, int] = THUMB_16X9) -> Optional[Path]:
+    """Cover-fit and save, painting nothing. Used when the image model already
+    rendered the headline into the artwork — an overlay on top of baked type
+    would double the title."""
+    try:
+        img = _fit_cover(Image.open(frame).convert("RGB"), *size)
+        out_jpg.parent.mkdir(parents=True, exist_ok=True)
+        quality = 92
+        img.save(out_jpg, "JPEG", quality=quality, optimize=True)
+        while out_jpg.stat().st_size > THUMB_MAX_BYTES and quality > 50:
+            quality -= 8
+            img.save(out_jpg, "JPEG", quality=quality, optimize=True)
+        return out_jpg
+    except Exception as e:
+        log.warning(f"thumbnail save failed: {e}")
+        return None
+
+
 def render_thumbnail(frame: Path, title: str, out_jpg: Path,
                      size: tuple[int, int] = THUMB_16X9) -> Optional[Path]:
     """Compose frame + darkening scrim + wrapped title -> JPEG."""
@@ -311,7 +461,8 @@ def render_thumbnail(frame: Path, title: str, out_jpg: Path,
 
 
 def _mascot_art(video: Path, title: str, context: str, mode: str,
-                aspects: tuple, scene: str = "") -> dict:
+                aspects: tuple, scene: str = "", headline: str = "",
+                headline_short: str = "") -> dict:
     """Branded mascot artwork for this video, or {} when unavailable/disabled.
 
     Silent no-op until a mascot image exists, so this costs nothing before you
@@ -342,7 +493,8 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
         art = mascot.render_for_video(
             title=title, context=context, out_dir=video.parent,
             stem=stem, aspects=wanted,
-            release_after=not KEEP_MODEL_WARM, scene=scene or None)
+            release_after=not KEEP_MODEL_WARM, scene=scene or None,
+            headline=headline or None, headline_short=headline_short or None)
         return art or {}
     except mascot.MascotGpuFault as e:
         # A single video may still ship with a still-frame thumbnail, but the
@@ -405,12 +557,15 @@ def latest_videos(limit: int = 10) -> list:
 
 
 def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
-                         aspects: tuple = ("16x9", "9x16")) -> dict:
+                         aspects: tuple = ("16x9", "9x16"),
+                         headline: Optional[str] = None) -> dict:
     """Re-render one video's mascot artwork, optionally from YOUR scene.
 
     scene=""     -> ask the LLM for a fresh one (a re-roll, with a new seed)
     scene="..."  -> render exactly what you wrote
     title=...    -> repaint this title instead of the video's current one
+    headline=... -> the words IN the art. Yours is used as written, no grounding
+                    check: you are allowed to say what you mean.
 
     Raises ValueError on an unsafe scene and MascotGpuFault when the GPU is
     dead. Both are things the caller must SHOW you, not swallow — unlike
@@ -444,26 +599,48 @@ def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
     for a in aspects:
         Path(f"{stem}_mascot_{a}.png").unlink(missing_ok=True)
 
+    # Reuse the stored hook when there is one: rerolling it would load Ollama
+    # only to change the words under a thumbnail the user asked to keep.
+    #
+    # When rerolling, ground it against what the VIDEO says, not the mascot
+    # scene. Passing the scene made grounding reject "230 Flaps A Second" — the
+    # scene text never mentions 230, so a perfectly faithful hook looked invented.
+    if headline:
+        headline = _clean_headline(headline)
+        headline_short = _short_fallback(headline)
+    elif kit.get("headline_text"):
+        headline = kit["headline_text"]
+        headline_short = kit.get("headline_short") or _short_fallback(headline)
+    else:
+        headline, headline_short = build_headline(title, _kit_context(kit))
+    kit["headline_text"] = headline
+    kit["headline_short"] = headline_short
+
     art = mascot.render_for_video(
         title=title, context=kit.get("mascot_scene", "") or title,
         out_dir=video.parent, stem=stem.name, aspects=aspects,
-        seed=seed, scene=scene or None)
+        seed=seed, scene=scene or None, headline=headline,
+        headline_short=headline_short)
     if not art:
         raise RuntimeError("Mascot render produced nothing — is ComfyUI up, "
                            "and is a mascot image installed?")
 
+    baked = bool(art.get("_baked_headline"))
     for aspect in aspects:
         base = art.get(aspect)
         if not base:
             continue
         size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
         out = Path(f"{stem}_thumb_{aspect}.jpg")
-        if render_thumbnail(Path(base), title, out, size):
+        done = (save_thumbnail(Path(base), out, size) if baked
+                else render_thumbnail(Path(base), title, out, size))
+        if done:
             kit[f"thumb_{aspect}"] = str(out)
 
     kit.update({"video": str(video), "title": title, "thumb_source": "mascot",
                 "mascot_scene": art.get("_scene", scene),
-                "mascot_seed": art.get("_seed")})
+                "mascot_seed": art.get("_seed"),
+                "headline": "baked into the art" if baked else "overlaid"})
     try:
         Path(f"{stem}_publish.json").write_text(json.dumps(kit, indent=2),
                                                 encoding="utf-8")
@@ -518,10 +695,20 @@ def attach(video: Path,
             except Exception as e:
                 log.warning(f"could not write description file: {e}")
 
-        # Preferred art: the mascot, rendered by USO into a scene about this
+        # The few words that go ON the thumbnail — not the upload title. Written
+        # now, while Ollama is still resident: _mascot_art evicts it to load Qwen.
+        headline, headline_short = build_headline(title, context)
+        kit["headline_text"] = headline
+        kit["headline_short"] = headline_short
+        # Keep what we grounded against, so a later reroll grounds the same way.
+        if context.strip():
+            kit["context"] = context[:CONTEXT_MAX]
+
+        # Preferred art: the mascot, rendered by Qwen into a scene about this
         # video. Falls back to the clean still, then to a frame of the render.
         mascot_art = _mascot_art(video, title, context, mode, aspects,
-                                 scene=mascot_scene)
+                                 scene=mascot_scene, headline=headline,
+                                 headline_short=headline_short)
         if mascot_art.get("_fatal"):
             kit["mascot_fatal"] = mascot_art["_fatal"]
             mascot_art = {}
@@ -540,13 +727,17 @@ def attach(video: Path,
                 frame = grabbed
                 kit["thumb_source"] = "video frame"
 
+        baked = bool(mascot_art.get("_baked_headline")) if mascot_art else False
+        kit["headline"] = "baked into the art" if baked else "overlaid"
         for aspect in aspects:
             size = THUMB_16X9 if aspect == "16x9" else THUMB_9X16
             base = mascot_art.get(aspect) if mascot_art else frame
             if not base:
                 continue
             out = Path(f"{stem}_thumb_{aspect}.jpg")
-            if render_thumbnail(Path(base), title, out, size):
+            done = (save_thumbnail(Path(base), out, size) if baked
+                    else render_thumbnail(Path(base), title, out, size))
+            if done:
                 kit[f"thumb_{aspect}"] = str(out)
 
         if grabbed:                          # only delete what we created
