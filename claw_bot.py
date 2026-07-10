@@ -4910,6 +4910,70 @@ async def cmd_manual_use(ctx, pid: str = None):
     await ctx.send(f"✅ Current manual project → `{pid}`.")
 
 
+class ManualDeleteConfirm(discord.ui.View):
+    """Two-click gate on an irreversible delete. Only the invoker can press."""
+
+    def __init__(self, pid: str, requester_id: int):
+        super().__init__(timeout=60)
+        self.pid = pid
+        self.requester_id = requester_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can confirm.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Delete forever", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        try:
+            stats = await asyncio.to_thread(_mm().delete_project, self.pid)
+        except Exception as e:
+            log.exception("manual delete failed")
+            await interaction.response.edit_message(
+                content=f"❌ Delete failed: `{e}`", view=None)
+            return
+        await interaction.response.edit_message(
+            content=(f"🗑️ Deleted **{stats['name']}** (`{self.pid}`) — "
+                     f"{stats['files']} files, {stats['mb']} MB freed."),
+            view=None)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="✅ Cancelled — nothing deleted.", view=None)
+        self.stop()
+
+
+@bot.command(name="mdel", aliases=["manual_delete", "mdelete"])
+async def cmd_manual_delete(ctx, pid: str = None):
+    """PERMANENTLY delete a manual project and all its artifacts.
+    `!mdel <project_id>` — id must be typed in full (no default), then confirm."""
+    manual_mode = _mm()
+    if not pid:
+        cur = manual_mode.current_project_id()
+        hint = f"Current is `{cur}`." if cur else "No current project."
+        await ctx.send(f"Usage: `!mdel <project_id>` — type the id in full. {hint}\n"
+                       f"See `!mlist`.")
+        return
+    if manual_mode.load_project(pid) is None:
+        await ctx.send(f"❌ No manual project `{pid}`. See `!mlist`.")
+        return
+    stats = manual_mode.project_stats(pid)
+    embed = discord.Embed(
+        title="🗑️ Delete this project?",
+        description=(f"**{stats['name']}** (`{pid}`)\n\n"
+                     f"{stats['shots']} shots · {stats['finals']} final render(s)\n"
+                     f"{stats['files']} files · {stats['mb']} MB\n\n"
+                     f"Stills, clips, narration and finals all go. "
+                     f"**This cannot be undone.**"),
+        color=discord.Color.red(),
+    )
+    await ctx.send(embed=embed, view=ManualDeleteConfirm(pid, ctx.author.id))
+
+
 @bot.command(name="mboard", aliases=["manual_board"])
 async def cmd_manual_board(ctx):
     """Show the current manual board (shots, durations, motion prompts)."""
@@ -5155,7 +5219,7 @@ async def cmd_manual_help(ctx):
     await ctx.send(
         "🎛️ **Manual Mode** — you drive ComfyUI directly (no story AI).\n"
         "`!mnew [name]` new project · `!mlist` list · `!muse <id>` switch · "
-        "`!mboard` view\n"
+        "`!mboard` view · `!mdel <id>` delete (confirm)\n"
         "`!mgen <prompt>` generate still → board (attach image = reference)\n"
         "`!mupload` (attach image) add your own image as a shot\n"
         "`!mmotion <shot> <text>` set motion · `!manim <shot> [text]` animate (I2V)\n"

@@ -1256,6 +1256,29 @@ def manual_music_action(tags: str, duration_text: str, refresh_cb):
     _bg(worker)
 
 
+def manual_delete_project_action(pid: str, refresh_cb):
+    """Irreversible. Only call from behind a confirm dialog."""
+    if not pid:
+        ui.notify("❌ No project selected.", type="negative")
+        return
+    if S.busy:
+        ui.notify("⏳ Busy — wait for the current job to finish.", type="warning")
+        return
+    try:
+        stats = mm.delete_project(pid)
+    except Exception as e:
+        ui.notify(f"Delete failed: {e}", type="negative")
+        return
+    # A deleted project can't stay staged in the preview panes.
+    MANUAL_LAST_GEN.clear()
+    MANUAL_REF.pop("path", None)
+    S.push(f"Manual project DELETED: {pid} "
+           f"({stats['files']} files, {stats['mb']} MB)")
+    ui.notify(f"🗑️ Deleted '{stats['name']}' — {stats['files']} files, "
+              f"{stats['mb']} MB freed.", type="warning")
+    refresh_cb()
+
+
 def manual_assemble_action(aspects: list, refresh_cb):
     proj = _manual_proj()
     if proj is None:
@@ -1984,6 +2007,37 @@ def main_page():
                 ui.notify(f"Project ready: {proj['name']}", type="positive")
                 full_refresh()
             ui.button("➕ New project", on_click=_new_proj).props("flat color=accent")
+
+            def _confirm_delete():
+                pid = mm.current_project_id()
+                if not pid:
+                    ui.notify("No project to delete.", type="negative")
+                    return
+                try:
+                    st = mm.project_stats(pid)
+                except Exception as e:
+                    ui.notify(f"Cannot read project: {e}", type="negative")
+                    return
+                with ui.dialog() as dlg, ui.card().classes("rex-card"):
+                    ui.label("🗑️ Delete this project?").classes("text-lg font-bold")
+                    ui.label(f"'{st['name']}'  ({pid})").classes("text-sm opacity-80")
+                    ui.label(f"{st['shots']} shots · {st['finals']} final render(s) · "
+                             f"{st['files']} files · {st['mb']} MB") \
+                        .classes("text-sm").style("color:#ffcf5c;")
+                    ui.label("Permanent. Stills, clips, narration and finals all go. "
+                             "This cannot be undone.") \
+                        .classes("text-xs").style("color:#ff8a8a;")
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        def _go():
+                            dlg.close()
+                            manual_delete_project_action(pid, full_refresh)
+                        ui.button("Delete forever", on_click=_go) \
+                            .props("color=red unelevated")
+                dlg.open()
+            ui.button("🗑️ Delete project", on_click=_confirm_delete) \
+                .props("flat color=red").tooltip("Permanently delete the current project")
 
         # ---- generate section ----
         ui.separator()

@@ -124,6 +124,59 @@ def list_projects() -> list[tuple[str, str]]:
     return out
 
 
+def project_stats(pid: str) -> dict:
+    """What a delete would destroy: file count, MB, shot count. For confirm UIs."""
+    pdir = project_dir(pid)
+    files = [f for f in pdir.rglob("*") if f.is_file()] if pdir.exists() else []
+    proj = load_project(pid)
+    return {
+        "files": len(files),
+        "mb": round(sum(f.stat().st_size for f in files) / (1024 * 1024), 1),
+        "shots": len(proj["shots"]) if proj else 0,
+        "name": proj.get("name", pid) if proj else pid,
+        "finals": len(proj.get("final") or {}) if proj else 0,
+    }
+
+
+def delete_project(pid: str) -> dict:
+    """Permanently delete a manual project and every artifact under it
+    (stills, clips, audio, finals). Irreversible — callers MUST confirm first.
+
+    Guards: the id must name a real project (project.json present) and the
+    resolved directory must live inside MANUAL_DIR — so a crafted id like
+    '../../04_Outputs' can never escape the sandbox.
+
+    Returns the pre-delete stats. Clears the current marker if it pointed here.
+    """
+    if not pid or not str(pid).strip():
+        raise ValueError("Project id required.")
+    pdir = project_dir(pid)
+
+    # Containment: resolve and verify the target is a child of MANUAL_DIR.
+    root = MANUAL_DIR.resolve()
+    try:
+        target = pdir.resolve()
+    except OSError:
+        raise ValueError(f"Bad project id: {pid!r}")
+    if target == root or root not in target.parents:
+        raise ValueError(f"Refusing to delete outside {root}: {target}")
+    if not _manifest_path(pid).exists():
+        raise FileNotFoundError(f"No manual project '{pid}' (project.json missing).")
+
+    stats = project_stats(pid)
+    shutil.rmtree(target)
+    log.warning(f"Manual project DELETED: {pid} "
+                f"({stats['files']} files, {stats['mb']} MB, {stats['shots']} shots)")
+
+    # Repoint the marker: the deleted project must not stay 'current'.
+    if CURRENT_MARKER.exists() and CURRENT_MARKER.read_text(encoding="utf-8").strip() == pid:
+        CURRENT_MARKER.unlink(missing_ok=True)
+        remaining = list_projects()
+        if remaining:
+            set_current(remaining[0][0])
+    return stats
+
+
 def set_current(pid: str) -> None:
     MANUAL_DIR.mkdir(parents=True, exist_ok=True)
     CURRENT_MARKER.write_text(pid, encoding="utf-8")

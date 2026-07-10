@@ -60,6 +60,72 @@ def test_load_missing_returns_none(world):
     assert mm.load_project("nope") is None
 
 
+# ---------------------------------------------------------------- delete
+
+def test_delete_project_removes_everything(world, tmp_path):
+    proj = mm.create_project("Doomed")
+    mm.add_shot(proj, _png(tmp_path), prompt="x")
+    pdir = mm.project_dir(proj["_id"])
+    assert pdir.exists()
+
+    stats = mm.delete_project(proj["_id"])
+    assert not pdir.exists()
+    assert stats["shots"] == 1
+    assert stats["name"] == "Doomed"
+    assert mm.load_project(proj["_id"]) is None
+
+
+def test_delete_repoints_current_marker(world, tmp_path):
+    import time
+    keep = mm.create_project("Keep")
+    time.sleep(1.1)
+    doomed = mm.create_project("Doomed")     # create() makes this current
+    assert mm.current_project_id() == doomed["_id"]
+
+    mm.delete_project(doomed["_id"])
+    # marker must not point at a dead project
+    assert mm.current_project_id() == keep["_id"]
+
+
+def test_delete_last_project_leaves_no_current(world):
+    proj = mm.create_project("Only")
+    mm.delete_project(proj["_id"])
+    assert mm.current_project_id() is None
+
+
+def test_delete_missing_project_raises(world):
+    with pytest.raises(FileNotFoundError):
+        mm.delete_project("20990101_000000")
+
+
+def test_delete_empty_id_raises(world):
+    with pytest.raises(ValueError):
+        mm.delete_project("")
+    with pytest.raises(ValueError):
+        mm.delete_project("   ")
+
+
+def test_delete_cannot_escape_manual_dir(world, tmp_path):
+    """A crafted id must never delete outside 04_Outputs/manual/."""
+    victim = mm.MANUAL_DIR.parent / "precious"
+    victim.mkdir(parents=True, exist_ok=True)
+    (victim / "final.mp4").write_text("do not delete", encoding="utf-8")
+
+    for evil in ("../precious", "..", "../..", "foo/../../precious"):
+        with pytest.raises((ValueError, FileNotFoundError)):
+            mm.delete_project(evil)
+    assert (victim / "final.mp4").exists()
+
+
+def test_project_stats_counts_files(world, tmp_path):
+    proj = mm.create_project("Stats")
+    mm.add_shot(proj, _png(tmp_path), prompt="x")
+    s = mm.project_stats(proj["_id"])
+    assert s["shots"] == 1
+    assert s["files"] >= 2          # project.json + the copied still
+    assert s["mb"] >= 0
+
+
 # ---------------------------------------------------------------- board ops
 
 def test_add_shot_copies_image_and_numbers(world, tmp_path):
