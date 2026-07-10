@@ -312,40 +312,31 @@ def test_release_runs_even_when_a_render_raises(installed, tmp_path, monkeypatch
 
 # ---------------------------------------------------------------- residency
 
-def test_prepare_gpu_does_not_evict_our_own_resident_model(monkeypatch):
-    """The bug this guards: ensure_vram_free(14GB) sees a card holding a
-    resident 13.5GB Qwen, decides ~1GB free is not enough, and frees ComfyUI --
-    evicting the model it is about to use. A 14-video warm batch then paid the
-    4-minute cold load 14 times."""
-    import modules.gpu_utils as gu
+def test_prepare_gpu_delegates_to_the_residency_manager(monkeypatch):
+    from modules import gpu_memory as gm
     calls = []
-    monkeypatch.setattr(gu, "free_ollama_vram", lambda *a, **k: calls.append("ollama"))
-    monkeypatch.setattr(gu, "ensure_vram_free", lambda **k: calls.append("evict"))
-
-    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+    monkeypatch.setattr(gm, "acquire", lambda label: calls.append(label))
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
     mas.prepare_gpu()
-    assert calls == [], "must not evict when our model is already loaded"
-
-    monkeypatch.setattr(mas, "_MODEL_RESIDENT", False)
-    mas.prepare_gpu()
-    assert calls == ["ollama", "evict"]
+    assert calls == [gm.QWEN_EDIT]
 
 
-def test_release_clears_residency(monkeypatch):
-    import modules.gpu_utils as gu
-    monkeypatch.setattr(gu, "free_comfyui_vram", lambda: (True, "freed"))
-    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+def test_release_hands_the_card_back(monkeypatch):
+    from modules import gpu_memory as gm
+    calls = []
+    monkeypatch.setattr(gm, "release", lambda label=None: calls.append(label))
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
     mas.release()
-    assert mas._MODEL_RESIDENT is False
+    assert calls == [gm.QWEN_EDIT]
 
 
-def test_release_clears_residency_even_if_freeing_fails(monkeypatch):
-    import modules.gpu_utils as gu
-    monkeypatch.setattr(gu, "free_comfyui_vram",
-                        lambda: (_ for _ in ()).throw(RuntimeError("comfy down")))
-    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
-    mas.release()      # must not raise
-    assert mas._MODEL_RESIDENT is False
+def test_uso_fallback_reserves_its_own_label(monkeypatch):
+    from modules import gpu_memory as gm
+    calls = []
+    monkeypatch.setattr(gm, "acquire", lambda label: calls.append(label))
+    monkeypatch.setattr(mas, "active_backend_id", lambda: mas.FALLBACK_BACKEND_ID)
+    mas.prepare_gpu()
+    assert calls == [gm.FLUX_USO]
 
 
 # ---------------------------------------------------------------- multi-angle refs
@@ -557,11 +548,12 @@ def test_fatal_render_raises_instead_of_using_a_still(installed, tmp_path, monke
     monkeypatch.setattr(qwen, "generate", lambda **k: R)
     monkeypatch.setattr(mas, "active_backend_id", lambda: mas.BACKEND_ID)
     monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
-    monkeypatch.setattr(mas, "_MODEL_RESIDENT", True)
+    from modules import gpu_memory as gm
+    gm._set_resident(gm.QWEN_EDIT)
 
     with pytest.raises(mas.MascotGpuFault):
         mas.render_scene("scene", tmp_path / "o.png", seed=1)
-    assert mas._MODEL_RESIDENT is False, "a dead context is not a resident model"
+    assert gm.resident_model() is None, "a dead context is not a resident model"
 
 
 def test_non_fatal_render_failure_still_falls_back(installed, tmp_path, monkeypatch):

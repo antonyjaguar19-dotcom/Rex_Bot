@@ -246,18 +246,27 @@ def backend_healthy() -> tuple[bool, str]:
 # VRAM RESIDENCY — see the policy note at the top of the constants block
 # ==============================================================================
 
-# True once OUR model is the thing loaded in ComfyUI. Without this, prepare_gpu
-# evicts the very model it is about to use: ensure_vram_free(14 GB) looks at a
-# card holding a resident 13.5 GB Qwen, sees ~1 GB free, and frees ComfyUI. A
-# 14-video "warm" batch paid the 4-minute cold load 14 times.
-# Only meaningful while the GPU job lock is held — that is what guarantees no
-# other pipeline swapped a different model in behind our back.
-_MODEL_RESIDENT = False
+# Residency is owned by modules/gpu_memory.py — one place that knows WHICH model
+# holds the card. Before that existed, prepare_gpu evicted the very model it was
+# about to use: ensure_vram_free(14 GB) looked at a card holding a resident
+# 13.5 GB Qwen, saw ~1 GB free, and freed ComfyUI. A 14-video "warm" batch paid
+# the 4-minute cold load 14 times.
+
+
+def _model_label() -> str:
+    from modules import gpu_memory
+    return (gpu_memory.QWEN_EDIT if active_backend_id() == BACKEND_ID
+            else gpu_memory.FLUX_USO)
 
 
 def _set_resident(value: bool) -> None:
-    global _MODEL_RESIDENT
-    _MODEL_RESIDENT = value
+    """Kept for the fatal-fault path: a dead CUDA context is not a resident
+    model, and the next acquire() must not skip its eviction."""
+    from modules import gpu_memory
+    if value:
+        gpu_memory.acquire(_model_label())
+    else:
+        gpu_memory.forget()
 
 
 def prepare_gpu() -> None:
@@ -265,15 +274,11 @@ def prepare_gpu() -> None:
 
     Ollama first: the scene prompt has already been written by then, so its
     12.6 GB is dead weight. Then ComfyUI's current model (Wan / Flux / Z-Image).
-    No-op when our own model is already resident — see _MODEL_RESIDENT.
+    A no-op when our own model is already resident.
     """
-    if _MODEL_RESIDENT:
-        log.debug("mascot model already resident; skipping VRAM pre-flight")
-        return
+    from modules import gpu_memory
     try:
-        from modules import gpu_utils
-        gpu_utils.free_ollama_vram()
-        gpu_utils.ensure_vram_free(min_gb=REQUIRED_FREE_GB, force_ollama_unload=True)
+        gpu_memory.acquire(_model_label())
     except Exception as e:
         log.warning(f"VRAM pre-flight failed ({e}); rendering anyway")
 
@@ -281,14 +286,12 @@ def prepare_gpu() -> None:
 def release() -> None:
     """Hand the card back. Call once a batch of thumbnails is done, never
     between aspects — a cold reload costs ~4 min, a warm render 15 s."""
+    from modules import gpu_memory
     try:
-        from modules import gpu_utils
-        gpu_utils.free_comfyui_vram()
+        gpu_memory.release(_model_label())
         log.info("mascot: released ComfyUI VRAM")
     except Exception as e:
         log.warning(f"could not release VRAM: {e}")
-    finally:
-        _set_resident(False)
 
 
 def is_available() -> tuple[bool, str]:
@@ -496,7 +499,8 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             if getattr(result, "fatal", False):
                 # The CUDA context is dead: every later render in this batch
                 # would silently fall back to a still and look like a success.
-                _set_resident(False)
+                from modules import gpu_memory
+                gpu_memory.forget()   # a dead CUDA context is not a resident model
                 raise MascotGpuFault(
                     "ComfyUI hit a fatal GPU error (CUDA context lost). "
                     "Restart ComfyUI before rendering more thumbnails."
@@ -504,7 +508,7 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             log.warning(f"mascot render failed ({getattr(result, 'error', '?')}); "
                         f"falling back to a still")
             return None
-        _set_resident(True)        # ComfyUI now holds OUR model — don't evict it
+        # gpu_memory already marked us resident in prepare_gpu().
         log.info(f"Mascot base rendered: {out_png.name} ({aspect}, {bid}, "
                  f"refs={len(refs)})")
         return Path(result.image_path)
