@@ -99,6 +99,59 @@ def _concat_wavs(wavs: list, dst: Path) -> Path:
     return dst
 
 
+def _slice_wav(src: Path, start: float, end: float, dst: Path) -> Path:
+    subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-c", "copy", str(dst)],
+        capture_output=True, text=True, timeout=60)
+    if not dst.exists():   # stream-copy can't always cut cleanly — re-encode
+        subprocess.run(
+            [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+             "-ss", f"{start:.3f}", "-to", f"{end:.3f}", str(dst)],
+            capture_output=True, text=True, timeout=60)
+    return dst
+
+
+def _voice_beats_mascot(narrations: list, out_dir: Path, _p) -> list:
+    """One WAV per fact, in the mascot's voice.
+
+    Qwen3-TTS is called ONCE for all the beats (the model loads in an isolated
+    venv subprocess — per-beat calls would reload it every time) and the master
+    is sliced back apart on the returned spans. Kokoro is the fallback so a dead
+    bridge never blocks a render.
+    """
+    engine = rs.get_mascot_tts_engine()
+    if engine == "qwen":
+        try:
+            from modules import tts_qwen
+            ok, msg = tts_qwen.health_check()
+            if not ok:
+                raise RuntimeError(msg)
+            speaker = rs.get_mascot_voice()
+            _p(f"🎙️ mascot voice: qwen3-tts / {speaker}")
+            master = out_dir / "mascot_master.wav"
+            _, spans = tts_qwen.synthesize_segments(
+                narrations, output_path=master, speaker=speaker,
+                instruct=rs.get_mascot_voice_instruct())
+            if len(spans) == len(narrations):
+                return [_slice_wav(master, a, b, out_dir / f"beat_{i:02d}.wav")
+                        for i, (_, a, b) in enumerate(spans)]
+            _p(f"⚠️ qwen returned {len(spans)} spans for {len(narrations)} beats; "
+               f"using kokoro.")
+        except Exception as e:
+            _p(f"⚠️ mascot voice (qwen) failed ({e}); using kokoro.")
+
+    from modules.tts_engine import TTSEngine
+    tts = TTSEngine()
+    voice = rs.get_facts_voice()
+    wavs = []
+    for i, text in enumerate(narrations):
+        wp = out_dir / f"beat_{i:02d}.wav"
+        tts.synthesize(text, output_path=wp, voice=voice)
+        wavs.append(wp)
+    return wavs
+
+
 def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
     """Every fact presented by the costumed mascot, lip-synced (Qwen still → S2V).
 
@@ -143,15 +196,13 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
             except Exception:
                 pass
 
-    # 2. Per-beat narration WAVs (kokoro, CPU-light).
+    # 2. Per-beat narration WAVs. The mascot is a young jaguar cub — Kokoro reads
+    #    it flat and pitch-shifting it sounds artificial, so the mascot gets
+    #    Qwen3-TTS with an emotion instruct (natural, expressive, deterministic =
+    #    the same voice every clip). Falls back to Kokoro if the bridge is down.
     _p("🎙️ voicing each fact…")
-    tts = TTSEngine()
-    voice = rs.get_facts_voice()
-    wavs = []
-    for i, b in enumerate(beats):
-        wp = out_dir / f"beat_{i:02d}.wav"
-        tts.synthesize(b.get("narration", ""), output_path=wp, voice=voice)
-        wavs.append(wp)
+    narrations = [b.get("narration", "") for b in beats]
+    wavs = _voice_beats_mascot(narrations, out_dir, _p)
 
     # 3. Mascot stills via Qwen-Edit (identity held), warm across all beats.
     _p(f"🖼️ rendering {len(beats)} mascot stills (Qwen-Edit)…")

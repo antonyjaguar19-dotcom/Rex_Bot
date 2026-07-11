@@ -542,6 +542,55 @@ def set_facts_video_mode(mode: str) -> None:
     log.info(f"Facts video mode: {mode}")
 
 
+# --- Mascot voice (facts mascot-presenter mode) ---------------------------
+# Kokoro is fast but flat, and pitch-shifting it to fake a kid sounds artificial.
+# Qwen3-TTS with an emotion "instruct" gives a natural, expressive, deterministic
+# (= consistent) read. Vivian was the chosen timbre for the jaguar cub.
+VALID_MASCOT_TTS = ("qwen", "kokoro")
+VALID_QWEN_SPEAKERS = ("Vivian", "Serena", "Dylan", "Eric", "Uncle_Fu")
+DEFAULT_MASCOT_SPEAKER = "Vivian"
+DEFAULT_MASCOT_INSTRUCT = ("cheerful excited young voice, playful high-energy "
+                           "cartoon kid, bouncy and fun")
+
+
+def get_mascot_tts_engine() -> str:
+    v = _load().get("mascot_tts_engine")
+    return v if v in VALID_MASCOT_TTS else "qwen"
+
+
+def set_mascot_tts_engine(engine: str) -> None:
+    engine = (engine or "").strip().lower()
+    if engine not in VALID_MASCOT_TTS:
+        raise ValueError(f"engine must be one of {VALID_MASCOT_TTS}")
+    data = _load(); data["mascot_tts_engine"] = engine; _save(data)
+    log.info(f"Mascot TTS engine: {engine}")
+
+
+def get_mascot_voice() -> str:
+    v = _load().get("mascot_voice")
+    return v if v in VALID_QWEN_SPEAKERS else DEFAULT_MASCOT_SPEAKER
+
+
+def set_mascot_voice(speaker: str) -> None:
+    speaker = (speaker or "").strip()
+    match = next((s for s in VALID_QWEN_SPEAKERS if s.lower() == speaker.lower()), None)
+    if not match:
+        raise ValueError(f"voice must be one of {VALID_QWEN_SPEAKERS}")
+    data = _load(); data["mascot_voice"] = match; _save(data)
+    log.info(f"Mascot voice: {match}")
+
+
+def get_mascot_voice_instruct() -> str:
+    return _load().get("mascot_voice_instruct") or DEFAULT_MASCOT_INSTRUCT
+
+
+def set_mascot_voice_instruct(text: str) -> None:
+    data = _load()
+    data["mascot_voice_instruct"] = (text or "").strip() or DEFAULT_MASCOT_INSTRUCT
+    _save(data)
+    log.info(f"Mascot voice instruct: {data['mascot_voice_instruct'][:60]}")
+
+
 def get_facts_mascot_mode() -> bool:
     """Whether facts reels star the mascot in every shot (costumed, explaining
     each fact, lip-synced via S2V) instead of abstract backdrops.

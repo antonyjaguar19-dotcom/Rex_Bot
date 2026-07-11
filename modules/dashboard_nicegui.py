@@ -2076,6 +2076,18 @@ def main_page():
             facts_mascot_sw.on("update:model-value",
                                lambda e: rs.set_facts_mascot_mode(facts_mascot_sw.value))
 
+            _mvoices = list(rs.VALID_QWEN_SPEAKERS)
+            mascot_voice_sel = ui.select(
+                _mvoices, value=_sel(rs.get_mascot_voice(), _mvoices,
+                                     rs.DEFAULT_MASCOT_SPEAKER),
+                label="Mascot voice") \
+                .props("outlined dark dense").style("min-width: 130px") \
+                .tooltip("Qwen3-TTS voice for the mascot presenter (expressive, "
+                         "same voice every clip).")
+            mascot_voice_sel.on("update:model-value",
+                                lambda e: (rs.set_mascot_tts_engine("qwen"),
+                                           rs.set_mascot_voice(mascot_voice_sel.value)))
+
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 

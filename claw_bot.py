@@ -1640,6 +1640,7 @@ async def on_ready():
                     "set_facts_thumbnail": cmd_set_facts_thumbnail,
                     "set_lipsync":         cmd_set_lipsync,
                     "facts_prompt":        cmd_facts_prompt,
+                    "mascot_voice":        cmd_mascot_voice,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5565,6 +5566,32 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="mascot_voice", aliases=["set_mascot_voice"])
+async def cmd_mascot_voice(ctx, voice: str = None):
+    """The mascot's voice: `!mascot_voice Vivian|Serena|Dylan|Eric|Uncle_Fu`.
+
+    Qwen3-TTS + an emotion instruct — natural, expressive, and the same voice on
+    every clip. `!mascot_voice kokoro` switches back to the plain fast engine."""
+    if not voice:
+        await ctx.send(
+            f"🎙️ Mascot voice: `{rs.get_mascot_voice()}` "
+            f"(engine `{rs.get_mascot_tts_engine()}`)\n"
+            f"Options: `{'`, `'.join(rs.VALID_QWEN_SPEAKERS)}` — or `kokoro` for the "
+            f"plain engine.")
+        return
+    v = voice.strip()
+    try:
+        if v.lower() in ("kokoro", "qwen"):
+            rs.set_mascot_tts_engine(v.lower())
+            await ctx.send(f"✅ Mascot TTS engine → `{v.lower()}`.")
+            return
+        rs.set_mascot_tts_engine("qwen")
+        rs.set_mascot_voice(v)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    await ctx.send(f"✅ Mascot voice → `{rs.get_mascot_voice()}` (qwen3-tts).")
 
 
 @bot.command(name="facts_prompt", aliases=["fprompt"])
