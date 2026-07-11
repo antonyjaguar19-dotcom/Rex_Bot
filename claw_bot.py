@@ -1639,6 +1639,7 @@ async def on_ready():
                     "set_facts_mascot":    cmd_set_facts_mascot,
                     "set_facts_thumbnail": cmd_set_facts_thumbnail,
                     "set_lipsync":         cmd_set_lipsync,
+                    "facts_prompt":        cmd_facts_prompt,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5564,6 +5565,31 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="facts_prompt", aliases=["fprompt"])
+async def cmd_facts_prompt(ctx, facts_id: str = None, beat: int = None,
+                          field: str = None, *, text: str = None):
+    """Edit a facts beat's prompt: `!facts_prompt <id> <shot#> image|motion|scene <text>`.
+
+    image = backdrop/mascot still · motion = animation · scene = mascot scene.
+    Shot numbers are 1-based. Takes effect on the next render of that reel."""
+    from modules import facts_writer as fw
+    if not all([facts_id, beat, field, text]):
+        await ctx.send("Usage: `!facts_prompt <id> <shot#> image|motion|scene <text>`")
+        return
+    fmap = {"image": "image_prompt", "motion": "motion_prompt",
+            "scene": "mascot_scene", "mascot": "mascot_scene"}
+    key = fmap.get(field.strip().lower())
+    if not key:
+        await ctx.send("field must be `image`, `motion`, or `scene`.")
+        return
+    try:
+        ok = fw.set_beat_prompt(facts_id, beat - 1, key, text)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    await ctx.send(f"✅ Shot {beat} `{key}` updated." if ok
+                   else f"❌ No facts `{facts_id}` or bad shot #.")
 
 
 @bot.command(name="set_lipsync", aliases=["lipsync", "lip_sync"])

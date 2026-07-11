@@ -126,10 +126,22 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
     sw, sh = _S2V_DIMS.get(aspect, _S2V_DIMS["9x16"])
     ar = aspect.replace("x", ":")
 
-    # 1. Scenes (Ollama). Written up front so the LLM unloads before Qwen loads.
+    # 1. Scenes (Ollama). A user-edited mascot_scene wins; otherwise the LLM
+    #    writes one and we STORE it back so it can be edited next time. Written up
+    #    front so the LLM unloads before Qwen loads.
+    from modules import facts_writer as _fw
     _p(f"🎭 writing {len(beats)} mascot scenes…")
-    with gpu_memory.llm():
-        scenes = [mascot.explainer_scene(b.get("narration", ""), topic) for b in beats]
+    scenes = [(b.get("mascot_scene") or "").strip() for b in beats]
+    if not all(scenes):
+        with gpu_memory.llm():
+            for i, b in enumerate(beats):
+                if not scenes[i]:
+                    scenes[i] = mascot.explainer_scene(b.get("narration", ""), topic)
+        for i, sc in enumerate(scenes):   # persist for editing / reuse
+            try:
+                _fw.set_beat_prompt(facts_id, i, "mascot_scene", sc)
+            except Exception:
+                pass
 
     # 2. Per-beat narration WAVs (kokoro, CPU-light).
     _p("🎙️ voicing each fact…")
@@ -176,6 +188,19 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
             _p(f"  clip {i+1}/{len(beats)} done")
     finally:
         gpu_memory.release(gpu_memory.WAN_VIDEO)
+
+    # 4b. Optional 4x upscale of each talking clip (Real-ESRGAN anime + polish),
+    #     at the clip's native 480p where the detail gain is real. ComfyUI is free
+    #     now (S2V released). Best-effort — a failed upscale keeps the original.
+    if rs.get_upscale_enabled():
+        from modules import upscaler
+        _p(f"🔎 upscaling {len(clips)} clips (4x)…")
+        for i, c in enumerate(clips):
+            try:
+                upscaler.upscale_clip(Path(c))
+                _p(f"  upscaled {i+1}/{len(clips)}")
+            except Exception as e:
+                _p(f"  upscale {i+1} failed ({e}); keeping original")
 
     # 5. Narration = the exact per-beat WAVs concatenated, so the track the
     #    assembler overlays matches each clip's own audio frame-for-frame.

@@ -51,6 +51,39 @@ FFPROBE_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffprobe.exe"
 POLL_INTERVAL_SEC = 2.0
 JOB_TIMEOUT_SEC = 600  # 10 min per clip — generous
 
+# --- Polish pass ----------------------------------------------------------
+# The Real-ESRGAN anime model 4x's to ~1920px, but that raw output looks TOO
+# sharp and the fine detail (fur, spots) "morphs"/crawls frame-to-frame — the
+# source Wan clip already wobbles a little and 4x sharpening magnifies it.
+# Two cheap ffmpeg steps fix it:
+#   1. Supersample DOWN to a 1080 short side (lanczos) — averages the amplified
+#      high-frequency shimmer and lands on the reel's actual delivery size.
+#   2. hqdn3d with a strong TEMPORAL term — averages the residual crawl across
+#      frames while leaving motion intact. Spatial term kept low to keep detail.
+# Verified on a mascot clip: raw 4x = clay/morphing; this = clean.
+UPSCALE_TARGET_SHORT = 1080
+UPSCALE_DENOISE = "2:1.5:10:10"   # luma_spatial:chroma_spatial:luma_tmp:chroma_tmp
+
+
+def _polish_clip(src: Path, dst: Path) -> Path:
+    """Downscale to a 1080 short side + temporal denoise. Preserves audio.
+
+    Short side (not a fixed WxH) so it works for 9x16, 16x9 and 1x1 alike.
+    """
+    # Scale the SHORTER dimension to UPSCALE_TARGET_SHORT, keep aspect, even dims.
+    t = UPSCALE_TARGET_SHORT
+    scale = (f"scale='if(lt(iw,ih),{t},-2)':'if(lt(iw,ih),-2,{t})'"
+             f":flags=lanczos")
+    vf = f"{scale},hqdn3d={UPSCALE_DENOISE}"
+    cmd = [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+           "-vf", vf, "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+           "-c:a", "copy", str(dst)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if not dst.exists() or r.returncode != 0:
+        log.warning(f"polish failed ({r.stderr[:200]}); keeping raw upscale")
+        shutil.copy2(src, dst)
+    return dst
+
 
 # ==============================================================================
 # COMFY API HELPERS
@@ -259,6 +292,16 @@ def upscale_clip(video_path: Path, progress_cb: Optional[Callable] = None) -> Pa
             output_video.unlink(missing_ok=True)
             output_video = remuxed
             log.info(f"Audio re-attached: {output_video}")
+
+        # Polish: downscale to the 1080 delivery size + temporal denoise, which
+        # removes the over-sharp "clay"/morphing look of the raw 4x output.
+        if progress_cb:
+            progress_cb(f"polishing {video_path.name}")
+        polished = output_video.with_suffix(".polished.mp4")
+        _polish_clip(output_video, polished)
+        output_video.unlink(missing_ok=True)
+        output_video = polished
+        log.info(f"Polished (1080 + denoise): {output_video}")
 
         # Replace original (per user's "save disk" choice)
         tmp_replacement = video_path.with_suffix(video_path.suffix + ".upscaled")

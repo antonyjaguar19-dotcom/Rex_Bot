@@ -291,3 +291,28 @@ def load_facts(facts_id: str) -> Optional[dict]:
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+# Per-beat prompt fields a user may hand-edit before rendering (like story mode).
+# image_prompt  — the still: abstract backdrop, OR the mascot scene in mascot mode
+# motion_prompt — the animation: Wan motion, OR the S2V action in mascot mode
+# mascot_scene  — mascot-mode presenter scene (costume + action, camera-facing)
+EDITABLE_BEAT_FIELDS = ("image_prompt", "motion_prompt", "mascot_scene")
+
+
+def set_beat_prompt(facts_id: str, beat_index: int, field: str, text: str) -> bool:
+    """Hand-edit one beat's prompt field. Read-modify-write the facts JSON so the
+    edit is picked up at render time (the render prefers a stored value over
+    re-generating one). Returns False on a bad id/index/field."""
+    if field not in EDITABLE_BEAT_FIELDS:
+        raise ValueError(f"field must be one of {EDITABLE_BEAT_FIELDS}")
+    story = load_facts(facts_id)
+    if not story:
+        return False
+    beats = story.get("beats", [])
+    if not (0 <= beat_index < len(beats)):
+        return False
+    beats[beat_index][field] = (text or "").strip()
+    atomic_write_json(OUTPUTS_DIR / f"facts_{facts_id}.json", story)
+    log.info(f"facts {facts_id} beat {beat_index} {field} edited ({len(text or '')} chars)")
+    return True

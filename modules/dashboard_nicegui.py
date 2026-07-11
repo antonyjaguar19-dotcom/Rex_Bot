@@ -3053,16 +3053,69 @@ def main_page():
                           regen_thumbnail_action(v, "", full_refresh)) \
                 .props("flat dense")
 
+    def _latest_facts_story():
+        fdir = PROJECT_ROOT / "04_Outputs" / "facts"
+        js = (sorted(fdir.glob("facts_*.json"), key=lambda p: p.stat().st_mtime,
+                     reverse=True) if fdir.exists() else [])
+        return js[0] if js else None
+
+    def _render_facts_prompt_editor():
+        """Per-beat prompt editing (like story mode): image + motion (+ mascot
+        scene). Edits persist to the facts JSON and win at render time."""
+        from modules import facts_writer as fw
+        jp = _latest_facts_story()
+        if not jp:
+            return
+        try:
+            story = json.loads(jp.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        fid = story.get("facts_id") or story.get("_id")
+        beats = story.get("beats", [])
+        if not beats:
+            return
+        mascot_on = rs.get_facts_mascot_mode()
+        with ui.expansion(f"✏️ Edit prompts — {story.get('title', fid)}",
+                          icon="edit").classes("w-full").style("margin-top:10px;"):
+            ui.label("Edits are saved to the story and used on the next render.") \
+                .classes("text-xs opacity-70")
+            for i, b in enumerate(beats):
+                with ui.card().classes("w-full").style("margin-top:6px;"):
+                    ui.label(f"Shot {i+1}: {b.get('narration','')[:70]}") \
+                        .classes("text-xs opacity-80")
+                    # In mascot mode the "image" prompt IS the mascot scene.
+                    img_field = "mascot_scene" if mascot_on else "image_prompt"
+                    img_val = b.get(img_field, "") or b.get("image_prompt", "")
+                    img_box = ui.textarea(
+                        label=("Mascot scene" if mascot_on else "Image prompt"),
+                        value=img_val).props("outlined dense autogrow dark") \
+                        .classes("w-full")
+                    mot_box = ui.textarea(
+                        label="Motion / video prompt",
+                        value=b.get("motion_prompt", "")) \
+                        .props("outlined dense autogrow dark").classes("w-full")
+
+                    def _save(idx=i, ib=img_box, mb=mot_box, fld=img_field):
+                        ok1 = fw.set_beat_prompt(fid, idx, fld, ib.value)
+                        fw.set_beat_prompt(fid, idx, "motion_prompt", mb.value)
+                        ui.notify(f"Shot {idx+1} prompts saved" if ok1
+                                  else "Save failed", type="positive" if ok1 else "negative")
+                    ui.button("💾 Save shot", on_click=_save) \
+                        .props("unelevated dense color=accent").style("margin-top:4px;")
+
     def render_facts_reel():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
         reels = (sorted(fdir.glob("facts_*_9x16.mp4"),
                         key=lambda p: p.stat().st_mtime, reverse=True)[:1]
                  if fdir.exists() else [])
-        sig = tuple((str(p), p.stat().st_mtime_ns, _kit_sig(p)) for p in reels)             or ("none",)
+        story_jp = _latest_facts_story()
+        story_sig = (str(story_jp), story_jp.stat().st_mtime_ns) if story_jp else "nostory"
+        sig = (tuple((str(p), p.stat().st_mtime_ns, _kit_sig(p)) for p in reels)             or ("none",), story_sig)
         if not _changed("facts", sig):
             return
         facts_container.clear()
         with facts_container:
+            _render_facts_prompt_editor()
             if not reels:
                 ui.label("_(no reel yet — enter a topic and Generate)_").classes("opacity-60")
             else:
