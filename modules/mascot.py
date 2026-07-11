@@ -563,6 +563,78 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
         return fb
 
 
+_EXPLAINER_SYS = (
+    "You dress a friendly brand mascot to ILLUSTRATE and EXPLAIN one fact in a "
+    "short educational video. The mascot is the on-screen presenter for this "
+    "single fact.\n"
+    'Output ONLY valid JSON: {"scene": "..."}\n'
+    "Rules:\n"
+    "- The scene ALWAYS stars 'the mascot character'. Name it exactly that.\n"
+    "- Put the mascot in a COSTUME or ROLE that fits THIS fact, and make it "
+    "ACTIVELY DEMONSTRATE the fact with one concrete prop — it must be DOING "
+    "something, mid-motion, never just standing.\n"
+    "  Fact 'bees make honey' -> 'the mascot character in a beekeeper suit "
+    "scooping dripping honey from a jar and holding up the dripping dipper'.\n"
+    "  Fact 'a bee flaps 230 times a second' -> 'the mascot character dressed as "
+    "a racing pilot flapping tiny wings in a blur, zooming forward'.\n"
+    "- Use STRONG ACTION VERBS with visible body movement: showing, waving, "
+    "scooping, pointing, lifting, spinning, demonstrating, bouncing, leaning in. "
+    "Both paws and the whole body engaged — a lively presenter, not a statue.\n"
+    "- The mascot FACES THE CAMERA, upper-body / medium shot, mouth visible, "
+    "caught mid-sentence — it is talking to the viewer WHILE doing the action. "
+    "This framing is REQUIRED (its mouth will be animated to speak).\n"
+    "- Friendly, cheerful, energetic. The motion and the costume selling the "
+    "fact matter most.\n"
+    "- FRIENDLY BRAND MASCOT: never violence, weapons, blood, gore, organs, "
+    "death, hate, drugs, alcohol or adult content — not even as a joke.\n"
+    "- If the fact is abstract, use a harmless everyday prop or costume.\n"
+    "- Under 30 words. Describe only what is visible: costume, the ACTION in "
+    "motion, prop, the facing-camera framing, expression.\n"
+    "- Do NOT describe background, lighting or camera settings — those are set.\n"
+    "- No text, captions, letters or numbers in the image.\n"
+    "Examples:\n"
+    '{"scene": "the mascot character in a beekeeper suit facing the camera, '
+    'lifting a dripping honeycomb high and waving it, honey splashing, proud '
+    'excited grin"}\n'
+    '{"scene": "the mascot character dressed as a scuba diver facing the camera, '
+    'spinning to point both paws at a glowing jellyfish, eyes wide with wonder"}'
+)
+
+
+def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
+    """A costumed, camera-facing mascot scene that ILLUSTRATES one fact.
+
+    Unlike scene_prompt (a single funny thumbnail), this is the per-shot presenter
+    frame for facts-mascot mode: the mascot dressed for THIS fact, facing camera,
+    mouth visible so S2V can animate it speaking the narration. Safety-gated and
+    fallback-safe like scene_prompt — never raises.
+    """
+    fb = fallback_scene(fact or topic, context, topic)
+    if not (fact or "").strip():
+        return fb
+    try:
+        from modules.script_generator import _call_llm, _extract_json
+        prompt = (f"Topic: {topic or '(general)'}\n"
+                  f"The fact to illustrate:\n{fact.strip()[:400]}\n\n"
+                  f"Describe the mascot presenter scene for this fact.")
+        for _ in (1, 2):
+            raw = _call_llm(prompt, _EXPLAINER_SYS, role="creative")
+            scene = _clean_scene(_extract_json(raw).get("scene") or "")
+            if not scene:
+                continue
+            bad = scene_violation(scene)
+            if not bad:
+                log.info(f"Mascot explainer scene: {scene}")
+                return scene
+            log.warning(f"Explainer scene rejected (contains {bad!r}): {scene}")
+            prompt += ("\n\nThat was rejected as unsuitable for a friendly mascot. "
+                       "Use a harmless costume/prop and a big friendly expression.")
+        return fb
+    except Exception as e:
+        log.warning(f"Explainer scene LLM failed ({e}); using '{fb}'")
+        return fb
+
+
 # ==============================================================================
 # RENDER
 # ==============================================================================

@@ -2067,6 +2067,15 @@ def main_page():
             facts_thumb_sw.on("update:model-value",
                               lambda e: rs.set_facts_thumbnail_enabled(facts_thumb_sw.value))
 
+            facts_mascot_sw = ui.switch(
+                "Mascot", value=rs.get_facts_mascot_mode()) \
+                .props("dense color=accent") \
+                .tooltip("Mascot presents every fact in costume, lip-synced "
+                         "(Qwen still → Wan S2V). Branded but slow (~20-30 min). "
+                         "Off = abstract backdrops.")
+            facts_mascot_sw.on("update:model-value",
+                               lambda e: rs.set_facts_mascot_mode(facts_mascot_sw.value))
+
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 

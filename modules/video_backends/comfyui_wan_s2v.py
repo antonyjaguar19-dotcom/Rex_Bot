@@ -23,6 +23,7 @@ import json
 import logging
 import random
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -68,6 +69,7 @@ class Backend(VideoBackend):
         self.default_width = int(config.get("default_width", 832))
         self.default_height = int(config.get("default_height", 480))
         self.default_fps = int(config.get("default_fps", 16))
+        self.max_clip_seconds = float(config.get("max_clip_seconds", 15.0))
         # Optional: direct path to ComfyUI's input dir for audio staging. When
         # set we copy the WAV there; otherwise we POST it via /upload/image.
         self.comfyui_input_dir = config.get("comfyui_input_dir", "")
@@ -103,9 +105,23 @@ class Backend(VideoBackend):
 
     def round_frame_count(self, frames: int) -> int:
         """Wan latent temporal stride = 4 → frames must be 4N+1. Round UP."""
+        frames = max(5, int(frames))
         if (frames - 1) % 4 == 0:
             return frames
         return ((frames - 1) // 4 + 1) * 4 + 1
+
+    def _probe_audio_frames(self, audio_path, fps: int) -> int:
+        """Frames needed to cover the whole spoken line (ffprobe duration * fps)."""
+        from modules.assembly import FFPROBE_EXE
+        try:
+            out = subprocess.run(
+                [str(FFPROBE_EXE), "-v", "error", "-show_entries",
+                 "format=duration", "-of", "csv=p=0", str(audio_path)],
+                capture_output=True, text=True, timeout=30).stdout.strip()
+            return int(float(out) * fps) + 1
+        except Exception as e:
+            log.warning(f"audio probe failed ({e}); default 77 frames")
+            return 77
 
     def generate(
         self,
@@ -141,12 +157,22 @@ class Backend(VideoBackend):
         effective_cfg = float(cfg_override) if cfg_override is not None else self.cfg
         negative = negative_prompt or DEFAULT_NEGATIVE
 
+        # Length must track the spoken line: a fixed clip length lets each shot
+        # drift a little longer than its audio, and over a multi-shot reel the
+        # lip-sync walks off. Size frames from the audio (4N+1), cap at the
+        # model's single-window max so we never silently truncate mid-sentence.
+        if frame_count and frame_count > 0:
+            eff_frames = self.round_frame_count(int(frame_count))
+        else:
+            eff_frames = self.round_frame_count(int(self._probe_audio_frames(audio_path, fps)))
+        eff_frames = min(eff_frames, self.round_frame_count(int(self.max_clip_seconds * fps)))
+
         uploaded_image = self._upload_image(Path(input_image))
         uploaded_audio = self._stage_audio(Path(audio_path))
         log.info(
             f"S2V generate — seed={seed}, image={uploaded_image}, "
             f"audio={uploaded_audio}, {eff_width}x{eff_height}@{fps}fps, "
-            f"cfg={effective_cfg}, prompt='{prompt[:60]}...'"
+            f"length={eff_frames}f, cfg={effective_cfg}, prompt='{prompt[:60]}...'"
         )
 
         workflow = self._build_workflow(
@@ -155,7 +181,7 @@ class Backend(VideoBackend):
             input_image_name=uploaded_image,
             audio_name=uploaded_audio,
             fps=fps, seed=seed, cfg=effective_cfg,
-            width=eff_width, height=eff_height,
+            width=eff_width, height=eff_height, length=eff_frames,
         )
 
         client_id = str(uuid.uuid4())
@@ -198,11 +224,13 @@ class Backend(VideoBackend):
         return r.json().get("name", audio_path.name)
 
     def _build_workflow(self, prompt, negative_prompt, input_image_name,
-                        audio_name, fps, seed, cfg, width, height) -> dict:
+                        audio_name, fps, seed, cfg, width, height,
+                        length=None) -> dict:
         """Inject dynamic values by class_type + title (IDs ignored)."""
         wf = json.loads(json.dumps(self._workflow_template))
         injected = {k: False for k in
-                    ("positive", "negative", "image", "audio", "seed", "dims", "fps")}
+                    ("positive", "negative", "image", "audio", "seed", "dims",
+                     "fps", "length")}
 
         for node in wf.values():
             if not isinstance(node, dict):
@@ -245,10 +273,17 @@ class Backend(VideoBackend):
                     injected["seed"] = True
                 if "cfg" in inputs:
                     inputs["cfg"] = float(cfg)
+                if "steps" in inputs and self.steps:
+                    inputs["steps"] = int(self.steps)
             elif "width" in inputs and "height" in inputs:
                 inputs["width"] = int(width)
                 inputs["height"] = int(height)
                 injected["dims"] = True
+                # WanSoundImageToVideo carries the clip length; size it to the
+                # audio so lip-sync doesn't drift across shots.
+                if length and "length" in inputs:
+                    inputs["length"] = int(length)
+                    injected["length"] = True
             elif ctype == "PrimitiveFloat" and "fps" in title:
                 inputs["value"] = float(fps)
                 injected["fps"] = True

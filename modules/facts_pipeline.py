@@ -55,6 +55,138 @@ _GRADIENTS = [
 ]
 
 
+# S2V renders at its native window size; assembly scales each clip onto the
+# final 9x16 / 16x9 / 1x1 canvas. Rendering S2V at full 1080x1920 would blow
+# VRAM and time for no gain.
+_S2V_DIMS = {"9x16": (480, 832), "16x9": (832, 480), "1x1": (624, 624)}
+
+
+def _probe_dur(path: Path) -> float:
+    try:
+        out = subprocess.run(
+            [str(fasm.FFMPEG_EXE).replace("ffmpeg.exe", "ffprobe.exe"),
+             "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+             str(path)], capture_output=True, text=True, timeout=30).stdout.strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+
+def _trim_video(src: Path, dur: float, dst: Path) -> Path:
+    """Trim a clip to exactly `dur` seconds (drops S2V's frame-rounding tail so
+    the concatenated reel stays in lock-step with the narration)."""
+    if dur <= 0:
+        return src
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-t", f"{dur:.3f}", "-c:v", "libx264", "-c:a", "aac", "-pix_fmt",
+         "yuv420p", str(dst)], capture_output=True, text=True, timeout=300)
+    return dst if dst.exists() and r.returncode == 0 else src
+
+
+def _concat_wavs(wavs: list, dst: Path) -> Path:
+    lst = dst.with_suffix(".txt")
+    lst.write_text("".join(f"file '{w.as_posix()}'\n" for w in wavs), encoding="utf-8")
+    subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-f", "concat",
+         "-safe", "0", "-i", str(lst), "-c", "copy", str(dst)],
+        capture_output=True, text=True, timeout=120)
+    if not dst.exists():   # copy can fail on mismatched wavs — re-encode
+        subprocess.run(
+            [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-f", "concat",
+             "-safe", "0", "-i", str(lst), "-ar", "24000", str(dst)],
+            capture_output=True, text=True, timeout=120)
+    return dst
+
+
+def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
+    """Every fact presented by the costumed mascot, lip-synced (Qwen still → S2V).
+
+    VRAM discipline (one big model at a time on a 16 GB card):
+      1. LLM writes all scenes (Ollama), then unloads.
+      2. Qwen-Edit renders all mascot stills warm, then releases.
+      3. S2V renders all talking clips warm, then releases.
+      4. ffmpeg concat + music + captions (no GPU).
+    """
+    from modules import mascot, gpu_memory, video_backend as vb, model_registry as mr
+    from modules.tts_engine import TTSEngine
+
+    ok, why = mascot.is_available()
+    if not ok:
+        _p(f"mascot mode off: {why}")
+        return None
+    cfg = mr.get_available("video_backend", "comfyui_wan22_s2v")
+    if not cfg:
+        _p("mascot mode off: S2V backend not registered.")
+        return None
+
+    topic = story.get("topic", "") or story.get("title", "")
+    out_dir = STILLS_DIR / f"facts_{facts_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sw, sh = _S2V_DIMS.get(aspect, _S2V_DIMS["9x16"])
+    ar = aspect.replace("x", ":")
+
+    # 1. Scenes (Ollama). Written up front so the LLM unloads before Qwen loads.
+    _p(f"🎭 writing {len(beats)} mascot scenes…")
+    with gpu_memory.llm():
+        scenes = [mascot.explainer_scene(b.get("narration", ""), topic) for b in beats]
+
+    # 2. Per-beat narration WAVs (kokoro, CPU-light).
+    _p("🎙️ voicing each fact…")
+    tts = TTSEngine()
+    voice = rs.get_facts_voice()
+    wavs = []
+    for i, b in enumerate(beats):
+        wp = out_dir / f"beat_{i:02d}.wav"
+        tts.synthesize(b.get("narration", ""), output_path=wp, voice=voice)
+        wavs.append(wp)
+
+    # 3. Mascot stills via Qwen-Edit (identity held), warm across all beats.
+    _p(f"🖼️ rendering {len(beats)} mascot stills (Qwen-Edit)…")
+    stills = []
+    gpu_memory.acquire(gpu_memory.QWEN_EDIT)
+    try:
+        for i, sc in enumerate(scenes):
+            sp = out_dir / f"still_{i:02d}.png"
+            got = mascot.render_scene(sc, sp, aspect=aspect, seed=1000 + i)
+            stills.append(got or _gradient_bg(i, *ASPECTS.get(aspect, ASPECTS["9x16"]),
+                                              out_dir / f"still_{i:02d}.png"))
+    finally:
+        gpu_memory.release(gpu_memory.QWEN_EDIT)
+
+    # 4. S2V talking clips, warm across all beats.
+    _p(f"🎬 animating {len(beats)} talking clips (Wan S2V)…")
+    cfg = dict(cfg); cfg["_id"] = "comfyui_wan22_s2v"
+    s2v = vb.build_backend(cfg)
+    ok, msg = s2v.health_check()
+    if not ok:
+        _p(f"mascot mode off: S2V unhealthy ({msg}).")
+        return None
+    clips = []
+    gpu_memory.acquire(gpu_memory.WAN_VIDEO)   # evicts Qwen/Ollama; S2V ≈ Wan size
+    try:
+        for i, b in enumerate(beats):
+            raw = s2v.generate(
+                prompt=scenes[i], input_image=Path(stills[i]),
+                audio_path=wavs[i], aspect_ratio=ar, width=sw, height=sh,
+                output_filename=f"s2v_{facts_id}_{i:02d}.mp4", seed=2000 + i)
+            trimmed = _trim_video(Path(raw), _probe_dur(wavs[i]),
+                                  out_dir / f"clip_{i:02d}.mp4")
+            clips.append(trimmed)
+            _p(f"  clip {i+1}/{len(beats)} done")
+    finally:
+        gpu_memory.release(gpu_memory.WAN_VIDEO)
+
+    # 5. Narration = the exact per-beat WAVs concatenated, so the track the
+    #    assembler overlays matches each clip's own audio frame-for-frame.
+    narration = _concat_wavs(wavs, out_dir / "narration.wav")
+
+    # 6. Concat clips + big captions (timed to real clip durations) + music.
+    _p("🎬 assembling mascot reel…")
+    return fasm.assemble_facts_clips(story, narration, clips, aspect=aspect,
+                                     music_path=music_path, progress_cb=_p)
+
+
 def _gradient_bg(idx: int, w: int, h: int, out_path: Path) -> Path:
     """Generate one gradient still (pure ffmpeg) — image-independent fallback."""
     c0, c1 = _GRADIENTS[idx % len(_GRADIENTS)]
@@ -111,6 +243,19 @@ def render_facts(
     beats = story.get("beats", [])
     if not beats:
         raise ValueError("Facts reel has no beats.")
+
+    # Mascot mode: the mascot presents every fact in costume, lip-synced (S2V).
+    # Falls back to the normal abstract-backdrop path if the mascot or S2V is
+    # unavailable, so enabling it never breaks a render.
+    if rs.get_facts_mascot_mode():
+        try:
+            out = _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id)
+            if out:
+                return out
+            _p("mascot mode unavailable; using abstract backdrops.")
+        except Exception as e:
+            log.exception("mascot facts render failed")
+            _p(f"⚠️ mascot mode failed ({e}); falling back to abstract backdrops.")
 
     import json as _json
     gpu_utils.ensure_vram_free()

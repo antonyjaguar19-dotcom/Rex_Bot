@@ -1636,6 +1636,7 @@ async def on_ready():
                     "set_facts_voice":     cmd_set_facts_voice,
                     "set_facts_speed":     cmd_set_facts_speed,
                     "set_facts_video":     cmd_set_facts_video,
+                    "set_facts_mascot":    cmd_set_facts_mascot,
                     "set_facts_thumbnail": cmd_set_facts_thumbnail,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
@@ -5562,6 +5563,23 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="set_facts_mascot", aliases=["facts_mascot", "mascot_facts"])
+async def cmd_set_facts_mascot(ctx, switch: str = None):
+    """Toggle mascot-facts mode: `!facts_mascot on|off`.
+
+    On = the mascot presents every fact in costume, lip-synced (Qwen still →
+    Wan S2V). Slow but branded. Off = abstract backdrops (fast)."""
+    if switch is None:
+        state = "on" if rs.get_facts_mascot_mode() else "off"
+        await ctx.send(f"🎭 Facts mascot mode: `{state}` — `!facts_mascot on|off`")
+        return
+    want = switch.strip().lower() in ("on", "true", "1", "yes", "enable")
+    rs.set_facts_mascot_mode(want)
+    note = (" — mascot presents every fact, lip-synced (slow, ~20-30 min)" if want
+            else " — abstract backdrops (fast)")
+    await ctx.send(f"✅ Facts mascot mode → `{'on' if want else 'off'}`{note}.")
 
 
 @bot.command(name="set_facts_thumbnail", aliases=["facts_thumbnail", "facts_thumb"])

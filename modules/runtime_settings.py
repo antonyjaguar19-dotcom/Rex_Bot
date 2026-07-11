@@ -542,6 +542,24 @@ def set_facts_video_mode(mode: str) -> None:
     log.info(f"Facts video mode: {mode}")
 
 
+def get_facts_mascot_mode() -> bool:
+    """Whether facts reels star the mascot in every shot (costumed, explaining
+    each fact, lip-synced via S2V) instead of abstract backdrops.
+
+    Off by default: it is the slow, heavy path (per-shot Qwen still + S2V clip).
+    When on, the pipeline ignores the abstract-backdrop backend and the I2V/Ken
+    Burns animate stage. [[baked-thumbnail-headline]] shares the mascot ref.
+    """
+    return bool(_load().get("facts_mascot_mode", False))
+
+
+def set_facts_mascot_mode(enabled: bool) -> None:
+    data = _load()
+    data["facts_mascot_mode"] = bool(enabled)
+    _save(data)
+    log.info(f"Facts mascot mode: {'ON' if enabled else 'OFF'}")
+
+
 def get_facts_thumbnail_enabled() -> bool:
     """Whether a facts reel gets a generated thumbnail at all.
 
