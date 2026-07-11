@@ -1638,6 +1638,7 @@ async def on_ready():
                     "set_facts_video":     cmd_set_facts_video,
                     "set_facts_mascot":    cmd_set_facts_mascot,
                     "set_facts_thumbnail": cmd_set_facts_thumbnail,
+                    "set_lipsync":         cmd_set_lipsync,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5563,6 +5564,23 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="set_lipsync", aliases=["lipsync", "lip_sync"])
+async def cmd_set_lipsync(ctx, switch: str = None):
+    """Toggle character lip-sync in KIDS stories: `!lipsync on|off`.
+
+    On = CHARACTER dialogue shots render via Wan S2V (mouth moves to the voice);
+    narrator shots stay on the fast silent I2V path. Slow — S2V is heavy."""
+    if switch is None:
+        state = "on" if rs.get_lipsync_enabled() else "off"
+        await ctx.send(f"👄 Lip-sync (kids dialogue): `{state}` — `!lipsync on|off`")
+        return
+    want = switch.strip().lower() in ("on", "true", "1", "yes", "enable")
+    rs.set_lipsync_enabled(want)
+    note = (" — character shots lip-sync via Wan S2V (slow)" if want
+            else " — silent I2V for all shots (fast)")
+    await ctx.send(f"✅ Lip-sync → `{'on' if want else 'off'}`{note}.")
 
 
 @bot.command(name="set_facts_mascot", aliases=["facts_mascot", "mascot_facts"])

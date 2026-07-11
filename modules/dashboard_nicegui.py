@@ -2250,6 +2250,13 @@ def main_page():
             ref_sw.on("update:model-value",
                       lambda e: (rs.set_reference_mode_enabled(bool(ref_sw.value)),
                                  _notify_set("Reference", ref_sw.value)))
+            lip_sw = ui.switch("Lip-sync (kids dialogue)",
+                               value=rs.get_lipsync_enabled()) \
+                .tooltip("Character dialogue shots render via Wan S2V (mouth moves "
+                         "to the voice). Narrator shots stay fast I2V. Slow.")
+            lip_sw.on("update:model-value",
+                      lambda e: (rs.set_lipsync_enabled(bool(lip_sw.value)),
+                                 _notify_set("Lip-sync", lip_sw.value)))
 
         # --- Music-video tuning (mode itself lives on the Pipeline tab) ---
         # Option lists are named so the widget and its _sel() clamp can't drift.
