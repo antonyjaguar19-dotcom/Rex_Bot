@@ -57,6 +57,8 @@ class Backend(VideoBackend):
         self.sampler        = config.get("sampler", "euler_ancestral")
         self.sigmas         = config.get("sigmas")        # comma-separated string or None
         self.img_compression = config.get("img_compression", 33)
+        # The saved workflow halves the frame after the resize node.
+        self.scale_by = float(config.get("scale_by", 1.0))
         self.default_width  = config.get("default_width", 832)
         self.default_height = config.get("default_height", 480)
         self.default_frames = config.get("default_frames", 81)
@@ -122,11 +124,20 @@ class Backend(VideoBackend):
             frame_count = self.default_frames
         if fps is None:
             fps = self.default_fps
-        # Resolution: explicit override > backend config default. Controls the
-        # working-resolution resize node (the workflow otherwise pins ~480p,
-        # which is the root cause of soft/noisy LTX output).
-        eff_width  = int(width)  if width  else int(self.default_width)
-        eff_height = int(height) if height else int(self.default_height)
+        # Resolution: explicit override > ASPECT RATIO > backend config default.
+        # The aspect argument used to be ignored entirely, so a 9:16 request came
+        # back landscape at the config's 1280x720. These dims are multiples of 32
+        # (LTX's latent stride) and 9:16 matches the Qwen still exactly, so the
+        # frame is never rescaled on the way in.
+        _AR_DIMS = {
+            "16:9": (1280, 720),
+            "9:16": (768, 1344),
+            "1:1":  (1024, 1024),
+        }
+        _ar = (aspect_ratio or "16:9").replace("x", ":").strip()
+        _aw, _ah = _AR_DIMS.get(_ar, (self.default_width, self.default_height))
+        eff_width  = int(width)  if width  else int(_aw)
+        eff_height = int(height) if height else int(_ah)
 
         # Resolve runtime overrides (explicit param > runtime_settings > config)
         effective_steps = rs.get_steps_override() if rs.get_steps_override() is not None else self.steps
@@ -270,6 +281,15 @@ class Backend(VideoBackend):
                         inputs["width"] = int(width)
                         inputs["height"] = int(height)
                     injected["dims"] = True
+
+            # --- The hidden halver ---
+            # The saved workflow scales the frame by 0.5 AFTER the resize node, so
+            # every dimension we injected was silently cut in half: a 768x1344
+            # request came out 384x672, which is exactly why LTX looked soft and
+            # dissolving. Pin it to 1.0 — the resize node already set the dims.
+            elif ctype == "ImageScaleBy":
+                inputs["scale_by"] = float(self.scale_by)
+                injected["scale_by"] = True
 
             # --- Title-targeted primitives ---
             elif ctype == "PrimitiveStringMultiline" and "positive prompt" in title:

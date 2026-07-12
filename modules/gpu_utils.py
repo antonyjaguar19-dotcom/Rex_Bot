@@ -74,6 +74,31 @@ def free_comfyui_vram() -> tuple[bool, str]:
         return False, f"Failed to free ComfyUI VRAM: {e}"
 
 
+def soft_free_comfyui_cache() -> tuple[bool, str]:
+    """Drop ComfyUI's cached/inactive VRAM but KEEP the models loaded.
+
+    Between back-to-back renders on the same model, ComfyUI's offload machinery
+    fragments VRAM until its weight page-fault handler cannot bring weights back
+    — `comfy_aimdo/model_vbar.py` raises "Fault failed: 2" and the job dies. It
+    took 3-4 consecutive Wan-S2V clips to trigger. A full /free would fix it too
+    but would evict the model and pay a ~4 min cold reload every clip; this only
+    releases the cache.
+    """
+    try:
+        cfg = model_registry.get_active("image_backend")
+        server_url = cfg.get("server_url", "http://127.0.0.1:8188").rstrip("/")
+        r = requests.post(
+            f"{server_url}/free",
+            json={"unload_models": False, "free_memory": True},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return True, "ComfyUI cache freed (models kept)"
+        return False, f"ComfyUI /free returned HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"soft free failed: {e}"
+
+
 def _ollama_server_url() -> str:
     """Resolve the Ollama server URL from the LLM backend config (fallback localhost)."""
     server_url = "http://127.0.0.1:11434"

@@ -45,6 +45,73 @@ def health_check() -> tuple[bool, str]:
     return True, "qwen3-tts bridge ready"
 
 
+def _run_cli(texts, output_path, speaker, language, gap_sec, instruct,
+             segments_dir=None):
+    """Drive qwen_tts_cli in its isolated venv. Returns (master, spans, files)."""
+    ok, msg = health_check()
+    if not ok:
+        raise RuntimeError(msg)
+    texts = [t for t in texts if (t or "").strip()]
+    if not texts:
+        raise ValueError("qwen tts got no non-empty texts.")
+
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        job = Path(td) / "job.json"
+        spans_out = Path(td) / "spans.json"
+        payload = {
+            "texts": texts, "speaker": speaker, "language": language,
+            "gap_sec": gap_sec, "instruct": instruct or "",
+            "out_wav": str(output_path), "spans_out": str(spans_out),
+        }
+        if segments_dir:
+            payload["segments_dir"] = str(segments_dir)
+        job.write_text(json.dumps(payload), encoding="utf-8")
+
+        log.info(f"Qwen3-TTS voicing {len(texts)} segments (speaker={speaker})...")
+        r = subprocess.run(
+            [str(VENV_PY), str(CLI), str(job)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_SEC,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"qwen_tts_cli failed (rc={r.returncode}): "
+                               f"{(r.stderr or r.stdout or '')[-600:]}")
+        if not spans_out.exists():
+            raise RuntimeError(f"qwen_tts_cli produced no spans: {r.stdout[-300:]}")
+        data = json.loads(spans_out.read_text(encoding="utf-8"))
+
+    spans = [(t, float(a), float(b)) for t, a, b in data["spans"]]
+    return output_path, spans, data.get("files", [])
+
+
+def synthesize_each(
+    texts: list,
+    out_dir: Path,
+    speaker: str = "eric",
+    language: str = "english",
+    instruct: Optional[str] = None,
+) -> list:
+    """One WAV per text, in ONE model load. Returns the list of WAV paths.
+
+    The CLI already voices every text on its own pass, so this just asks it to
+    save each pass instead of only the concatenated master. Slicing the master
+    back apart on spans was clipping words at the seams — this has no seams.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    master = out_dir / "qwen_master.wav"
+    _, _, files = _run_cli(texts, master, speaker, language, GROUP_GAP_SEC,
+                           instruct, segments_dir=out_dir)
+    if len(files) != len([t for t in texts if (t or "").strip()]):
+        raise RuntimeError(f"qwen_tts_cli returned {len(files)} segment files "
+                           f"for {len(texts)} texts")
+    return [Path(f) for f in files]
+
+
 def synthesize_segments(
     texts: list,
     output_path: Optional[Path] = None,
@@ -70,29 +137,8 @@ def synthesize_segments(
         output_path = AUDIO_DIR / f"qwen_{datetime.now():%Y%m%d_%H%M%S}.wav"
     output_path = Path(output_path)
 
-    with tempfile.TemporaryDirectory() as td:
-        job = Path(td) / "job.json"
-        spans_out = Path(td) / "spans.json"
-        job.write_text(json.dumps({
-            "texts": texts, "speaker": speaker, "language": language,
-            "gap_sec": gap_sec, "instruct": instruct or "",
-            "out_wav": str(output_path), "spans_out": str(spans_out),
-        }), encoding="utf-8")
-
-        log.info(f"Qwen3-TTS voicing {len(texts)} segments (speaker={speaker})...")
-        r = subprocess.run(
-            [str(VENV_PY), str(CLI), str(job)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=TIMEOUT_SEC,
-        )
-        if r.returncode != 0:
-            raise RuntimeError(f"qwen_tts_cli failed (rc={r.returncode}): "
-                               f"{(r.stderr or r.stdout or '')[-600:]}")
-        if not spans_out.exists():
-            raise RuntimeError(f"qwen_tts_cli produced no spans: {r.stdout[-300:]}")
-        data = json.loads(spans_out.read_text(encoding="utf-8"))
-
-    spans = [(t, float(a), float(b)) for t, a, b in data["spans"]]
+    output_path, spans, _ = _run_cli(texts, output_path, speaker, language,
+                                     gap_sec, instruct)
     # Deepen + slow the voice (one ffmpeg asetrate step) for a graver narrator.
     if pitch and abs(pitch - 1.0) > 1e-3:
         output_path = _deepen(output_path, pitch)

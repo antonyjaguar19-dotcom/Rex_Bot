@@ -50,8 +50,15 @@ def main(job_path: str):
     tts = Qwen3TTSModel.from_pretrained(REPO, device_map="cuda:0",
                                         dtype=torch.bfloat16, attn_implementation=None)
 
+    # Each text is voiced on its own pass anyway, so writing it to its own file
+    # costs nothing — and it is the ONLY way to get a clean per-beat WAV. Cutting
+    # the concatenated master back apart on spans clipped words at the seams.
+    seg_dir = job.get("segments_dir")
+    if seg_dir:
+        Path(seg_dir).mkdir(parents=True, exist_ok=True)
+
     sr = None
-    pieces, spans, cursor = [], [], 0
+    pieces, spans, files, cursor = [], [], [], 0
     for i, text in enumerate(texts):
         wavs, this_sr = tts.generate_custom_voice(
             text, speaker=speaker, language=language, instruct=instruct)
@@ -61,6 +68,10 @@ def main(job_path: str):
         pieces.append(wav)
         cursor += len(wav)
         spans.append([text, round(t0, 3), round(cursor / sr, 3)])
+        if seg_dir:
+            fp = Path(seg_dir) / f"seg_{i:02d}.wav"
+            sf.write(str(fp), wav, sr)
+            files.append(str(fp))
         if i < len(texts) - 1:
             gap = np.zeros(int(round(gap_sec * sr)), dtype="float32")
             pieces.append(gap)
@@ -69,7 +80,8 @@ def main(job_path: str):
 
     master = np.concatenate(pieces) if pieces else np.zeros(1, dtype="float32")
     sf.write(job["out_wav"], master, sr or 24000)
-    Path(job["spans_out"]).write_text(json.dumps({"spans": spans, "sr": sr}), encoding="utf-8")
+    Path(job["spans_out"]).write_text(
+        json.dumps({"spans": spans, "sr": sr, "files": files}), encoding="utf-8")
     print("QWEN_CLI_DONE", flush=True)
 
 

@@ -2088,6 +2088,13 @@ def main_page():
                                 lambda e: (rs.set_mascot_tts_engine("qwen"),
                                            rs.set_mascot_voice(mascot_voice_sel.value)))
 
+            lipsync_sw = ui.switch("Lip-sync",
+                                   value=rs.get_facts_mascot_lipsync())                 .props("dense color=accent")                 .tooltip("Wan S2V moves the mascot's mouth to the narration. Slow, "
+                         "and it can distort hands and props. Off = I2V motion with "
+                         "the narration as a voice-over.")
+            lipsync_sw.on("update:model-value",
+                          lambda e: rs.set_facts_mascot_lipsync(lipsync_sw.value))
+
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 

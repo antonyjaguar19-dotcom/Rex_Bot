@@ -548,9 +548,14 @@ def set_facts_video_mode(mode: str) -> None:
 # (= consistent) read. Vivian was the chosen timbre for the jaguar cub.
 VALID_MASCOT_TTS = ("qwen", "kokoro")
 VALID_QWEN_SPEAKERS = ("Vivian", "Serena", "Dylan", "Eric", "Uncle_Fu")
-DEFAULT_MASCOT_SPEAKER = "Vivian"
-DEFAULT_MASCOT_INSTRUCT = ("cheerful excited young voice, playful high-energy "
-                           "cartoon kid, bouncy and fun")
+DEFAULT_MASCOT_SPEAKER = "Eric"
+# Happy, not hyper. The first cut ("excited, high-energy, bouncy") read as
+# shouty — a friendly explainer should sound warm and relaxed, not caffeinated.
+DEFAULT_MASCOT_INSTRUCT = ("happy young boy about ten years old, bright youthful "
+                           "child voice, warm and friendly, relaxed and natural, "
+                           "gently upbeat, EVEN steady delivery throughout, "
+                           "calm and conversational, never excited, never shouting, "
+                           "no dramatic emphasis")
 
 
 def get_mascot_tts_engine() -> str:
@@ -580,6 +585,49 @@ def set_mascot_voice(speaker: str) -> None:
     log.info(f"Mascot voice: {match}")
 
 
+def get_mascot_voice_speed() -> float:
+    """Playback speed for the mascot's narration (pitch preserved).
+
+    Qwen's instruct steers tone reliably but not pace, so the pace is a post
+    step. 1.0 read a touch slow; 1.20 was the chosen pace.
+    """
+    try:
+        v = float(_load().get("mascot_voice_speed", 1.20))
+    except (TypeError, ValueError):
+        return 1.20
+    return v if 0.5 <= v <= 2.0 else 1.20
+
+
+def set_mascot_voice_speed(speed: float) -> None:
+    speed = float(speed)
+    if not 0.5 <= speed <= 2.0:
+        raise ValueError("speed must be between 0.5 and 2.0")
+    data = _load(); data["mascot_voice_speed"] = speed; _save(data)
+    log.info(f"Mascot voice speed: {speed}")
+
+
+def get_mascot_voice_pitch() -> float:
+    """Semitones to raise the mascot's voice (duration preserved).
+
+    No local TTS has a genuine child voice. Eric (adult male) lifted +2 semitones
+    reads as the young boy the jaguar cub should be; more than that starts to
+    sound like a chipmunk.
+    """
+    try:
+        v = float(_load().get("mascot_voice_pitch", 2.0))
+    except (TypeError, ValueError):
+        return 2.0
+    return v if -6.0 <= v <= 6.0 else 2.0
+
+
+def set_mascot_voice_pitch(semitones: float) -> None:
+    semitones = float(semitones)
+    if not -6.0 <= semitones <= 6.0:
+        raise ValueError("pitch must be between -6 and +6 semitones")
+    data = _load(); data["mascot_voice_pitch"] = semitones; _save(data)
+    log.info(f"Mascot voice pitch: {semitones:+.1f} st")
+
+
 def get_mascot_voice_instruct() -> str:
     return _load().get("mascot_voice_instruct") or DEFAULT_MASCOT_INSTRUCT
 
@@ -589,6 +637,25 @@ def set_mascot_voice_instruct(text: str) -> None:
     data["mascot_voice_instruct"] = (text or "").strip() or DEFAULT_MASCOT_INSTRUCT
     _save(data)
     log.info(f"Mascot voice instruct: {data['mascot_voice_instruct'][:60]}")
+
+
+def get_facts_mascot_lipsync() -> bool:
+    """Whether the mascot's mouth is animated to the narration (Wan S2V).
+
+    Default OFF. S2V is a TALKING-HEAD model: it lip-syncs well but it does not
+    understand hands, props or legs, and it dissolved them — a paw melted mid-clip
+    and a leg bent backwards. It is also ~4 min a clip. With it off the mascot is
+    animated by the normal I2V backend (clean motion, much faster) and the
+    narration plays as a voice-over, which is what a presenter reel wants anyway.
+    """
+    return bool(_load().get("facts_mascot_lipsync", False))
+
+
+def set_facts_mascot_lipsync(enabled: bool) -> None:
+    data = _load()
+    data["facts_mascot_lipsync"] = bool(enabled)
+    _save(data)
+    log.info(f"Facts mascot lip-sync (S2V): {'ON' if enabled else 'OFF'}")
 
 
 def get_facts_mascot_mode() -> bool:

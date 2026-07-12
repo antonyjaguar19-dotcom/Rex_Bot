@@ -1641,6 +1641,7 @@ async def on_ready():
                     "set_lipsync":         cmd_set_lipsync,
                     "facts_prompt":        cmd_facts_prompt,
                     "mascot_voice":        cmd_mascot_voice,
+                    "facts_lipsync":       cmd_facts_lipsync,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5566,6 +5567,24 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="facts_lipsync", aliases=["mascot_lipsync"])
+async def cmd_facts_lipsync(ctx, switch: str = None):
+    """Mascot lip-sync (Wan S2V): `!facts_lipsync on|off`.
+
+    OFF (default) = the mascot is animated by the normal I2V backend and the
+    narration plays as a voice-over: clean motion, much faster. ON = S2V syncs the
+    mouth, but it does not understand hands or props and can dissolve them."""
+    if switch is None:
+        state = "on" if rs.get_facts_mascot_lipsync() else "off"
+        await ctx.send(f"👄 Mascot lip-sync: `{state}` — `!facts_lipsync on|off`")
+        return
+    want = switch.strip().lower() in ("on", "true", "1", "yes", "enable")
+    rs.set_facts_mascot_lipsync(want)
+    note = (" — S2V syncs the mouth (slow; hands/props may distort)" if want
+            else " — I2V motion + voice-over (clean, fast)")
+    await ctx.send(f"✅ Mascot lip-sync → `{'on' if want else 'off'}`{note}.")
 
 
 @bot.command(name="mascot_voice", aliases=["set_mascot_voice"])

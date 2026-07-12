@@ -14,6 +14,8 @@ Front-end agnostic (returns paths).
 """
 
 import logging
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -112,7 +114,300 @@ def _slice_wav(src: Path, start: float, end: float, dst: Path) -> Path:
     return dst
 
 
-def _voice_beats_mascot(narrations: list, out_dir: Path, _p) -> list:
+# Spoken-only filler, prepended to the AUDIO text; the on-screen caption keeps
+# the clean fact, so the reel never shows "Hmm," across the screen.
+#
+# This is not only flavour — it is the FIX for a real bug. Qwen swallows the
+# start of a line: "Bees are amazing" came back (transcribed) as "These are
+# amazing", the B simply gone, and in a batch it sometimes eats the whole first
+# word. Silence padding cannot restore a phoneme the model never produced.
+#
+# So the spoken line is built in three parts:
+#   SACRIFICE + opener + fact
+# The sacrifice is a throwaway "Mm." — Qwen eats THAT, the opener stays audible,
+# and the fact is never touched. Measured on the same line: "Oh, honey never
+# spoils" lost its "Oh" in a batch; "Mm. Oh, honey never spoils" kept it, with
+# the "Mm." gone. If it survives, a soft thinking-sound is welcome anyway.
+_SACRIFICE = "Ready."
+
+# Burned before the real lines: Qwen's first generation after a model load loses
+# its opening consonant, every time, and only ever on the first line.
+_WARMUP_LINE = "Ready when you are."
+
+_SPOKEN_SYS = (
+    "You rewrite a video's narration lines the way a friendly presenter would "
+    "actually SAY them out loud.\n"
+    'Output ONLY valid JSON: {"lines": ["...", "..."]} — exactly one line out per '
+    "line in, in the same order.\n"
+    "Rules:\n"
+    "- Keep every FACT, NAME and NUMBER exactly as given. Never add a claim.\n"
+    "- The delivery is EVEN and calm all the way through. No line is more excited "
+    "than any other.\n"
+    "- At most TWO lines in the whole script may open with a small, natural "
+    "lead-in (And, So, Now, But here is the thing). It has to read like the "
+    "sentence was always written that way.\n"
+    "- NEVER append a reaction or a sign-off to the end of a line — no 'Wow', no "
+    "'Pretty cool, right?', no 'imagine that'. Those sound bolted on.\n"
+    "- Never use exclamation marks. End every line with a full stop.\n"
+    "- Leave most lines EXACTLY as they are. Changing nothing is a good answer.\n"
+    "- Keep each line about the same length. No emoji, no stage directions."
+)
+
+
+_OUTRO_SYS = (
+    "You write the final call-to-action line of a short facts video.\n"
+    'Output ONLY valid JSON: {"outro": "..."}\n'
+    "Rules:\n"
+    "- It must ASK THE VIEWER TO FOLLOW, and it must be a pun or an image drawn "
+    "from THIS video's topic. Never the generic 'Follow for more fun facts'.\n"
+    "- One short sentence, at most 12 words. Spoken out loud, friendly.\n"
+    "- No emoji, no hashtags.\n"
+    "Examples:\n"
+    '  bees   -> {"outro": "Follow — we have got a whole hive of facts."}\n'
+    '  space  -> {"outro": "Follow for more. There is a universe of this stuff."}\n'
+    '  sharks -> {"outro": "Follow, and we will keep the facts circling."}'
+)
+
+
+def _themed_outro(topic: str, facts: list) -> Optional[str]:
+    """A follow line made of the topic, not a generic sign-off.
+
+    Rewrites the LAST beat's narration, so the caption and the voice both carry
+    it. Returns None on any failure — the pipeline keeps the writer's own outro.
+    """
+    if not topic.strip():
+        return None
+    try:
+        from modules.script_generator import _call_llm, _extract_json
+        prompt = (f"Topic: {topic}\n\nThe video's facts:\n"
+                  + "\n".join(f"- {f}" for f in facts[:6])
+                  + "\n\nWrite the closing follow line.")
+        got = _extract_json(_call_llm(prompt, _OUTRO_SYS, role="creative")) or {}
+        outro = str(got.get("outro") or "").strip().strip('"')
+        if outro and len(outro.split()) <= 16 and "follow" in outro.lower():
+            log.info(f"Themed outro: {outro}")
+            return outro
+        log.warning(f"outro rejected: {outro!r}")
+    except Exception as e:
+        log.warning(f"themed outro failed ({e})")
+    return None
+
+
+def _spoken_lines(narrations: list, topic: str = "") -> list:
+    """The narration as a presenter would say it — fillers only where they fit.
+
+    A rotating filler on every beat sounded exactly like what it was: a loop. The
+    LLM decides where a lead-in or a reaction earns its place and leaves the rest
+    of the lines alone. Falls back to the plain lines, which are always safe.
+    """
+    lines = [(t or "").strip() for t in narrations]
+    if not any(lines):
+        return lines
+    try:
+        from modules.script_generator import _call_llm, _extract_json
+        numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(lines))
+        prompt = (f"Topic: {topic or '(general)'}\n\n"
+                  f"Narration lines:\n{numbered}\n\n"
+                  f"Rewrite them as spoken lines.")
+        got = _extract_json(_call_llm(prompt, _SPOKEN_SYS, role="creative")) or {}
+        out = [str(x).strip() for x in (got.get("lines") or [])]
+        if len(out) == len(lines) and all(out):
+            log.info(f"Spoken rewrite: {sum(1 for a, b in zip(out, lines) if a != b)}"
+                     f"/{len(lines)} lines given a natural touch")
+            return out
+        log.warning(f"spoken rewrite returned {len(out)} lines for {len(lines)}; "
+                    f"using the plain narration")
+    except Exception as e:
+        log.warning(f"spoken rewrite failed ({e}); using the plain narration")
+    return lines
+
+
+def _speech_runs(wav: Path, thresh_db: int = -38, min_sil: float = 0.06) -> list:
+    """[(start, end)] of the audible runs in a WAV, via ffmpeg silencedetect."""
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-i", str(wav), "-af",
+         f"silencedetect=n={thresh_db}dB:d={min_sil}", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60)
+    starts, ends = [], []
+    for line in (r.stderr or "").splitlines():
+        if "silence_start:" in line:
+            starts.append(float(line.split("silence_start:")[1].split()[0]))
+        elif "silence_end:" in line:
+            ends.append(float(line.split("silence_end:")[1].split()[0]))
+    total = _probe_dur(wav)
+    # speech runs = the gaps BETWEEN silences
+    runs, cursor = [], 0.0
+    for i, s in enumerate(starts):
+        if s > cursor + 0.01:
+            runs.append((cursor, s))
+        cursor = ends[i] if i < len(ends) else total
+    if cursor < total - 0.01:
+        runs.append((cursor, total))
+    return runs
+
+
+# The sacrifice must PROTECT the first consonant and then be INAUDIBLE. Nobody
+# starts every sentence with "Hmm". So the throwaway is spoken, then cut back out
+# of the waveform: find the short blip at the head, find the pause after it, and
+# start the clip there.
+_SAC_MAX_SEC = 0.75      # a spoken "Mm." is short; anything longer is real speech
+_SAC_LEAD_SEC = 0.20     # keep a hair of lead-in so the word's attack survives
+# Qwen can draw the throwaway out into a long hum (2.1 s measured). Anything
+# beyond this is not a hum, it is the sentence — refuse to cut it.
+_SAC_MAX_CUT_SEC = 2.6
+_FILLER_TOKENS = {"mm", "mmm", "mmmm", "hm", "hmm", "hmmm", "uh", "um", "ah",
+                  "er", "eh", "oh"}
+
+
+def _norm_word(w) -> str:
+    return re.sub(r"[^a-z]", "", str(w).lower())
+
+
+def _strip_sacrifice(src: Path, first_word: str = "") -> Path:
+    """Cut the throwaway off the front, leaving the real line whole.
+
+    Silence detection was not good enough — it clipped the "B" off "Bees" on one
+    beat and left an audible "Hmm" on another. WhisperX gives WORD timings, so we
+    cut exactly at the start of the line's first real word. If alignment fails, or
+    the word cannot be found (Qwen often swallows the throwaway completely, which
+    is fine), the audio is returned untouched: never risk eating a real word.
+    """
+    try:
+        from modules import lyric_aligner
+        ok, _ = lyric_aligner.health_check()
+        if not ok:
+            return src
+        words = lyric_aligner._words_from_audio(src) or []
+    except Exception as e:
+        log.warning(f"sacrifice trim: alignment unavailable ({e})")
+        return src
+
+    if not words:
+        return src
+
+    # Cut at the first REAL word. Two traps, both hit in testing:
+    #  * the aligner sometimes transcribes the hum as a word ("Mmm") — so filler
+    #    tokens are skipped rather than trusted as the start of the line;
+    #  * it sometimes misaligns and points into the middle of the sentence — so
+    #    the cut is capped, and we refuse to drop most of the line.
+    # The carrier is a real word ("Ready."), so the aligner reports it. Cut at the
+    # word AFTER it. A hum ("Mm") was unreliable: Qwen swallowed it about half the
+    # time, and when it did, the sentence's own first consonant was eaten instead.
+    sac = _norm_word(_SACRIFICE)
+    idx = 0
+    while idx < len(words) and _norm_word(words[idx][0]) in (_FILLER_TOKENS | {sac}):
+        idx += 1
+    if idx == 0 or idx >= len(words) or len(words) - idx < 2:
+        return src                       # carrier not found, or nothing real left
+
+    cut_at = float(words[idx][1]) - _SAC_LEAD_SEC
+    if cut_at <= 0.05:
+        return src                       # throwaway already swallowed by Qwen
+    if cut_at > _SAC_MAX_CUT_SEC:
+        log.warning(f"sacrifice trim: {cut_at:.2f}s is too deep to be a throwaway; "
+                    f"leaving {src.name} alone")
+        return src
+    if cut_at >= _probe_dur(src) - 0.3:
+        return src
+
+    dst = src.with_name(src.stem + "_cut.wav")
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-ss", f"{cut_at:.3f}",
+         "-i", str(src), str(dst)],
+        capture_output=True, text=True, timeout=60)
+    if not dst.exists() or r.returncode != 0:
+        log.warning("sacrifice trim failed; keeping the head")
+        return src
+    dst.replace(src)
+    return src
+
+
+def _even_tone(text: str) -> str:
+    """Flatten the punctuation that makes Qwen shout.
+
+    Every beat is a separate generation, so its prosody is read off its own
+    punctuation: a line ending in "!" came out over-excited while the next line
+    was calm, and the reel lurched between the two. Full stops keep the delivery
+    level. (The caption keeps the writer's original punctuation.)
+    """
+    text = (text or "").strip()
+    if not text:
+        return text
+    text = text.replace("!", ".").replace("?!", "?")
+    while ".." in text:
+        text = text.replace("..", ".")
+    return text
+
+
+def _natural_speech(text: str) -> str:
+    """The exact string handed to the TTS: throwaway + an even-toned line."""
+    text = _even_tone(text)
+    return f"{_SACRIFICE} {text}" if text else text
+
+
+# Qwen starts the waveform on the first phoneme — no lead-in at all — so the very
+# first consonant gets eaten ("Bees" came out "ees"). Pad silence at both ends:
+# the head gives the word room to start, the tail gives the line room to land.
+PAD_HEAD_SEC = 0.30
+PAD_TAIL_SEC = 0.40
+
+
+def _pad_wav(src: Path, head: float = PAD_HEAD_SEC, tail: float = PAD_TAIL_SEC) -> Path:
+    """Add silent lead-in / lead-out so no syllable is clipped."""
+    dst = src.with_name(src.stem + "_pad.wav")
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-af", f"adelay={int(head*1000)}:all=1,apad=pad_dur={tail:.3f}",
+         str(dst)],
+        capture_output=True, text=True, timeout=60)
+    if not dst.exists() or r.returncode != 0:
+        log.warning(f"pad failed ({r.stderr[:120]}); keeping original")
+        return src
+    dst.replace(src)
+    return src
+
+
+def _pitch_wav(src: Path, semitones: float, sr: int = 24000) -> Path:
+    """Raise the pitch without changing the duration.
+
+    No local TTS ships a child voice, so the mascot is an adult male (Eric)
+    lifted a couple of semitones — asetrate does the pitch, atempo puts the
+    tempo back where it was.
+    """
+    if abs(semitones) < 0.05:
+        return src
+    f = 2 ** (semitones / 12.0)
+    dst = src.with_name(src.stem + "_pit.wav")
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-af", f"asetrate={sr}*{f:.5f},aresample={sr},atempo={1/f:.5f}",
+         str(dst)],
+        capture_output=True, text=True, timeout=60)
+    if not dst.exists() or r.returncode != 0:
+        log.warning(f"pitch shift failed ({r.stderr[:120]}); keeping original")
+        return src
+    dst.replace(src)
+    return src
+
+
+def _speed_wav(src: Path, speed: float) -> Path:
+    """Speed the narration up without shifting pitch (ffmpeg atempo)."""
+    if abs(speed - 1.0) < 0.01:
+        return src
+    dst = src.with_name(src.stem + "_spd.wav")
+    r = subprocess.run(
+        [str(fasm.FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-filter:a", f"atempo={speed:.3f}", str(dst)],
+        capture_output=True, text=True, timeout=60)
+    if not dst.exists() or r.returncode != 0:
+        log.warning(f"speed change failed ({r.stderr[:120]}); keeping original")
+        return src
+    dst.replace(src)          # keep the caller's filename
+    return src
+
+
+def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
+                        spoken: Optional[list] = None) -> list:
     """One WAV per fact, in the mascot's voice.
 
     Qwen3-TTS is called ONCE for all the beats (the model loads in an isolated
@@ -129,15 +424,39 @@ def _voice_beats_mascot(narrations: list, out_dir: Path, _p) -> list:
                 raise RuntimeError(msg)
             speaker = rs.get_mascot_voice()
             _p(f"🎙️ mascot voice: qwen3-tts / {speaker}")
-            master = out_dir / "mascot_master.wav"
-            _, spans = tts_qwen.synthesize_segments(
-                narrations, output_path=master, speaker=speaker,
-                instruct=rs.get_mascot_voice_instruct())
-            if len(spans) == len(narrations):
-                return [_slice_wav(master, a, b, out_dir / f"beat_{i:02d}.wav")
-                        for i, (_, a, b) in enumerate(spans)]
-            _p(f"⚠️ qwen returned {len(spans)} spans for {len(narrations)} beats; "
-               f"using kokoro.")
+            # Qwen3-TTS wants the card too. Whatever ComfyUI is still holding
+            # (S2V, Qwen-Edit) will OOM it — measured, it fell straight back to
+            # Kokoro. Evict first; the image stage reloads warm right after.
+            from modules import gpu_memory
+            gpu_memory.evict_all()
+            # The LLM already decided where a filler fits (spoken); all we add
+            # is the throwaway Qwen is going to eat.
+            base = spoken if spoken and len(spoken) == len(narrations) else narrations
+            texts = [_natural_speech(t) for t in base]
+            # One WAV per beat, straight from the model — NOT a slice of a
+            # concatenated master. Cutting the master on spans clipped words at
+            # the seams and the narration ended abruptly.
+            # Qwen's FIRST generation after a model load comes out damaged — the
+            # opening consonant is eaten ("Bees" -> "These"). It was ALWAYS beat 0,
+            # never a later beat. So burn one throwaway line first and drop it.
+            segs = tts_qwen.synthesize_each(
+                [_WARMUP_LINE] + texts, out_dir / "voice", speaker=speaker,
+                instruct=rs.get_mascot_voice_instruct())[1:]
+            speed = rs.get_mascot_voice_speed()
+            pitch = rs.get_mascot_voice_pitch()
+            wavs = []
+            for i, seg in enumerate(segs):
+                wp = out_dir / f"beat_{i:02d}.wav"
+                shutil.copy2(seg, wp)
+                # Cut the throwaway off FIRST (while the pause after it is still
+                # its natural length), then speed, then pitch, then pad LAST —
+                # padding earlier would just get shrunk by the tempo filters.
+                first = (base[i].strip().split() or [""])[0]
+                _strip_sacrifice(wp, first)
+                _speed_wav(wp, speed)
+                _pitch_wav(wp, pitch)
+                wavs.append(_pad_wav(wp))
+            return wavs
         except Exception as e:
             _p(f"⚠️ mascot voice (qwen) failed ({e}); using kokoro.")
 
@@ -169,9 +488,10 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
         _p(f"mascot mode off: {why}")
         return None
     cfg = mr.get_available("video_backend", "comfyui_wan22_s2v")
-    if not cfg:
-        _p("mascot mode off: S2V backend not registered.")
-        return None
+    if rs.get_facts_mascot_lipsync() and not cfg:
+        _p("lip-sync requested but the S2V backend is not registered; "
+           "falling back to I2V + voice-over.")
+        rs.set_facts_mascot_lipsync(False)
 
     topic = story.get("topic", "") or story.get("title", "")
     out_dir = STILLS_DIR / f"facts_{facts_id}"
@@ -184,25 +504,37 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
     #    front so the LLM unloads before Qwen loads.
     from modules import facts_writer as _fw
     _p(f"🎭 writing {len(beats)} mascot scenes…")
+    narrations = [b.get("narration", "") for b in beats]
     scenes = [(b.get("mascot_scene") or "").strip() for b in beats]
-    if not all(scenes):
-        with gpu_memory.llm():
-            for i, b in enumerate(beats):
-                if not scenes[i]:
-                    scenes[i] = mascot.explainer_scene(b.get("narration", ""), topic)
-        for i, sc in enumerate(scenes):   # persist for editing / reuse
-            try:
-                _fw.set_beat_prompt(facts_id, i, "mascot_scene", sc)
-            except Exception:
-                pass
+    spoken = None
+    with gpu_memory.llm():
+        for i, b in enumerate(beats):
+            if not scenes[i]:
+                scenes[i] = mascot.explainer_scene(b.get("narration", ""), topic)
+        # Replace the generic "Follow for more fun facts" with one made of THIS
+        # topic. It rewrites the beat itself, so the caption and the voice agree.
+        outro = _themed_outro(topic, narrations[:-1])
+        if outro and len(beats) > 1:
+            beats[-1]["narration"] = outro
+            narrations[-1] = outro
+            _p(f"👋 outro: {outro}")
+
+        # Same Ollama residency: turn the written lines into SPOKEN lines while
+        # the model is already up. On-screen captions keep the clean narration.
+        _p("🗣️ making the narration sound spoken…")
+        spoken = _spoken_lines(narrations, topic)
+    for i, sc in enumerate(scenes):       # persist for editing / reuse
+        try:
+            _fw.set_beat_prompt(facts_id, i, "mascot_scene", sc)
+        except Exception:
+            pass
 
     # 2. Per-beat narration WAVs. The mascot is a young jaguar cub — Kokoro reads
     #    it flat and pitch-shifting it sounds artificial, so the mascot gets
     #    Qwen3-TTS with an emotion instruct (natural, expressive, deterministic =
     #    the same voice every clip). Falls back to Kokoro if the bridge is down.
     _p("🎙️ voicing each fact…")
-    narrations = [b.get("narration", "") for b in beats]
-    wavs = _voice_beats_mascot(narrations, out_dir, _p)
+    wavs = _voice_beats_mascot(narrations, out_dir, _p, spoken=spoken)
 
     # 3. Mascot stills via Qwen-Edit (identity held), warm across all beats.
     _p(f"🖼️ rendering {len(beats)} mascot stills (Qwen-Edit)…")
@@ -211,34 +543,65 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
     try:
         for i, sc in enumerate(scenes):
             sp = out_dir / f"still_{i:02d}.png"
-            got = mascot.render_scene(sc, sp, aspect=aspect, seed=1000 + i)
+            # presenter=True → waist-up framing. These stills feed Wan S2V, which
+            # is a talking-head model: given legs it cannot animate, it deforms
+            # them (measured — a leg bent backwards by the end of the clip).
+            got = mascot.render_scene(sc, sp, aspect=aspect, seed=1000 + i,
+                                      presenter=True)
             stills.append(got or _gradient_bg(i, *ASPECTS.get(aspect, ASPECTS["9x16"]),
                                               out_dir / f"still_{i:02d}.png"))
     finally:
         gpu_memory.release(gpu_memory.QWEN_EDIT)
 
-    # 4. S2V talking clips, warm across all beats.
-    _p(f"🎬 animating {len(beats)} talking clips (Wan S2V)…")
-    cfg = dict(cfg); cfg["_id"] = "comfyui_wan22_s2v"
-    s2v = vb.build_backend(cfg)
-    ok, msg = s2v.health_check()
-    if not ok:
-        _p(f"mascot mode off: S2V unhealthy ({msg}).")
-        return None
+    # 4. Animate each still.
+    #
+    # DEFAULT is the ordinary I2V backend with the narration as a VOICE-OVER.
+    # Lip-sync (S2V) is opt-in because S2V is a talking-head model: it syncs the
+    # mouth well but has no idea what hands, props or legs are, and it dissolved
+    # them — a paw melted mid-clip, a leg bent backwards. It is also ~4 min a clip.
+    # A presenter reel does not need a moving mouth; it needs clean motion.
     clips = []
-    gpu_memory.acquire(gpu_memory.WAN_VIDEO)   # evicts Qwen/Ollama; S2V ≈ Wan size
-    try:
+    if rs.get_facts_mascot_lipsync():
+        _p(f"🎬 animating {len(beats)} talking clips (Wan S2V, lip-sync)…")
+        cfg = dict(cfg); cfg["_id"] = "comfyui_wan22_s2v"
+        s2v = vb.build_backend(cfg)
+        ok, msg = s2v.health_check()
+        if not ok:
+            _p(f"mascot mode off: S2V unhealthy ({msg}).")
+            return None
+        gpu_memory.acquire(gpu_memory.WAN_VIDEO)
+        try:
+            for i, b in enumerate(beats):
+                raw = s2v.generate(
+                    prompt=scenes[i], input_image=Path(stills[i]),
+                    audio_path=wavs[i], aspect_ratio=ar, width=sw, height=sh,
+                    output_filename=f"s2v_{facts_id}_{i:02d}.mp4", seed=2000 + i)
+                clips.append(_trim_video(Path(raw), _probe_dur(wavs[i]),
+                                         out_dir / f"clip_{i:02d}.mp4"))
+                _p(f"  clip {i+1}/{len(beats)} done")
+                # Back-to-back S2V renders fragment ComfyUI's VRAM until its weight
+                # page-fault handler gives up ("Fault failed: 2" — died on clip 4,
+                # twice). Drop the cache but keep S2V loaded: a full unload would
+                # cost a ~4 min cold reload per clip.
+                gpu_utils.soft_free_comfyui_cache()
+        finally:
+            gpu_memory.release(gpu_memory.WAN_VIDEO)
+    else:
+        _p(f"🎬 animating {len(beats)} clips (Wan I2V, narration as voice-over)…")
+        from modules import horror_video
+        durations = [_probe_dur(w) for w in wavs]
         for i, b in enumerate(beats):
-            raw = s2v.generate(
-                prompt=scenes[i], input_image=Path(stills[i]),
-                audio_path=wavs[i], aspect_ratio=ar, width=sw, height=sh,
-                output_filename=f"s2v_{facts_id}_{i:02d}.mp4", seed=2000 + i)
-            trimmed = _trim_video(Path(raw), _probe_dur(wavs[i]),
-                                  out_dir / f"clip_{i:02d}.mp4")
-            clips.append(trimmed)
-            _p(f"  clip {i+1}/{len(beats)} done")
-    finally:
-        gpu_memory.release(gpu_memory.WAN_VIDEO)
+            b["motion_prompt"] = (
+                b.get("motion_prompt")
+                or f"{scenes[i]}, the character moves naturally, gentle lively "
+                   f"gestures, subtle camera push-in, no text")
+        gpu_memory.acquire(gpu_memory.WAN_VIDEO)
+        try:
+            clips = list(horror_video.render_shot_clips(
+                story, [Path(s) for s in stills], durations,
+                aspect_ratio=ar, progress_cb=_p, fill_mode="retime"))
+        finally:
+            gpu_memory.release(gpu_memory.WAN_VIDEO)
 
     # 4b. Optional 4x upscale of each talking clip (Real-ESRGAN anime + polish),
     #     at the clip's native 480p where the detail gain is real. ComfyUI is free

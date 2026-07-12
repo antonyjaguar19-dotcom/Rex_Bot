@@ -157,6 +157,50 @@ STYLE_SUFFIX = (
     "crisp studio lighting, high contrast, 3d character key art"
 )
 
+# --- Presenter framing (stills that will be animated by Wan S2V) -------------
+# The presenter still: the mascot, full body, mid-action, holding the fact's prop.
+#
+# It used to be nailed to the floor ("feet planted") because Wan-S2V mangled any
+# leg that left the ground. The video stage no longer uses S2V, so that rule is
+# gone and the poses are free to be fun again. What stays is the PROPORTION lock
+# (Qwen quietly slims the cub into a lanky humanoid when a costume changes) and
+# the anti-intersection negative (a paw went straight through a hat brim).
+STYLE_PRESENTER = (
+    # PROPORTIONS FIRST. Qwen will happily slim the cub into a lanky humanoid if
+    # you only describe the costume — the legs came back thin and long. Restate
+    # the build every time; only the OUTFIT is allowed to change.
+    "exactly the same body proportions as the reference character: a short "
+    "chunky cub with a big head, round stocky torso and short thick legs, "
+    "small and stubby, chibi proportions, "
+    # The feet used to be nailed to the floor. That rule only ever existed to
+    # stop Wan-S2V mangling legs it could not animate; the video stage no longer
+    # uses S2V, so the mascot is free to be fun again.
+    "full body visible, dynamic playful action pose, exaggerated cartoon body "
+    "language, mid-motion, big readable facial expression, mouth open "
+    "mid-sentence, both paws clearly interacting with the prop, "
+    "props held cleanly in front of the body, nothing intersecting, "
+    "bold vivid solid color background, crisp studio lighting, high contrast, "
+    "3d character key art"
+)
+
+NEGATIVE_PRESENTER = (
+    # Proportion drift: the cub kept coming back with long thin legs and a slim
+    # body. The build is fixed; only the costume changes.
+    "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
+    "tall slim body, adult body, human proportions, changed body shape, "
+    "different character, stretched torso, "
+    # Geometry intersection: a paw went straight THROUGH the hat brim.
+    "hand passing through object, paw clipping through hat, limbs intersecting "
+    "props, merged geometry, object embedded in body, overlapping shapes, "
+    "hand inside prop, "
+    "deformed legs, broken limbs, twisted body, extra legs, bent backwards, "
+    "mangled feet, distorted anatomy, "
+    "caption bar, title bar, banner, youtube logo, play button, ui overlay, "
+    "watermark, text, letters, words, numbers, "
+    "blurry, low quality, deformed hands, extra limbs, extra characters, "
+    "frame, border, t-pose, cluttered background"
+)
+
 # NOTE: the FALLBACK backend (USO) takes no negative prompt. Its workflow wires
 # ConditioningZeroOut into the sampler's `negative` input (comfyui_uso.py node
 # "48") and its generate() has no negative parameter — anything passed is
@@ -577,12 +621,18 @@ _EXPLAINER_SYS = (
     "scooping dripping honey from a jar and holding up the dripping dipper'.\n"
     "  Fact 'a bee flaps 230 times a second' -> 'the mascot character dressed as "
     "a racing pilot flapping tiny wings in a blur, zooming forward'.\n"
-    "- Use STRONG ACTION VERBS with visible body movement: showing, waving, "
-    "scooping, pointing, lifting, spinning, demonstrating, bouncing, leaning in. "
-    "Both paws and the whole body engaged — a lively presenter, not a statue.\n"
-    "- The mascot FACES THE CAMERA, upper-body / medium shot, mouth visible, "
-    "caught mid-sentence — it is talking to the viewer WHILE doing the action. "
-    "This framing is REQUIRED (its mouth will be animated to speak).\n"
+    "- Make it FUN and VISUALLY INTERESTING. Big, playful, physical comedy: the "
+    "mascot can leap, hover, zoom, spin, balance, dangle, ride, surf, tumble, "
+    "peek out of something, be chased by something. Surprise the viewer.\n"
+    "- Use STRONG ACTION VERBS and put the whole body into it: showing, waving, "
+    "scooping, pointing, lifting, hauling, launching, dodging, juggling.\n"
+    "- Hold the prop CLEARLY, out in front of the body. It must never overlap or "
+    "pass through the mascot — a paw once went straight through a hat brim.\n"
+    "- FULL BODY in frame, FACING THE CAMERA, mouth visible, caught mid-sentence, "
+    "talking to the viewer WHILE doing the action.\n"
+    "- Only the COSTUME and the PROP change between shots. NEVER describe the "
+    "mascot's body, height, build or legs — its proportions are fixed and any "
+    "word about them makes the renderer redraw the character.\n"
     "- Friendly, cheerful, energetic. The motion and the costume selling the "
     "fact matter most.\n"
     "- FRIENDLY BRAND MASCOT: never violence, weapons, blood, gore, organs, "
@@ -594,8 +644,8 @@ _EXPLAINER_SYS = (
     "- No text, captions, letters or numbers in the image.\n"
     "Examples:\n"
     '{"scene": "the mascot character in a beekeeper suit facing the camera, '
-    'lifting a dripping honeycomb high and waving it, honey splashing, proud '
-    'excited grin"}\n'
+    'waist-up, lifting a dripping honeycomb and waving it, honey splashing, '
+    'proud excited grin"}\n'
     '{"scene": "the mascot character dressed as a scuba diver facing the camera, '
     'spinning to point both paws at a glowing jellyfish, eyes wide with wonder"}'
 )
@@ -642,7 +692,8 @@ def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
 def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  seed: Optional[int] = None,
                  reference_images: Optional[list] = None,
-                 headline: str = "") -> Optional[Path]:
+                 headline: str = "",
+                 presenter: bool = False) -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -670,7 +721,13 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         # Bake the headline into the art when the backend can spell it. USO
         # cannot (Flux garbles small text), so it always gets the overlay.
         baked = bool(headline) and bid == BACKEND_ID and can_bake(headline)
-        if baked:
+        if presenter:
+            # Waist-up: this still is about to be animated by S2V, which breaks
+            # legs it cannot see how to move.
+            prompt = f"{scene}, {STYLE_PRESENTER}"
+            negative = NEGATIVE_PRESENTER
+            baked = False
+        elif baked:
             prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"
             negative = NEGATIVE_BAKED
         else:
