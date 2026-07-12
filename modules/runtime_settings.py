@@ -639,6 +639,27 @@ def set_mascot_voice_instruct(text: str) -> None:
     log.info(f"Mascot voice instruct: {data['mascot_voice_instruct'][:60]}")
 
 
+# --- Video resolution tier -------------------------------------------------
+# Wan 2.2 14B is trained for BOTH 480p and 720p. The adapter used to hardcode the
+# 480p tier, so a 768x1344 mascot still was generated at 480x832 — the fine detail
+# (fur, petals, the logo) was destroyed at generation time, and no upscaler can
+# put back what was never rendered. 720p costs ~2.2x the time and looks it.
+VALID_VIDEO_TIERS = ("720p", "480p")
+
+
+def get_video_tier() -> str:
+    v = _load().get("video_tier")
+    return v if v in VALID_VIDEO_TIERS else "720p"
+
+
+def set_video_tier(tier: str) -> None:
+    tier = (tier or "").strip().lower()
+    if tier not in VALID_VIDEO_TIERS:
+        raise ValueError(f"tier must be one of {VALID_VIDEO_TIERS}")
+    data = _load(); data["video_tier"] = tier; _save(data)
+    log.info(f"Video tier: {tier}")
+
+
 def get_facts_mascot_lipsync() -> bool:
     """Whether the mascot's mouth is animated to the narration (Wan S2V).
 

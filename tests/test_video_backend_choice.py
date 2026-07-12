@@ -77,3 +77,55 @@ def test_ltx_does_not_secretly_halve_the_frame(tmp_path):
                            cfg_override=4.5, width=768, height=1344)
     scale = next(v for v in wf.values() if v["class_type"] == "ImageScaleBy")
     assert scale["inputs"]["scale_by"] == 1.0, "the frame must reach the sampler whole"
+
+
+# ---------------------------------------------------------------- resolution
+
+def test_video_tier_defaults_to_720p():
+    """Wan was pinned to 480p, so a 768x1344 mascot still was GENERATED at
+    480x832 — the fur, the petals and the chest logo were gone before any
+    upscaler saw the frame. An upscaler cannot restore what was never rendered."""
+    assert rs.get_video_tier() == "720p"
+
+
+def test_video_tier_round_trips_and_rejects_junk():
+    rs.set_video_tier("480p")
+    assert rs.get_video_tier() == "480p"
+    with pytest.raises(ValueError):
+        rs.set_video_tier("4k")
+
+
+def test_unknown_stored_tier_self_heals():
+    rs._save({"video_tier": "potato"})
+    assert rs.get_video_tier() == "720p"
+
+
+@pytest.mark.parametrize("tier,expect", [("720p", (720, 1280)), ("480p", (480, 832))])
+def test_wan_9x16_dims_follow_the_tier(tier, expect, monkeypatch):
+    from modules.video_backends import comfyui_wan22_14B as wan
+    rs.set_video_tier(tier)
+    captured = {}
+
+    class B(wan.Backend):
+        def __init__(self):
+            self.default_width, self.default_height = 832, 480
+            self.default_duration, self.default_fps = 3.0, 16
+            self.cfg, self.enable_4steps_lora = 3.5, False
+
+        def _upload_image(self, p):
+            return p.name
+
+        def _build_workflow(self, **kw):
+            captured.update(kw)
+            return {}
+
+        def _submit_prompt(self, *a):
+            raise RuntimeError("stop here")
+
+    from pathlib import Path as P
+    img = P(__file__).parent.parent / "assets" / "mascot.png"
+    if not img.exists():
+        pytest.skip("no mascot asset")
+    with pytest.raises(RuntimeError):
+        B().generate(prompt="p", input_image=img, aspect_ratio="9:16")
+    assert (captured["width"], captured["height"]) == expect

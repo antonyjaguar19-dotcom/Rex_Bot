@@ -547,6 +547,28 @@ def fallback_scene(title: str, context: str = "", topic: str = "") -> str:
             f"friendly pose, plain bold background")
 
 
+def _salvage_scene(raw: str) -> str:
+    """Pull a scene out of an answer that ignored the JSON contract.
+
+    Measured on a live reel: the model replied with prose — "Note: To meet your
+    requirement strictly with no description of backgrounds and fo..." — the JSON
+    parse returned nothing, and that shot silently fell back to a generic
+    "standing next to honeybees" pose. The scene was usually still in there
+    somewhere; look for the sentence that actually names the mascot.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    for line in re.split(r"[\n.]+", text):
+        line = line.strip(' "\'`,')
+        # Drop the model's own commentary about the task.
+        if re.match(r"^(note|okay|sure|here|i |output|json)\b", line, flags=re.I):
+            continue
+        if "mascot" in line.lower() and len(line.split()) >= 5:
+            return line
+    return ""
+
+
 def _clean_scene(raw_scene: str) -> str:
     scene = re.sub(r"\s+", " ", (raw_scene or "")).strip(' "\'')
     if not scene:
@@ -669,7 +691,15 @@ def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
                   f"Describe the mascot presenter scene for this fact.")
         for _ in (1, 2):
             raw = _call_llm(prompt, _EXPLAINER_SYS, role="creative")
-            scene = _clean_scene(_extract_json(raw).get("scene") or "")
+            got = (_extract_json(raw) or {}).get("scene") or ""
+            if not got:
+                # The model answered in prose instead of JSON. The scene is
+                # usually still in there — a live reel lost a costumed shot to a
+                # generic pose because nobody looked.
+                got = _salvage_scene(raw)
+                if got:
+                    log.info(f"Explainer scene salvaged from prose: {got[:70]}")
+            scene = _clean_scene(got)
             if not scene:
                 continue
             bad = scene_violation(scene)

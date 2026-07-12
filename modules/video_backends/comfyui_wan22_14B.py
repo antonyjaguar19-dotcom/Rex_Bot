@@ -140,7 +140,16 @@ class Backend(VideoBackend):
         # The aspect_ratio arg was previously ignored (always landscape 832x480);
         # map it so a 9:16 request renders NATIVE vertical (same pixel budget,
         # just rotated — no extra VRAM/time) instead of landscape.
-        _AR_DIMS = {"16:9": (832, 480), "9:16": (480, 832), "1:1": (640, 640)}
+        # Wan 2.2 14B is trained for BOTH tiers. This used to be pinned to 480p,
+        # which meant a 768x1344 mascot still was GENERATED at 480x832: the fur,
+        # the petals and the chest logo were gone before any upscaler saw the
+        # frame, and an upscaler cannot restore detail that was never rendered.
+        # 720p costs ~2.2x the time (526 s vs 240 s a clip, measured) and it shows.
+        _TIERS = {
+            "720p": {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (960, 960)},
+            "480p": {"16:9": (832, 480),  "9:16": (480, 832),  "1:1": (640, 640)},
+        }
+        _AR_DIMS = _TIERS.get(rs.get_video_tier(), _TIERS["720p"])
         _ar = (aspect_ratio or "16:9").replace("x", ":").strip()
         _aw, _ah = _AR_DIMS.get(_ar, (self.default_width, self.default_height))
         eff_width  = int(width)  if width  else _aw

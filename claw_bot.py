@@ -1642,6 +1642,7 @@ async def on_ready():
                     "facts_prompt":        cmd_facts_prompt,
                     "mascot_voice":        cmd_mascot_voice,
                     "facts_lipsync":       cmd_facts_lipsync,
+                    "video_tier":          cmd_video_tier,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5567,6 +5568,26 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
             else " — Ken Burns stills (fast, ~4 min)")
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
+
+
+@bot.command(name="video_tier", aliases=["set_video_tier", "video_res"])
+async def cmd_video_tier(ctx, tier: str = None):
+    """Generation resolution: `!video_tier 720p|480p`.
+
+    720p (default) generates at 720x1280 for 9:16 — the detail in the still
+    actually survives. 480p is ~2.2x faster but the fine detail is destroyed at
+    generation time and no upscaler can bring it back."""
+    if not tier:
+        await ctx.send(f"🎞️ Video tier: `{rs.get_video_tier()}` — `!video_tier 720p|480p`")
+        return
+    try:
+        rs.set_video_tier(tier)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    t = rs.get_video_tier()
+    note = (" — sharp, ~2.2x slower" if t == "720p"
+            else " — fast, fine detail is lost at generation")
+    await ctx.send(f"✅ Video tier → `{t}`{note}.")
 
 
 @bot.command(name="facts_lipsync", aliases=["mascot_lipsync"])

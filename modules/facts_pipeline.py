@@ -683,13 +683,17 @@ def render_facts(
     if not beats:
         raise ValueError("Facts reel has no beats.")
 
-    # Mascot mode: the mascot presents every fact in costume, lip-synced (S2V).
-    # Falls back to the normal abstract-backdrop path if the mascot or S2V is
-    # unavailable, so enabling it never breaks a render.
+    # Mascot mode: the mascot presents every fact in costume. Falls back to the
+    # normal abstract-backdrop path if the mascot is unavailable, so enabling it
+    # never breaks a render.
     if rs.get_facts_mascot_mode():
         try:
             out = _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id)
             if out:
+                # This return used to skip the publish kit entirely — a mascot
+                # reel shipped with no title and no thumbnail beside it.
+                stills = sorted((STILLS_DIR / f"facts_{facts_id}").glob("still_*.png"))
+                out.update(_attach_publish_kit(story, out, stills))
                 return out
             _p("mascot mode unavailable; using abstract backdrops.")
         except Exception as e:

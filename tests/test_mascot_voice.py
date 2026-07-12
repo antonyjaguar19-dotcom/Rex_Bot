@@ -189,3 +189,36 @@ def test_s2v_negative_guards_limbs():
     from modules.video_backends import comfyui_wan_s2v as s2v
     assert "deformed legs" in s2v.DEFAULT_NEGATIVE
     assert "broken limbs" in s2v.DEFAULT_NEGATIVE
+
+
+# ---------------------------------------------------------------- prose salvage
+
+def test_a_prose_answer_is_salvaged_not_dropped():
+    """Measured on a live reel: the model replied with prose instead of JSON —
+    "Note: To meet your requirement strictly ..." — the JSON parse came back
+    empty and that shot silently fell back to a generic 'standing next to
+    honeybees' pose. The scene was still in the text."""
+    from modules import mascot as mas
+    raw = ("Note: To meet your requirement strictly with no background.\n"
+           "the mascot character in a beekeeper suit lifting a dripping "
+           "honeycomb, proud grin")
+    got = mas._salvage_scene(raw)
+    assert "beekeeper suit" in got
+    assert not got.lower().startswith("note")
+
+
+def test_salvage_ignores_the_models_own_chatter():
+    from modules import mascot as mas
+    assert mas._salvage_scene("Sure! Here is the JSON you asked for.") == ""
+    assert mas._salvage_scene("") == ""
+
+
+def test_explainer_falls_back_to_prose_when_json_is_missing(monkeypatch):
+    from modules import mascot as mas
+    import modules.script_generator as sg
+    monkeypatch.setattr(sg, "_call_llm",
+                        lambda *a, **k: "Note: no JSON.\nthe mascot character "
+                                        "in a bee costume waving a honeycomb")
+    monkeypatch.setattr(sg, "_extract_json", lambda r: {})
+    got = mas.explainer_scene("Bees make honey.", topic="bees")
+    assert "bee costume" in got, "the costumed scene must survive a prose answer"
