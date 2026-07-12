@@ -283,8 +283,9 @@ def test_clone_does_not_pitch_or_speed_shift(monkeypatch, tmp_path):
 
     from modules import gpu_memory
     monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
-    monkeypatch.setattr(fp, "_strip_sacrifice", lambda *a, **k: None)
     monkeypatch.setattr(fp, "_pad_wav", lambda p: p)
+    monkeypatch.setattr(fp, "_strip_sacrifice",
+                        lambda *a, **k: pytest.fail("no carrier on the clone path"))
     boom = lambda *a, **k: pytest.fail("a clone must not be pitch/speed shifted")
     monkeypatch.setattr(fp, "_pitch_wav", boom)
     monkeypatch.setattr(fp, "_speed_wav", boom)
@@ -292,3 +293,12 @@ def test_clone_does_not_pitch_or_speed_shift(monkeypatch, tmp_path):
     wavs = fp._voice_beats_clone(["Bees make honey.", "They dance."],
                                  tmp_path, lambda *_: None)
     assert len(wavs) == 2
+
+
+def test_clone_sends_no_carrier_word_to_the_model():
+    """The "Ready." carrier absorbs QWEN's eaten opening consonant. Chatterbox does
+    not have that bug, and the carrier is not free: cutting it back off relies on
+    ASR spotting it, which missed often enough that a beat shipped as
+    "Ready, one hive can make sixty kilos of honey"."""
+    assert fp._natural_speech("Bees buzz.").startswith(fp._SACRIFICE)   # qwen path
+    assert not fp._even_tone("Bees buzz.").startswith(fp._SACRIFICE)    # clone path

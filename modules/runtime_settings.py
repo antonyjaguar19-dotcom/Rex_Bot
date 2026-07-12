@@ -672,12 +672,16 @@ def set_mascot_voice_ref(path) -> None:
 
 
 def get_mascot_voice_exaggeration() -> float:
-    """Chatterbox emotion knob. 0.5 neutral; higher = more theatrical."""
+    """Chatterbox emotion knob. 0.5 neutral; higher = more theatrical.
+
+    0.35 was chosen by ear. Every earlier voice failed the same way — too excited,
+    tone spiking between beats — so the presenter reads calm and lets the fact land.
+    """
     try:
-        v = float(_load().get("mascot_voice_exaggeration", 0.55))
+        v = float(_load().get("mascot_voice_exaggeration", 0.35))
     except (TypeError, ValueError):
-        return 0.55
-    return v if 0.0 <= v <= 1.5 else 0.55
+        return 0.35
+    return v if 0.0 <= v <= 1.5 else 0.35
 
 
 def set_mascot_voice_exaggeration(v: float) -> None:

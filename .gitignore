@@ -74,3 +74,7 @@ dist/
 04_Outputs/
 CLAUDE.original.md
 config_snapshot/*.bak
+
+# Voice-clone reference: a real recording of the owner's voice. The repo is
+# public — a person's voice sample does not belong in it. Keep it local.
+assets/mascot_voice.wav

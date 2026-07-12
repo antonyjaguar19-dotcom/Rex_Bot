@@ -433,10 +433,12 @@ def _voice_beats_clone(narrations: list, out_dir: Path, _p,
     gpu_memory.evict_all()
 
     base = spoken if spoken and len(spoken) == len(narrations) else narrations
-    # Same carrier trick as Qwen: a throwaway word absorbs any damage to the
-    # opening phoneme, and _strip_sacrifice cuts it back off. It is a no-op if
-    # Chatterbox turns out not to need it.
-    texts = [_natural_speech(t) for t in base]
+    # NO carrier word here. The "Ready." throwaway exists to absorb Qwen's eaten
+    # opening consonant; Chatterbox does not have that bug (verified by
+    # transcribing carrier-less output — every first word came back intact). And
+    # the carrier is not free: cutting it back off relies on ASR finding it, which
+    # missed often enough that "Ready, one hive can make sixty kilos" shipped.
+    texts = [_even_tone(t) for t in base]
     segs = tts_chatterbox.synthesize_each(
         texts, out_dir / "voice", ref_wav=ref,
         exaggeration=rs.get_mascot_voice_exaggeration(),
@@ -446,8 +448,6 @@ def _voice_beats_clone(narrations: list, out_dir: Path, _p,
     for i, seg in enumerate(segs):
         wp = out_dir / f"beat_{i:02d}.wav"
         shutil.copy2(seg, wp)
-        first = (base[i].strip().split() or [""])[0]
-        _strip_sacrifice(wp, first)
         wavs.append(_pad_wav(wp))
     return wavs
 
