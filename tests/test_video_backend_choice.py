@@ -81,29 +81,25 @@ def test_ltx_does_not_secretly_halve_the_frame(tmp_path):
 
 # ---------------------------------------------------------------- resolution
 
-def test_video_tier_defaults_to_720p():
-    """Wan was pinned to 480p, so a 768x1344 mascot still was GENERATED at
-    480x832 — the fur, the petals and the chest logo were gone before any
-    upscaler saw the frame. An upscaler cannot restore what was never rendered."""
-    assert rs.get_video_tier() == "720p"
+@pytest.mark.parametrize("preset,expect", [
+    (None,    (720, 1280)),   # no override: Wan's own default is now 720p
+    ("720p",  (720, 1280)),
+    ("480p",  (480, 832)),
+])
+def test_wan_9x16_dims_follow_the_resolution_preset(preset, expect):
+    """Wan was pinned to the 480p row, so a 768x1344 mascot still was GENERATED at
+    480x832 — the fur, the petals and the chest logo were gone before any upscaler
+    saw the frame, and an upscaler cannot restore what was never rendered.
 
-
-def test_video_tier_round_trips_and_rejects_junk():
-    rs.set_video_tier("480p")
-    assert rs.get_video_tier() == "480p"
-    with pytest.raises(ValueError):
-        rs.set_video_tier("4k")
-
-
-def test_unknown_stored_tier_self_heals():
-    rs._save({"video_tier": "potato"})
-    assert rs.get_video_tier() == "720p"
-
-
-@pytest.mark.parametrize("tier,expect", [("720p", (720, 1280)), ("480p", (480, 832))])
-def test_wan_9x16_dims_follow_the_tier(tier, expect, monkeypatch):
+    The facts pipeline calls the backend directly (it does not go through
+    clip_generator, which is what passes explicit dims), so the backend's OWN
+    default is what a facts reel actually renders at. It has to be 720p.
+    """
     from modules.video_backends import comfyui_wan22_14B as wan
-    rs.set_video_tier(tier)
+    if preset:
+        rs.set_video_resolution_override(preset)
+    else:
+        rs.clear_video_resolution_override()
     captured = {}
 
     class B(wan.Backend):

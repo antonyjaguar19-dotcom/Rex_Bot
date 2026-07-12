@@ -4,6 +4,7 @@ Kokoro reads flat and pitch-shifting it to fake a young voice sounds artificial,
 so the mascot presenter gets Qwen with an emotion instruct. Vivian was chosen for
 the jaguar cub.
 """
+from pathlib import Path
 import pytest
 import modules.runtime_settings as rs
 from modules import facts_pipeline as fp
@@ -222,3 +223,72 @@ def test_explainer_falls_back_to_prose_when_json_is_missing(monkeypatch):
     monkeypatch.setattr(sg, "_extract_json", lambda r: {})
     got = mas.explainer_scene("Bees make honey.", topic="bees")
     assert "bee costume" in got, "the costumed scene must survive a prose answer"
+
+
+# ---------------------------------------------------------------- voice clone
+
+def test_clone_engine_is_selectable():
+    assert "chatterbox" in rs.VALID_MASCOT_TTS
+    rs.set_mascot_tts_engine("chatterbox")
+    assert rs.get_mascot_tts_engine() == "chatterbox"
+
+
+def test_voice_ref_round_trips_and_rejects_a_missing_file(tmp_path):
+    ref = tmp_path / "kid.wav"
+    ref.write_bytes(b"RIFF")
+    rs.set_mascot_voice_ref(ref)
+    assert rs.get_mascot_voice_ref() == ref.resolve()
+    with pytest.raises(ValueError):
+        rs.set_mascot_voice_ref(tmp_path / "nope.wav")
+    rs.set_mascot_voice_ref(None)
+
+
+def test_voice_ref_is_none_when_the_file_is_gone(tmp_path):
+    """A deleted reference must read as absent, not as a dead path — the clone
+    path checks this to fall back to Qwen instead of crashing the render."""
+    ref = tmp_path / "kid.wav"
+    ref.write_bytes(b"RIFF")
+    rs.set_mascot_voice_ref(ref)
+    ref.unlink()
+    assert rs.get_mascot_voice_ref() is None
+
+
+def test_clone_falls_back_to_qwen_without_a_reference(monkeypatch, tmp_path):
+    from modules import facts_pipeline as fp
+    rs.set_mascot_voice_ref(None)
+    monkeypatch.setattr(rs, "get_mascot_voice_ref", lambda: None)
+    said = []
+    assert fp._voice_beats_clone(["Bees make honey."], tmp_path, said.append) is None
+    assert any("reference" in s.lower() for s in said)
+
+
+def test_clone_does_not_pitch_or_speed_shift(monkeypatch, tmp_path):
+    """Timbre and pace come from the reference clip. Shifting a clone undoes the
+    cloning — that is the whole reason we are cloning."""
+    from modules import facts_pipeline as fp
+    ref = tmp_path / "kid.wav"; ref.write_bytes(b"RIFF")
+    monkeypatch.setattr(rs, "get_mascot_voice_ref", lambda: ref)
+
+    import modules.tts_chatterbox as tc
+    monkeypatch.setattr(tc, "health_check", lambda: (True, "ok"))
+
+    def fake_each(texts, out_dir, ref_wav=None, **kw):
+        assert ref_wav == ref, "the reference must reach the cloner"
+        out = []
+        for i, _ in enumerate(texts):
+            p = Path(out_dir); p.mkdir(parents=True, exist_ok=True)
+            f = p / f"seg_{i:02d}.wav"; f.write_bytes(b"RIFF"); out.append(f)
+        return out
+    monkeypatch.setattr(tc, "synthesize_each", fake_each)
+
+    from modules import gpu_memory
+    monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
+    monkeypatch.setattr(fp, "_strip_sacrifice", lambda *a, **k: None)
+    monkeypatch.setattr(fp, "_pad_wav", lambda p: p)
+    boom = lambda *a, **k: pytest.fail("a clone must not be pitch/speed shifted")
+    monkeypatch.setattr(fp, "_pitch_wav", boom)
+    monkeypatch.setattr(fp, "_speed_wav", boom)
+
+    wavs = fp._voice_beats_clone(["Bees make honey.", "They dance."],
+                                 tmp_path, lambda *_: None)
+    assert len(wavs) == 2

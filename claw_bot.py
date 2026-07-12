@@ -1642,7 +1642,6 @@ async def on_ready():
                     "facts_prompt":        cmd_facts_prompt,
                     "mascot_voice":        cmd_mascot_voice,
                     "facts_lipsync":       cmd_facts_lipsync,
-                    "video_tier":          cmd_video_tier,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -4782,6 +4781,20 @@ async def cmd_set_horror_ambient(ctx, value: str = None):
     await ctx.send(f"✅ Horror ambient bed → `{'on' if on else 'off'}`.")
 
 
+# The mascot's voice-clone reference lives beside its art.
+_MASCOT_VOICE_REF_DIR = Path(__file__).parent / "assets"
+
+
+def _to_wav_mono16k(src: Path, dst: Path) -> Path:
+    """Normalise a Discord attachment into the mono 16 kHz WAV Chatterbox clones."""
+    import subprocess
+    from modules.assembly import FFMPEG_EXE
+    subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-ac", "1", "-ar", "16000", str(dst)], timeout=120, check=True)
+    return dst
+
+
 def _facts_compress(src: Path, dst: Path) -> Path:
     """Re-encode a reel under Discord's ~10 MB unboosted cap for phone preview."""
     import subprocess
@@ -5570,26 +5583,6 @@ async def cmd_set_facts_video(ctx, mode: str = None):
     await ctx.send(f"✅ Facts video → `{m}`{note}.")
 
 
-@bot.command(name="video_tier", aliases=["set_video_tier", "video_res"])
-async def cmd_video_tier(ctx, tier: str = None):
-    """Generation resolution: `!video_tier 720p|480p`.
-
-    720p (default) generates at 720x1280 for 9:16 — the detail in the still
-    actually survives. 480p is ~2.2x faster but the fine detail is destroyed at
-    generation time and no upscaler can bring it back."""
-    if not tier:
-        await ctx.send(f"🎞️ Video tier: `{rs.get_video_tier()}` — `!video_tier 720p|480p`")
-        return
-    try:
-        rs.set_video_tier(tier)
-    except ValueError as e:
-        await ctx.send(f"⚠️ {e}"); return
-    t = rs.get_video_tier()
-    note = (" — sharp, ~2.2x slower" if t == "720p"
-            else " — fast, fine detail is lost at generation")
-    await ctx.send(f"✅ Video tier → `{t}`{note}.")
-
-
 @bot.command(name="facts_lipsync", aliases=["mascot_lipsync"])
 async def cmd_facts_lipsync(ctx, switch: str = None):
     """Mascot lip-sync (Wan S2V): `!facts_lipsync on|off`.
@@ -5615,20 +5608,51 @@ async def cmd_mascot_voice(ctx, voice: str = None):
     Qwen3-TTS + an emotion instruct — natural, expressive, and the same voice on
     every clip. `!mascot_voice kokoro` switches back to the plain fast engine."""
     if not voice:
+        ref = rs.get_mascot_voice_ref()
         await ctx.send(
             f"🎙️ Mascot voice: `{rs.get_mascot_voice()}` "
             f"(engine `{rs.get_mascot_tts_engine()}`)\n"
+            f"Clone reference: `{ref.name if ref else 'none'}`\n"
             f"Options: `{'`, `'.join(rs.VALID_QWEN_SPEAKERS)}` — or `kokoro` for the "
-            f"plain engine.")
+            f"plain engine, or `clone` to voice-clone a reference clip (attach a "
+            f"5-15s WAV/MP3 to set it).")
         return
-    v = voice.strip()
+    v = voice.strip().lower()
+
+    if v in ("clone", "chatterbox"):
+        # An attachment sets the reference; bare `!mascot_voice clone` just switches
+        # the engine back on if a reference is already on disk.
+        att = next((a for a in ctx.message.attachments
+                    if a.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a"))),
+                   None)
+        if att:
+            dest = _MASCOT_VOICE_REF_DIR / "mascot_voice.wav"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            raw = dest.with_suffix(Path(att.filename).suffix or ".wav")
+            await att.save(raw)
+            try:
+                if raw != dest:
+                    _to_wav_mono16k(raw, dest)
+                    raw.unlink(missing_ok=True)
+                rs.set_mascot_voice_ref(dest)
+            except Exception as e:
+                await ctx.send(f"⚠️ could not use that clip: {e}"); return
+        ref = rs.get_mascot_voice_ref()
+        if not ref:
+            await ctx.send("⚠️ No reference clip. Attach a clean 5-15s recording "
+                           "(one speaker, no music) to `!mascot_voice clone`.")
+            return
+        rs.set_mascot_tts_engine("chatterbox")
+        await ctx.send(f"✅ Mascot voice → clone of `{ref.name}` (chatterbox).")
+        return
+
     try:
-        if v.lower() in ("kokoro", "qwen"):
-            rs.set_mascot_tts_engine(v.lower())
-            await ctx.send(f"✅ Mascot TTS engine → `{v.lower()}`.")
+        if v in ("kokoro", "qwen"):
+            rs.set_mascot_tts_engine(v)
+            await ctx.send(f"✅ Mascot TTS engine → `{v}`.")
             return
         rs.set_mascot_tts_engine("qwen")
-        rs.set_mascot_voice(v)
+        rs.set_mascot_voice(voice.strip())
     except ValueError as e:
         await ctx.send(f"⚠️ {e}"); return
     await ctx.send(f"✅ Mascot voice → `{rs.get_mascot_voice()}` (qwen3-tts).")

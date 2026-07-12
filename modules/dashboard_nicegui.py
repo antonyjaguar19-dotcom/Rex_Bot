@@ -2088,13 +2088,6 @@ def main_page():
                                 lambda e: (rs.set_mascot_tts_engine("qwen"),
                                            rs.set_mascot_voice(mascot_voice_sel.value)))
 
-            _tiers = list(rs.VALID_VIDEO_TIERS)
-            tier_sel = ui.select(_tiers, value=_sel(rs.get_video_tier(), _tiers, "720p"),
-                                 label="Video res")                 .props("outlined dark dense").style("min-width: 110px")                 .tooltip("720p generates at 720x1280 (9:16) so the still's detail "
-                         "survives. 480p is ~2.2x faster but the detail is destroyed "
-                         "at generation and no upscaler restores it.")
-            tier_sel.on("update:model-value", lambda e: rs.set_video_tier(tier_sel.value))
-
             lipsync_sw = ui.switch("Lip-sync",
                                    value=rs.get_facts_mascot_lipsync())                 .props("dense color=accent")                 .tooltip("Wan S2V moves the mascot's mouth to the narration. Slow, "
                          "and it can distort hands and props. Off = I2V motion with "

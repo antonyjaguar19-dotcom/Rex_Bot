@@ -406,6 +406,52 @@ def _speed_wav(src: Path, speed: float) -> Path:
     return src
 
 
+def _voice_beats_clone(narrations: list, out_dir: Path, _p,
+                       spoken: Optional[list] = None) -> Optional[list]:
+    """One WAV per fact, CLONED from a reference clip (Chatterbox).
+
+    No local TTS ships a genuine child voice — Eric lifted +2 semitones is an adult
+    timbre in a costume, and it never read as cute. Cloning a real recording is the
+    only route to the mascot actually sounding like the mascot.
+
+    Timbre AND pace come from the reference, so the speed/pitch knobs are NOT
+    applied here: shifting a clone undoes the cloning.
+    """
+    from modules import tts_chatterbox, gpu_memory
+
+    ref = rs.get_mascot_voice_ref()
+    if not ref:
+        _p("⚠️ no mascot voice reference clip on disk; using qwen.")
+        return None
+    ok, msg = tts_chatterbox.health_check()
+    if not ok:
+        _p(f"⚠️ chatterbox bridge down ({msg}); using qwen.")
+        return None
+
+    _p(f"🎙️ mascot voice: chatterbox clone / {ref.name}")
+    # Chatterbox wants the card. Anything ComfyUI is still holding will OOM it.
+    gpu_memory.evict_all()
+
+    base = spoken if spoken and len(spoken) == len(narrations) else narrations
+    # Same carrier trick as Qwen: a throwaway word absorbs any damage to the
+    # opening phoneme, and _strip_sacrifice cuts it back off. It is a no-op if
+    # Chatterbox turns out not to need it.
+    texts = [_natural_speech(t) for t in base]
+    segs = tts_chatterbox.synthesize_each(
+        texts, out_dir / "voice", ref_wav=ref,
+        exaggeration=rs.get_mascot_voice_exaggeration(),
+    )
+
+    wavs = []
+    for i, seg in enumerate(segs):
+        wp = out_dir / f"beat_{i:02d}.wav"
+        shutil.copy2(seg, wp)
+        first = (base[i].strip().split() or [""])[0]
+        _strip_sacrifice(wp, first)
+        wavs.append(_pad_wav(wp))
+    return wavs
+
+
 def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
                         spoken: Optional[list] = None) -> list:
     """One WAV per fact, in the mascot's voice.
@@ -416,6 +462,16 @@ def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
     bridge never blocks a render.
     """
     engine = rs.get_mascot_tts_engine()
+
+    if engine == "chatterbox":
+        try:
+            wavs = _voice_beats_clone(narrations, out_dir, _p, spoken=spoken)
+            if wavs:
+                return wavs
+        except Exception as e:
+            _p(f"⚠️ mascot voice (chatterbox) failed ({e}); using qwen.")
+        engine = "qwen"
+
     if engine == "qwen":
         try:
             from modules import tts_qwen

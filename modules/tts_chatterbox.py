@@ -92,18 +92,31 @@ def synthesize_segments(
     if not spec:
         raise ValueError("synthesize_segments() got no non-empty groups.")
 
+    data = _run(spec, gap_sec, output_path)
+    spans = [(t, float(a), float(b)) for t, a, b in data["spans"]]
+    log.info(f"Chatterbox wrote {output_path.name} — {len(spans)} groups.")
+    return output_path, spans
+
+
+def _run(spec: list, gap_sec: float, out_wav: Path,
+         segments_dir: Optional[Path] = None) -> dict:
+    """Drive chatterbox_cli in the isolated venv; return the parsed spans JSON."""
+    import os
     with tempfile.TemporaryDirectory() as td:
         job_path = Path(td) / "job.json"
         spans_path = Path(td) / "spans.json"
         job_path.write_text(json.dumps({
             "groups": spec, "gap_sec": gap_sec,
-            "out_wav": str(output_path), "spans_out": str(spans_path),
+            "out_wav": str(out_wav), "spans_out": str(spans_path),
+            "segments_dir": str(segments_dir) if segments_dir else None,
         }), encoding="utf-8")
 
-        env = {"HF_HOME": str(HF_CACHE), "HF_HUB_CACHE": str(HF_CACHE / "hub")}
-        import os
-        full_env = {**os.environ, **env, "PYTHONIOENCODING": "utf-8"}
-        log.info(f"Chatterbox voicing {len(spec)} groups (exaggeration={exaggeration})...")
+        full_env = {
+            **os.environ,
+            "HF_HOME": str(HF_CACHE),
+            "HF_HUB_CACHE": str(HF_CACHE / "hub"),
+            "PYTHONIOENCODING": "utf-8",
+        }
         r = subprocess.run(
             [str(VENV_PY), str(CLI), str(job_path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -116,11 +129,47 @@ def synthesize_segments(
             )
         if not spans_path.exists():
             raise RuntimeError(f"chatterbox_cli produced no spans: {r.stdout[-300:]}")
-        data = json.loads(spans_path.read_text(encoding="utf-8"))
+        return json.loads(spans_path.read_text(encoding="utf-8"))
 
-    spans = [(t, float(a), float(b)) for t, a, b in data["spans"]]
-    log.info(f"Chatterbox wrote {output_path.name} — {len(spans)} groups.")
-    return output_path, spans
+
+def synthesize_each(
+    texts: list[str],
+    out_dir: Path,
+    ref_wav: Optional[Path] = None,
+    exaggeration: float = DEFAULT_EXAGGERATION,
+    cfg_weight: float = DEFAULT_CFG_WEIGHT,
+) -> list[Path]:
+    """One WAV per line, all cloned from `ref_wav`, in a single model load.
+
+    Mirrors tts_qwen.synthesize_each so the facts mascot can swap engines without
+    the caller caring. The facts pipeline cuts one video shot per beat, so it needs
+    the beats as separate files — not a master it has to slice.
+    """
+    ok, msg = health_check()
+    if not ok:
+        raise RuntimeError(msg)
+
+    spec = [{
+        "text": t.strip(),
+        "ref_wav": str(ref_wav) if ref_wav else None,
+        "exaggeration": exaggeration,
+        "cfg_weight": cfg_weight,
+    } for t in texts if (t or "").strip()]
+    if not spec:
+        raise ValueError("synthesize_each() got no non-empty texts.")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Chatterbox voicing {len(spec)} beats "
+             f"(clone={'yes' if ref_wav else 'no'}, exaggeration={exaggeration})...")
+    data = _run(spec, GROUP_GAP_SEC, out_dir / "_master.wav", segments_dir=out_dir)
+
+    files = [Path(f) for f in data.get("files", [])]
+    if len(files) != len(spec):
+        raise RuntimeError(
+            f"chatterbox returned {len(files)} beat wavs, expected {len(spec)}"
+        )
+    return files
 
 
 if __name__ == "__main__":

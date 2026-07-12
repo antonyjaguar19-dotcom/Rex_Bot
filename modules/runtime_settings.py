@@ -546,7 +546,10 @@ def set_facts_video_mode(mode: str) -> None:
 # Kokoro is fast but flat, and pitch-shifting it to fake a kid sounds artificial.
 # Qwen3-TTS with an emotion "instruct" gives a natural, expressive, deterministic
 # (= consistent) read. Vivian was the chosen timbre for the jaguar cub.
-VALID_MASCOT_TTS = ("qwen", "kokoro")
+# Chatterbox is the third option: it CLONES a reference clip. No local TTS ships
+# a genuine child voice — Eric+2st is an adult timbre pitch-shifted, and it never
+# read as cute. A 5-15s reference recording is the only route to a real one.
+VALID_MASCOT_TTS = ("qwen", "kokoro", "chatterbox")
 VALID_QWEN_SPEAKERS = ("Vivian", "Serena", "Dylan", "Eric", "Uncle_Fu")
 DEFAULT_MASCOT_SPEAKER = "Eric"
 # Happy, not hyper. The first cut ("excited, high-energy, bouncy") read as
@@ -639,25 +642,51 @@ def set_mascot_voice_instruct(text: str) -> None:
     log.info(f"Mascot voice instruct: {data['mascot_voice_instruct'][:60]}")
 
 
-# --- Video resolution tier -------------------------------------------------
-# Wan 2.2 14B is trained for BOTH 480p and 720p. The adapter used to hardcode the
-# 480p tier, so a 768x1344 mascot still was generated at 480x832 — the fine detail
-# (fur, petals, the logo) was destroyed at generation time, and no upscaler can
-# put back what was never rendered. 720p costs ~2.2x the time and looks it.
-VALID_VIDEO_TIERS = ("720p", "480p")
+# The clip Chatterbox clones for the mascot. Default lives beside the mascot art.
+DEFAULT_MASCOT_VOICE_REF = (
+    Path(__file__).parent.parent / "assets" / "mascot_voice.wav"
+)
 
 
-def get_video_tier() -> str:
-    v = _load().get("video_tier")
-    return v if v in VALID_VIDEO_TIERS else "720p"
+def get_mascot_voice_ref() -> Optional[Path]:
+    """Reference clip Chatterbox clones the mascot's voice from, or None.
+
+    Timbre comes from this file, so the pitch/speed knobs above are NOT applied
+    on top of a clone — shifting a cloned voice just undoes the cloning.
+    """
+    raw = _load().get("mascot_voice_ref")
+    p = Path(raw) if raw else DEFAULT_MASCOT_VOICE_REF
+    return p if p.exists() else None
 
 
-def set_video_tier(tier: str) -> None:
-    tier = (tier or "").strip().lower()
-    if tier not in VALID_VIDEO_TIERS:
-        raise ValueError(f"tier must be one of {VALID_VIDEO_TIERS}")
-    data = _load(); data["video_tier"] = tier; _save(data)
-    log.info(f"Video tier: {tier}")
+def set_mascot_voice_ref(path) -> None:
+    if path in (None, "", "none"):
+        data = _load(); data.pop("mascot_voice_ref", None); _save(data)
+        log.info("Mascot voice ref cleared.")
+        return
+    p = Path(path).resolve()
+    if not p.exists():
+        raise ValueError(f"reference clip not found: {p}")
+    data = _load(); data["mascot_voice_ref"] = str(p); _save(data)
+    log.info(f"Mascot voice ref: {p.name}")
+
+
+def get_mascot_voice_exaggeration() -> float:
+    """Chatterbox emotion knob. 0.5 neutral; higher = more theatrical."""
+    try:
+        v = float(_load().get("mascot_voice_exaggeration", 0.55))
+    except (TypeError, ValueError):
+        return 0.55
+    return v if 0.0 <= v <= 1.5 else 0.55
+
+
+def set_mascot_voice_exaggeration(v: float) -> None:
+    v = float(v)
+    if not 0.0 <= v <= 1.5:
+        raise ValueError("exaggeration must be between 0.0 and 1.5")
+    data = _load(); data["mascot_voice_exaggeration"] = v; _save(data)
+    log.info(f"Mascot voice exaggeration: {v}")
+
 
 
 def get_facts_mascot_lipsync() -> bool:

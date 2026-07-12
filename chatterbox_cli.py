@@ -8,10 +8,15 @@ Job JSON (arg 1):
               "exaggeration": 0.6, "cfg_weight": 0.4}, ...],
   "gap_sec": 0.34,
   "out_wav": "<master wav path>",
-  "spans_out": "<json path>"
+  "spans_out": "<json path>",
+  "segments_dir": "<dir|null>"      # optional: also write one wav per group
 }
 Writes the master wav (groups stitched with silence gaps) and a spans JSON:
-{"sr": 24000, "spans": [["text", t_start, t_end], ...]}
+{"sr": 24000, "spans": [["text", t_start, t_end], ...], "files": [...]}
+
+`segments_dir` exists because the facts mascot needs one clip per beat (each beat
+is cut to its own video shot). Slicing them back out of the master lost fricatives
+at the seams, and re-running the CLI per beat reloaded the model every time.
 """
 import json
 import sys
@@ -31,12 +36,17 @@ def main():
     spans_out = Path(job["spans_out"])
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
+    seg_dir = job.get("segments_dir")
+    seg_dir = Path(seg_dir) if seg_dir else None
+    if seg_dir:
+        seg_dir.mkdir(parents=True, exist_ok=True)
+
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     model = ChatterboxTTS.from_pretrained(device=dev)
     sr = int(model.sr)
     gap = np.zeros(int(round(gap_sec * sr)), dtype=np.float32)
 
-    pieces, spans, cursor = [], [], 0
+    pieces, spans, files, cursor = [], [], [], 0
     for i, g in enumerate(groups):
         text = (g.get("text") or "").strip()
         if not text:
@@ -50,6 +60,10 @@ def main():
             kw["audio_prompt_path"] = str(rw)
         wav = model.generate(text, **kw)
         a = wav.squeeze().detach().cpu().numpy().astype(np.float32)
+        if seg_dir:
+            seg = seg_dir / f"seg_{len(spans):02d}.wav"
+            sf.write(str(seg), a, sr)
+            files.append(str(seg))
         t0 = cursor / sr
         pieces.append(a)
         cursor += len(a)
@@ -60,7 +74,9 @@ def main():
 
     master = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
     sf.write(str(out_wav), master, sr)
-    spans_out.write_text(json.dumps({"sr": sr, "spans": spans}), encoding="utf-8")
+    spans_out.write_text(
+        json.dumps({"sr": sr, "spans": spans, "files": files}), encoding="utf-8"
+    )
     print(f"OK {out_wav} groups={len(spans)} dur={len(master)/sr:.2f}s dev={dev}")
 
 
