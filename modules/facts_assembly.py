@@ -29,7 +29,14 @@ from modules.subtitles import ass_time, ass_escape, sentence_chunks, windows_to_
 
 log = logging.getLogger("claw_bot.facts_assembly")
 
-MUSIC_VOLUME = 0.16   # bed sits well under the voice
+# The bed is NORMALISED to a target loudness, not scaled by a fixed factor.
+# A fixed volume=0.16 assumes MusicGen hands us a track at a known level, and it
+# does not — one take came out at -29 LUFS, so x0.16 dropped the bed to -45 LUFS
+# against a -18.8 LUFS voice. 26 dB under is not "subtle", it is inaudible: the
+# reel sounded exactly like one with no music at all.
+# -32 LUFS puts it ~13 dB under the narration: clearly there, never competing.
+MUSIC_LUFS = -32.0
+MUSIC_TP = -2.0       # true-peak ceiling, so a loud bar cannot poke through the voice
 
 
 def _wrap(text: str, max_chars: int = 22) -> str:
@@ -132,9 +139,15 @@ def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path
               "-i", str(Path(narration_path).resolve())]
     if music_path is not None and Path(music_path).exists():
         inputs += ["-i", str(Path(music_path).resolve())]
-        # music (input 2) looped + quieted, mixed under narration (input 1); end on narration
-        audio_fc = (f"[2:a]volume={MUSIC_VOLUME}[m];"
-                    f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]")
+        # Music (input 2) normalised to a fixed loudness, then mixed under the
+        # narration (input 1); the mix ends on the narration.
+        # amix divides by the input count, which would halve the VOICE too — so the
+        # voice is handed through at unity and the bed is set by loudnorm alone.
+        audio_fc = (
+            f"[2:a]loudnorm=I={MUSIC_LUFS}:TP={MUSIC_TP}:LRA=11[m];"
+            f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=0:"
+            f"weights='1 1':normalize=0[a]"
+        )
     else:
         audio_fc = "[1:a]anull[a]"
 
