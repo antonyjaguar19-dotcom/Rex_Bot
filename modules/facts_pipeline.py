@@ -761,6 +761,44 @@ def narrate_facts(story: dict, progress_cb: Optional[Callable[[str], None]] = No
     return out
 
 
+def _music_bed(facts_id: str, _p) -> Optional[Path]:
+    """Write the background bed, or None.
+
+    facts_assembly could always MIX music (at 0.16, well under the voice) — nothing
+    ever GENERATED any, so every facts reel has shipped with silence under the
+    narration. Called BEFORE the GPU stages: MusicGen wants the card, and the image
+    and video models will be holding it later.
+
+    Best-effort by design. A dead MusicGen must not cost a 45-minute render, so it
+    degrades to no music — but it SAYS so. Silence nobody announced is how a reel
+    ships wrong.
+    """
+    if not rs.get_facts_music_enabled():
+        return None
+    try:
+        from modules import music_generator as mg, gpu_memory
+        mood = rs.get_facts_music_mood()
+        _p(f"🎵 writing the music bed ({mood})…")
+        gpu_memory.evict_all()
+        # Ask for the ceiling, not the reel's length: MusicGen caps a raw take at
+        # 30s and loops it up to fit, so a short ask would leave the bed ending
+        # before the last fact does.
+        track = mg.generate_music(
+            mood=mood,
+            duration_sec=rs.get_facts_max_seconds(),
+            script_id=facts_id,
+            progress_cb=lambda m: log.info(f"music: {m}"),
+        )
+        if not track:
+            _p("⚠️ no music track produced; continuing without a bed")
+            return None
+        _p(f"🎵 music bed: {Path(track).name}")
+        return Path(track)
+    except Exception as e:
+        _p(f"⚠️ music failed ({e}); continuing without a bed")
+        return None
+
+
 def render_facts(
     story: dict,
     progress_cb: Optional[Callable[[str], None]] = None,
@@ -783,6 +821,9 @@ def render_facts(
     beats = story.get("beats", [])
     if not beats:
         raise ValueError("Facts reel has no beats.")
+
+    if music_path is None:
+        music_path = _music_bed(facts_id, _p)
 
     # Mascot mode: the mascot presents every fact in costume. Falls back to the
     # normal abstract-backdrop path if the mascot is unavailable, so enabling it

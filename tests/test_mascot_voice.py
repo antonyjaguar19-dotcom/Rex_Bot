@@ -350,3 +350,58 @@ def test_a_hopeless_overrun_warns_instead_of_chipmunking(monkeypatch, tmp_path):
     fp._fit_to_budget(ws, said.append)
     assert seen == [fp._FIT_MAX_SPEED]
     assert any("over" in s.lower() for s in said)
+
+
+# ------------------------------------------------------------ music bed
+
+def test_facts_music_is_on_by_default_and_cheerful():
+    """facts_assembly could always MIX a bed — nothing ever GENERATED one, so every
+    facts reel shipped with silence under the narration."""
+    assert rs.get_facts_music_enabled() is True
+    assert rs.get_facts_music_mood() == "cheerful"
+
+
+def test_facts_music_mood_round_trips_and_rejects_junk():
+    rs.set_facts_music_mood("magical")
+    assert rs.get_facts_music_mood() == "magical"
+    with pytest.raises(ValueError):
+        rs.set_facts_music_mood("dubstep")
+    rs.set_facts_music_enabled(False)
+    assert rs.get_facts_music_enabled() is False
+
+
+def test_a_failed_music_bed_does_not_kill_the_render(monkeypatch):
+    """A 45-minute render must not die because MusicGen fell over. It degrades to
+    no music and SAYS so — silence that nobody announced is how a reel ships wrong."""
+    import modules.music_generator as mg
+    from modules import gpu_memory
+    monkeypatch.setattr(rs, "get_facts_music_enabled", lambda: True)
+    monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
+    monkeypatch.setattr(mg, "generate_music",
+                        lambda **k: (_ for _ in ()).throw(RuntimeError("no GPU")))
+    said = []
+    assert fp._music_bed("t1", said.append) is None
+    assert any("music failed" in s.lower() for s in said)
+
+
+def test_music_is_asked_for_the_ceiling_not_the_reel_length(monkeypatch, tmp_path):
+    """MusicGen caps a raw take at 30s and loops it up to the length asked for. Ask
+    for less than the ceiling and the bed stops before the last fact does."""
+    import modules.music_generator as mg
+    from modules import gpu_memory
+    monkeypatch.setattr(rs, "get_facts_music_enabled", lambda: True)
+    monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
+    track = tmp_path / "bed.mp3"; track.write_bytes(b"ID3")
+    seen = {}
+    monkeypatch.setattr(mg, "generate_music",
+                        lambda **k: (seen.update(k), track)[1])
+    assert fp._music_bed("t1", lambda *_: None) == track
+    assert seen["duration_sec"] == rs.get_facts_max_seconds()
+
+
+def test_music_off_writes_no_bed(monkeypatch):
+    monkeypatch.setattr(rs, "get_facts_music_enabled", lambda: False)
+    import modules.music_generator as mg
+    monkeypatch.setattr(mg, "generate_music",
+                        lambda **k: pytest.fail("music is off; nothing should render"))
+    assert fp._music_bed("t1", lambda *_: None) is None

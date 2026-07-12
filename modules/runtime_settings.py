@@ -671,6 +671,35 @@ def set_mascot_voice_ref(path) -> None:
     log.info(f"Mascot voice ref: {p.name}")
 
 
+# --- Facts background music ------------------------------------------------
+# facts_assembly has always been able to MIX a bed (at 0.16, well under the voice)
+# — nothing ever generated one, so every facts reel shipped with silence under the
+# narration. MusicGen writes it; "cheerful" suits the mascot.
+def get_facts_music_enabled() -> bool:
+    v = _load().get("facts_music_enabled")
+    return True if v is None else bool(v)
+
+
+def set_facts_music_enabled(enabled: bool) -> None:
+    data = _load(); data["facts_music_enabled"] = bool(enabled); _save(data)
+    log.info(f"Facts background music: {'on' if enabled else 'off'}")
+
+
+def get_facts_music_mood() -> str:
+    from modules.music_generator import VALID_MOODS
+    v = _load().get("facts_music_mood")
+    return v if v in VALID_MOODS else "cheerful"
+
+
+def set_facts_music_mood(mood: str) -> None:
+    from modules.music_generator import VALID_MOODS
+    mood = (mood or "").strip().lower()
+    if mood not in VALID_MOODS:
+        raise ValueError(f"mood must be one of {VALID_MOODS}")
+    data = _load(); data["facts_music_mood"] = mood; _save(data)
+    log.info(f"Facts music mood: {mood}")
+
+
 def get_facts_max_seconds() -> float:
     """Hard ceiling on a facts reel. Shorts die on length — 40s is the target.
 

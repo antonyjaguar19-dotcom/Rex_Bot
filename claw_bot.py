@@ -1642,6 +1642,7 @@ async def on_ready():
                     "facts_prompt":        cmd_facts_prompt,
                     "mascot_voice":        cmd_mascot_voice,
                     "facts_lipsync":       cmd_facts_lipsync,
+                    "facts_music":         cmd_facts_music,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -5599,6 +5600,33 @@ async def cmd_facts_lipsync(ctx, switch: str = None):
     note = (" — S2V syncs the mouth (slow; hands/props may distort)" if want
             else " — I2V motion + voice-over (clean, fast)")
     await ctx.send(f"✅ Mascot lip-sync → `{'on' if want else 'off'}`{note}.")
+
+
+@bot.command(name="facts_music", aliases=["fmusic"])
+async def cmd_facts_music(ctx, arg: str = None):
+    """Background music on a facts reel: `!facts_music on|off|<mood>`.
+
+    Moods: cheerful (default) · calm · adventurous · tender · magical · energetic.
+    MusicGen writes the bed; it is mixed well under the narration."""
+    from modules.music_generator import VALID_MOODS
+    if not arg:
+        state = "on" if rs.get_facts_music_enabled() else "off"
+        await ctx.send(
+            f"🎵 Facts music: `{state}` · mood `{rs.get_facts_music_mood()}`\n"
+            f"`!facts_music on|off` or a mood: `{'`, `'.join(VALID_MOODS)}`")
+        return
+    a = arg.strip().lower()
+    if a in ("on", "off", "true", "false", "1", "0", "yes", "no"):
+        want = a in ("on", "true", "1", "yes")
+        rs.set_facts_music_enabled(want)
+        await ctx.send(f"✅ Facts music → `{'on' if want else 'off'}`.")
+        return
+    try:
+        rs.set_facts_music_mood(a)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    rs.set_facts_music_enabled(True)
+    await ctx.send(f"✅ Facts music → `{rs.get_facts_music_mood()}`.")
 
 
 @bot.command(name="mascot_voice", aliases=["set_mascot_voice"])

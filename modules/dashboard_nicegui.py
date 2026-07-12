@@ -2095,6 +2095,17 @@ def main_page():
             lipsync_sw.on("update:model-value",
                           lambda e: rs.set_facts_mascot_lipsync(lipsync_sw.value))
 
+            from modules.music_generator import VALID_MOODS as _MOODS
+            music_sw = ui.switch("Music", value=rs.get_facts_music_enabled())                 .props("dense color=accent")                 .tooltip("A MusicGen bed under the narration, mixed well below the voice.")
+            music_sw.on("update:model-value",
+                        lambda e: rs.set_facts_music_enabled(music_sw.value))
+            mood_sel = ui.select(list(_MOODS),
+                                 value=_sel(rs.get_facts_music_mood(), list(_MOODS),
+                                            "cheerful"),
+                                 label="Mood")                 .props("outlined dark dense").style("min-width: 120px")
+            mood_sel.on("update:model-value",
+                        lambda e: rs.set_facts_music_mood(mood_sel.value))
+
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 
