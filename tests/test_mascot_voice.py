@@ -262,9 +262,10 @@ def test_clone_falls_back_to_qwen_without_a_reference(monkeypatch, tmp_path):
     assert any("reference" in s.lower() for s in said)
 
 
-def test_clone_does_not_pitch_or_speed_shift(monkeypatch, tmp_path):
-    """Timbre and pace come from the reference clip. Shifting a clone undoes the
-    cloning — that is the whole reason we are cloning."""
+def test_clone_is_paced_but_never_pitch_shifted(monkeypatch, tmp_path):
+    """atempo changes PACE without touching timbre, so the clone survives it — and
+    the clone reads sluggishly (1.75 w/s vs a presenter's 2.5-3), so it needs it.
+    Pitch shifting is what would undo the cloning, and must never happen here."""
     from modules import facts_pipeline as fp
     ref = tmp_path / "kid.wav"; ref.write_bytes(b"RIFF")
     monkeypatch.setattr(rs, "get_mascot_voice_ref", lambda: ref)
@@ -286,13 +287,15 @@ def test_clone_does_not_pitch_or_speed_shift(monkeypatch, tmp_path):
     monkeypatch.setattr(fp, "_pad_wav", lambda p: p)
     monkeypatch.setattr(fp, "_strip_sacrifice",
                         lambda *a, **k: pytest.fail("no carrier on the clone path"))
-    boom = lambda *a, **k: pytest.fail("a clone must not be pitch/speed shifted")
-    monkeypatch.setattr(fp, "_pitch_wav", boom)
-    monkeypatch.setattr(fp, "_speed_wav", boom)
+    monkeypatch.setattr(fp, "_pitch_wav",
+                        lambda *a, **k: pytest.fail("pitch shifting undoes the clone"))
+    paced = []
+    monkeypatch.setattr(fp, "_speed_wav", lambda p, s: paced.append(s) or p)
 
     wavs = fp._voice_beats_clone(["Bees make honey.", "They dance."],
                                  tmp_path, lambda *_: None)
     assert len(wavs) == 2
+    assert paced == [rs.get_mascot_voice_speed()] * 2
 
 
 def test_clone_sends_no_carrier_word_to_the_model():
@@ -302,3 +305,48 @@ def test_clone_sends_no_carrier_word_to_the_model():
     "Ready, one hive can make sixty kilos of honey"."""
     assert fp._natural_speech("Bees buzz.").startswith(fp._SACRIFICE)   # qwen path
     assert not fp._even_tone("Bees buzz.").startswith(fp._SACRIFICE)    # clone path
+
+
+# ------------------------------------------------------------ duration budget
+
+def test_reel_ceiling_defaults_to_40s():
+    assert rs.get_facts_max_seconds() == 40.0
+
+
+def test_under_budget_narration_is_left_alone(monkeypatch, tmp_path):
+    """Don't speed up a reel that already fits — that would just make it hurried."""
+    ws = [tmp_path / f"b{i}.wav" for i in range(3)]
+    for w in ws:
+        w.write_bytes(b"RIFF")
+    monkeypatch.setattr(fp, "_probe_dur", lambda p: 10.0)      # 30s total
+    monkeypatch.setattr(fp, "_speed_wav",
+                        lambda *a: pytest.fail("must not re-pace a reel that fits"))
+    assert fp._fit_to_budget(ws, lambda *_: None) == ws
+
+
+def test_over_budget_narration_is_sped_up_to_fit(monkeypatch, tmp_path):
+    """The 63s bee reel: 113 words read at 1.78 w/s. The pace is trimmed to fit the
+    ceiling, and atempo is pitch-preserving so the cloned timbre survives."""
+    ws = [tmp_path / f"b{i}.wav" for i in range(8)]
+    for w in ws:
+        w.write_bytes(b"RIFF")
+    monkeypatch.setattr(fp, "_probe_dur", lambda p: 6.0)       # 48s total vs 40s
+    seen = []
+    monkeypatch.setattr(fp, "_speed_wav", lambda p, s: seen.append(s) or p)
+    fp._fit_to_budget(ws, lambda *_: None)
+    assert len(seen) == 8
+    assert seen[0] == pytest.approx(48.0 / 40.0, abs=0.01)
+
+
+def test_a_hopeless_overrun_warns_instead_of_chipmunking(monkeypatch, tmp_path):
+    """If the script is far too long, cap the speed-up and SAY the reel will run
+    over. A mangled read that still misses the ceiling helps nobody."""
+    ws = [tmp_path / "b0.wav"]
+    ws[0].write_bytes(b"RIFF")
+    monkeypatch.setattr(fp, "_probe_dur", lambda p: 200.0)     # 5x over
+    seen = []
+    monkeypatch.setattr(fp, "_speed_wav", lambda p, s: seen.append(s) or p)
+    said = []
+    fp._fit_to_budget(ws, said.append)
+    assert seen == [fp._FIT_MAX_SPEED]
+    assert any("over" in s.lower() for s in said)

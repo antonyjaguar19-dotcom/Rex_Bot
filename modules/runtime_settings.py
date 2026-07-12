@@ -671,6 +671,27 @@ def set_mascot_voice_ref(path) -> None:
     log.info(f"Mascot voice ref: {p.name}")
 
 
+def get_facts_max_seconds() -> float:
+    """Hard ceiling on a facts reel. Shorts die on length — 40s is the target.
+
+    Enforced by measurement, not by hope: the beats are voiced, the real total is
+    measured, and the pace is trimmed to fit (see facts_pipeline._fit_to_budget).
+    """
+    try:
+        v = float(_load().get("facts_max_seconds", 40.0))
+    except (TypeError, ValueError):
+        return 40.0
+    return v if 10.0 <= v <= 180.0 else 40.0
+
+
+def set_facts_max_seconds(seconds: float) -> None:
+    seconds = float(seconds)
+    if not 10.0 <= seconds <= 180.0:
+        raise ValueError("length must be between 10 and 180 seconds")
+    data = _load(); data["facts_max_seconds"] = seconds; _save(data)
+    log.info(f"Facts reel ceiling: {seconds:.0f}s")
+
+
 def get_mascot_voice_exaggeration() -> float:
     """Chatterbox emotion knob. 0.5 neutral; higher = more theatrical.
 

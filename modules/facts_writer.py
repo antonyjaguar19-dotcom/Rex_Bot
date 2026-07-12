@@ -38,7 +38,13 @@ log = logging.getLogger("claw_bot.facts_writer")
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 OUTPUTS_DIR = PROJECT_ROOT / "04_Outputs" / "facts"
 
-DEFAULT_N_FACTS = 6
+# A reel is capped at 40s (rs.get_facts_max_seconds). Measured on a real render:
+# the mascot reads ~2.2 words/sec once the fit pass has set the pace, and each beat
+# carries ~0.7s of head/tail padding. So 5 facts + hook + outro = 7 beats leaves
+# roughly 78 words of speech — which is why the line budgets below are what they
+# are. Ask for 6 long facts and the fit pass has to speed the read up past the
+# point where it still sounds like a presenter.
+DEFAULT_N_FACTS = 5
 MIN_FACTS = 4
 MAX_FACTS = 8
 
@@ -56,13 +62,13 @@ def _prompt(topic: str, n: int) -> str:
         f"Return JSON with EXACTLY this shape:\n"
         f"{{\n"
         f'  "title": "short scroll-stopping title (max 8 words)",\n'
-        f'  "hook": "a GENERAL teaser opening line (max 16 words). Do NOT state a specific fact — just promise the reel (e.g. \'Here are {n} things about X you won\'t believe\'). Never claim something not in the facts below.",\n'
+        f'  "hook": "a GENERAL teaser opening line (max 10 words). Do NOT state a specific fact — just promise the reel (e.g. \'Here are {n} things about X you won\'t believe\'). Never claim something not in the facts below.",\n'
         f'  "facts": [\n'
-        f'     {{"spoken": "the fact as one spoken sentence (12-28 words), surprising and TRUE",\n'
+        f'     {{"spoken": "the fact as ONE short spoken sentence (10-16 words, HARD limit), surprising and TRUE. Cut every filler word — this is read aloud against a 40-second clock. Lead with the surprise, drop the wind-up (\'Bees visit 100 flowers per trip\', NOT \'Worker bees are so efficient that they visit around 100 flowers per trip to gather nectar and pollen\')",\n'
         f'       "caption": "the same fact boiled to a punchy 3-8 word on-screen line",\n'
         f'       "backdrop": "a CREATIVE, eye-catching, playful photographic scene that makes this fact\'s IDEA memorable. Stay on-topic but be imaginative — anthropomorphize or add a fun prop/costume (e.g. intelligence -> an octopus wearing a tiny scholar graduation cap solving a puzzle; venom -> a menacing glowing blue-ringed octopus; camouflage -> an octopus half-vanished into coral). Vivid, whimsical, cinematic. No text/words in the image."}}\n'
         f"  ],\n"
-        f'  "outro": "one spoken call-to-action (e.g. follow for more), max 12 words",\n'
+        f'  "outro": "one spoken call-to-action (e.g. follow for more), max 8 words",\n'
         f'  "description": "a catchy 2-3 sentence video description for YouTube Shorts / TikTok / Instagram Reels that teases the facts and drives follows. End it with a NEW line containing 10-14 relevant lowercase hashtags separated by spaces (mix topic-specific + broad like #facts #shorts #reels #didyouknow)."\n'
         f"}}\n\n"
         f"Give EXACTLY {n} facts. Order them weakest-to-strongest so the best fact is last. "

@@ -406,6 +406,41 @@ def _speed_wav(src: Path, speed: float) -> Path:
     return src
 
 
+# Past this, a sped-up voice stops sounding like a presenter and starts sounding
+# like a chipmunk. If the beats cannot fit under the ceiling at this pace, the
+# script is too long — say so out loud rather than shipping a mangled read.
+_FIT_MAX_SPEED = 1.45
+
+
+def _fit_to_budget(wavs: list, _p) -> list:
+    """Trim the narration's PACE until the reel fits its ceiling.
+
+    Measured, not assumed: the cloned voice read at 1.78 words/sec (a presenter
+    reads at 2.5-3), which is how a 113-word script became a 63s reel. atempo is
+    pitch-preserving, so speeding it up changes the pace WITHOUT touching the
+    cloned timbre — the thing the reference actually decides.
+    """
+    budget = rs.get_facts_max_seconds()
+    total = sum(_probe_dur(w) for w in wavs)
+    if total <= budget:
+        _p(f"⏱️ narration {total:.1f}s — under the {budget:.0f}s ceiling")
+        return wavs
+
+    factor = total / budget
+    if factor > _FIT_MAX_SPEED:
+        _p(f"⚠️ narration {total:.1f}s needs {factor:.2f}x to fit {budget:.0f}s; "
+           f"capping at {_FIT_MAX_SPEED}x — the reel WILL run over. Write shorter "
+           f"lines or fewer facts.")
+        factor = _FIT_MAX_SPEED
+
+    for w in wavs:
+        _speed_wav(w, factor)
+    now = sum(_probe_dur(w) for w in wavs)
+    _p(f"⏱️ narration {total:.1f}s → {now:.1f}s ({factor:.2f}x) "
+       f"to fit the {budget:.0f}s ceiling")
+    return wavs
+
+
 def _voice_beats_clone(narrations: list, out_dir: Path, _p,
                        spoken: Optional[list] = None) -> Optional[list]:
     """One WAV per fact, CLONED from a reference clip (Chatterbox).
@@ -444,10 +479,17 @@ def _voice_beats_clone(narrations: list, out_dir: Path, _p,
         exaggeration=rs.get_mascot_voice_exaggeration(),
     )
 
+    # Pace IS adjusted here; timbre is NOT. The clone reads at ~1.75 words/sec
+    # against a presenter's 2.5-3 — sluggish however short the script is, so a word
+    # budget alone does not fix it. atempo is pitch-preserving: it changes the pace
+    # without touching the cloned voice. (Pitch shifting WOULD undo the clone, and
+    # is never applied on this path.)
+    speed = rs.get_mascot_voice_speed()
     wavs = []
     for i, seg in enumerate(segs):
         wp = out_dir / f"beat_{i:02d}.wav"
         shutil.copy2(seg, wp)
+        _speed_wav(wp, speed)     # pad LAST — padding first would be shrunk by this
         wavs.append(_pad_wav(wp))
     return wavs
 
@@ -467,7 +509,10 @@ def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
         try:
             wavs = _voice_beats_clone(narrations, out_dir, _p, spoken=spoken)
             if wavs:
-                return wavs
+                # Pace has ONE owner: the budget. The clone reads slow (1.78 w/s
+                # measured, against a presenter's 2.5-3), so the fit pass is what
+                # brings it up to speed — and it does it by measuring, not guessing.
+                return _fit_to_budget(wavs, _p)
         except Exception as e:
             _p(f"⚠️ mascot voice (chatterbox) failed ({e}); using qwen.")
         engine = "qwen"
@@ -512,7 +557,7 @@ def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
                 _speed_wav(wp, speed)
                 _pitch_wav(wp, pitch)
                 wavs.append(_pad_wav(wp))
-            return wavs
+            return _fit_to_budget(wavs, _p)
         except Exception as e:
             _p(f"⚠️ mascot voice (qwen) failed ({e}); using kokoro.")
 
@@ -524,7 +569,7 @@ def _voice_beats_mascot(narrations: list, out_dir: Path, _p,
         wp = out_dir / f"beat_{i:02d}.wav"
         tts.synthesize(text, output_path=wp, voice=voice)
         wavs.append(wp)
-    return wavs
+    return _fit_to_budget(wavs, _p)
 
 
 def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
