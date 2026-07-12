@@ -132,12 +132,72 @@ def _write_facts_ass(total_dur: float, w: int, h: int, path: Path,
     return path
 
 
+def trim_trailing_silence(music: Path) -> Path:
+    """Cut the dead air off the end of a generated track.
+
+    ACE-Step composes a piece SHORTER than the length asked for and pads the rest
+    with silence — a 34.4s request came back as 27s of music and 7.4s of nothing.
+    Left alone, that silence is what lands on the last fact. The music has to be
+    found before it can be aligned, so the padding goes first.
+    """
+    out = music.with_name(f"{music.stem}_trimmed.wav")
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(music),
+         "-af", "areverse,silenceremove=start_periods=1:start_threshold=-50dB:"
+                "start_silence=0.1,areverse",
+         str(out)],
+        capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not out.exists():
+        log.warning(f"silence trim failed ({r.stderr[:120]}); using the raw bed")
+        return music
+    before, after = _probe_duration(music), _probe_duration(out)
+    if after < 1.0:                     # the whole thing read as silence — trust the source
+        return music
+    log.info(f"🎵 trimmed dead tail: {before:.1f}s -> {after:.1f}s of music")
+    return out
+
+
+def _align_music_tail(music: Path, total_dur: float) -> Path:
+    """Land the music's LAST note on the reel's last frame.
+
+    ACE-Step is asked for the reel's length but does not hit it to the sample, and
+    the mux cuts the bed dead at the narration's end. Off by a second and the outro
+    it composed gets chopped — which is the sudden cut we are trying to remove.
+
+    So the END is anchored, not the start: a long track is trimmed from the FRONT
+    (keeping its ending), a short one is pushed back with leading silence. Either
+    way the final chord lands with the final word.
+    """
+    d = _probe_duration(music)
+    if abs(d - total_dur) < 0.08:
+        return music
+
+    out = music.with_name(f"{music.stem}_aligned.wav")
+    if d > total_dur:
+        args = ["-ss", f"{d - total_dur:.3f}", "-i", str(music)]
+        af = []
+    else:
+        args = ["-i", str(music)]
+        af = ["-af", f"adelay={int(round((total_dur - d) * 1000))}:all=1"]
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", *args, *af,
+         "-t", f"{total_dur:.3f}", str(out)],
+        capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not out.exists():
+        log.warning(f"music tail-align failed ({r.stderr[:120]}); using the raw bed")
+        return music
+    log.info(f"🎵 music tail aligned: {d:.2f}s -> {total_dur:.2f}s "
+             f"({'trimmed from the front' if d > total_dur else 'delayed'})")
+    return out
+
+
 def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path],
                total_dur: float, subs_path: Path, out_path: Path,
                w: int = 1080, h: int = 1920) -> Path:
     inputs = ["-i", str(Path(video_path).resolve()),
               "-i", str(Path(narration_path).resolve())]
     if music_path is not None and Path(music_path).exists():
+        music_path = _align_music_tail(Path(music_path), total_dur)
         inputs += ["-i", str(Path(music_path).resolve())]
         # Music (input 2) normalised to a fixed loudness, then mixed under the
         # narration (input 1); the mix ends on the narration.

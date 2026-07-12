@@ -721,6 +721,12 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
     #    assembler overlays matches each clip's own audio frame-for-frame.
     narration = _concat_wavs(wavs, out_dir / "narration.wav")
 
+    # 5b. The bed is composed LAST, to the reel's real length, so ACE-Step can end
+    #     it on an outro instead of us chopping a loop wherever the reel stops.
+    #     The GPU is free here — the video models have released it.
+    if music_path is None:
+        music_path = _music_bed(facts_id, _probe_dur(narration), _p)
+
     # 6. Concat clips + big captions (timed to real clip durations) + music.
     _p("🎬 assembling mascot reel…")
     return fasm.assemble_facts_clips(story, narration, clips, aspect=aspect,
@@ -761,32 +767,80 @@ def narrate_facts(story: dict, progress_cb: Optional[Callable[[str], None]] = No
     return out
 
 
-def _music_bed(facts_id: str, _p) -> Optional[Path]:
+# What ACE-Step is told to write. The [outro] section is the whole point: the track
+# has to LAND, not stop. MusicGen only ever gives us a 30s loop that gets chopped
+# wherever the reel happens to end — which is the sudden cut.
+_MOOD_TAGS = {
+    "cheerful":    "upbeat playful cartoon music, bright ukulele and glockenspiel, "
+                   "bouncy, sunny, family friendly",
+    "calm":        "gentle soft lullaby, warm piano and strings, slow and peaceful",
+    "adventurous": "adventurous orchestral, driving drums, brass, playful heroic",
+    "tender":      "tender warm acoustic guitar, soft and sweet, heartfelt",
+    "magical":     "magical whimsical, celesta and harp, sparkling, wondrous",
+    "energetic":   "energetic upbeat pop, punchy drums, lively and fun",
+}
+_OUTRO_LYRICS = "[inst]\n[intro]\n[verse]\n[outro]"
+
+
+def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
     """Write the background bed, or None.
 
-    facts_assembly could always MIX music (at 0.16, well under the voice) — nothing
-    ever GENERATED any, so every facts reel has shipped with silence under the
-    narration. Called BEFORE the GPU stages: MusicGen wants the card, and the image
-    and video models will be holding it later.
+    ACE-Step FIRST, because it composes a complete piece of a REQUESTED LENGTH —
+    it can be told to end on an [outro], so the music LANDS on the last frame. That
+    is why the duration is passed in: it is the reel's real length, known only once
+    the narration is voiced.
 
-    Best-effort by design. A dead MusicGen must not cost a 45-minute render, so it
-    degrades to no music — but it SAYS so. Silence nobody announced is how a reel
-    ships wrong.
+    MusicGen is the fallback, and it is a fallback for a reason: it maxes out at a
+    30s take which then has to be looped and chopped wherever the reel ends — which
+    is exactly the sudden cut this replaced.
+
+    Best-effort by design: a dead music model must not cost a 45-minute render, so it
+    degrades to no bed — but it SAYS so. Silence nobody announced is how a reel ships
+    wrong.
     """
     if not rs.get_facts_music_enabled():
         return None
+
+    mood = rs.get_facts_music_mood()
+    reel = max(float(duration_sec), 8.0)
+    # Ask for MORE than the reel needs. ACE-Step composes a piece shorter than the
+    # length requested and pads the rest with silence — asked for 34.4s, it wrote 27s
+    # of music and 7.4s of nothing, so the last fact played over dead air. With
+    # headroom the music covers the reel, the padding is trimmed off, and the piece's
+    # real ending is then anchored to the final frame.
+    ask = reel * 1.35
+
+    try:
+        from modules import audio_backend, gpu_memory
+        ab = audio_backend.get_active_backend()
+        ok, why = ab.health_check()
+        if not ok:
+            raise RuntimeError(why)
+        _p(f"🎵 composing the music bed ({mood}, {reel:.0f}s, ACE-Step)…")
+        gpu_memory.evict_all()
+        track = ab.generate(
+            tags=_MOOD_TAGS.get(mood, _MOOD_TAGS["cheerful"]) + ", instrumental, no vocals",
+            lyrics=_OUTRO_LYRICS,
+            duration_sec=ask,
+            output_filename=f"facts_bed_{facts_id}.mp3",
+        )
+        if track and Path(track).exists():
+            track = fasm.trim_trailing_silence(Path(track))
+            got = _probe_dur(track)
+            if got < reel - 0.5:
+                _p(f"⚠️ the bed is only {got:.1f}s of music for a {reel:.1f}s reel — "
+                   f"it will start late so its ending still lands on the last frame")
+            _p(f"🎵 music bed: {Path(track).name} ({got:.1f}s, ends on an outro)")
+            return Path(track)
+        raise RuntimeError("ACE-Step produced no file")
+    except Exception as e:
+        _p(f"⚠️ ACE-Step bed failed ({e}); falling back to MusicGen (it will fade out)")
+
     try:
         from modules import music_generator as mg, gpu_memory
-        mood = rs.get_facts_music_mood()
-        _p(f"🎵 writing the music bed ({mood})…")
         gpu_memory.evict_all()
-        # Ask for the ceiling, not the reel's length: MusicGen caps a raw take at
-        # 30s and loops it up to fit, so a short ask would leave the bed ending
-        # before the last fact does.
         track = mg.generate_music(
-            mood=mood,
-            duration_sec=rs.get_facts_max_seconds(),
-            script_id=facts_id,
+            mood=mood, duration_sec=dur, script_id=facts_id,
             progress_cb=lambda m: log.info(f"music: {m}"),
         )
         if not track:
@@ -822,8 +876,10 @@ def render_facts(
     if not beats:
         raise ValueError("Facts reel has no beats.")
 
-    if music_path is None:
-        music_path = _music_bed(facts_id, _p)
+    # NOTE: the music bed is NOT written here. It is composed once the narration
+    # exists, because ACE-Step needs the reel's real length to end the track on an
+    # outro. Generating it up front meant guessing the length, and a guessed length
+    # is what forced the old loop-and-chop ending.
 
     # Mascot mode: the mascot presents every fact in costume. Falls back to the
     # normal abstract-backdrop path if the mascot is unavailable, so enabling it
@@ -939,6 +995,10 @@ def render_facts(
     # Backdrops done — hand the card back so Wan (also ~13.6 GB) starts clean.
     if backend is not None:
         gpu_memory.release(backend_label)
+
+    # ---- music bed, composed to the narration's real length (see _music_bed) ----
+    if music_path is None:
+        music_path = _music_bed(facts_id, _probe_dur(narration_path), _p)
 
     # ---- assemble: animate each cut (Wan I2V) OR Ken Burns stills ----
     want_wan = (rs.get_facts_video_mode() == "wan") if animate is None else animate

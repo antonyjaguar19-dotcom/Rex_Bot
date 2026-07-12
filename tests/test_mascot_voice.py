@@ -379,24 +379,12 @@ def test_a_failed_music_bed_does_not_kill_the_render(monkeypatch):
     monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
     monkeypatch.setattr(mg, "generate_music",
                         lambda **k: (_ for _ in ()).throw(RuntimeError("no GPU")))
+    from modules import audio_backend
+    monkeypatch.setattr(audio_backend, "get_active_backend",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no ACE")))
     said = []
-    assert fp._music_bed("t1", said.append) is None
+    assert fp._music_bed("t1", 34.4, said.append) is None
     assert any("music failed" in s.lower() for s in said)
-
-
-def test_music_is_asked_for_the_ceiling_not_the_reel_length(monkeypatch, tmp_path):
-    """MusicGen caps a raw take at 30s and loops it up to the length asked for. Ask
-    for less than the ceiling and the bed stops before the last fact does."""
-    import modules.music_generator as mg
-    from modules import gpu_memory
-    monkeypatch.setattr(rs, "get_facts_music_enabled", lambda: True)
-    monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
-    track = tmp_path / "bed.mp3"; track.write_bytes(b"ID3")
-    seen = {}
-    monkeypatch.setattr(mg, "generate_music",
-                        lambda **k: (seen.update(k), track)[1])
-    assert fp._music_bed("t1", lambda *_: None) == track
-    assert seen["duration_sec"] == rs.get_facts_max_seconds()
 
 
 def test_music_off_writes_no_bed(monkeypatch):
@@ -404,4 +392,49 @@ def test_music_off_writes_no_bed(monkeypatch):
     import modules.music_generator as mg
     monkeypatch.setattr(mg, "generate_music",
                         lambda **k: pytest.fail("music is off; nothing should render"))
-    assert fp._music_bed("t1", lambda *_: None) is None
+    assert fp._music_bed("t1", 34.4, lambda *_: None) is None
+
+
+# ------------------------------------------------------------ music outro
+
+def test_bed_is_asked_for_headroom_over_the_reel(monkeypatch, tmp_path):
+    """ACE-Step composes SHORTER than asked and pads the rest with silence — asked
+    for 34.4s it wrote 27s of music and 7.4s of nothing, so the last fact played
+    over dead air. Ask for more than the reel needs."""
+    from modules import audio_backend, gpu_memory, facts_assembly as fasm
+    monkeypatch.setattr(rs, "get_facts_music_enabled", lambda: True)
+    monkeypatch.setattr(gpu_memory, "evict_all", lambda *a, **k: None)
+    track = tmp_path / "bed.mp3"; track.write_bytes(b"ID3")
+    seen = {}
+
+    class _AB:
+        def health_check(self): return (True, "ok")
+        def generate(self, **k): seen.update(k); return track
+    monkeypatch.setattr(audio_backend, "get_active_backend", lambda: _AB())
+    monkeypatch.setattr(fasm, "trim_trailing_silence", lambda p: p)
+    monkeypatch.setattr(fp, "_probe_dur", lambda p: 40.0)
+
+    fp._music_bed("t1", 34.4, lambda *_: None)
+    assert seen["duration_sec"] > 34.4, "no headroom = the bed quits before the reel does"
+    assert "[outro]" in seen["lyrics"], "the piece has to be told to LAND"
+
+
+def test_music_tail_is_anchored_to_the_last_frame(monkeypatch, tmp_path):
+    """A long bed is trimmed from the FRONT, keeping its ending. Anchor the start
+    instead and the composed outro gets chopped — the sudden cut we set out to fix."""
+    from modules import facts_assembly as fasm
+    music = tmp_path / "bed.wav"; music.write_bytes(b"RIFF")
+    calls = {}
+    monkeypatch.setattr(fasm, "_probe_duration", lambda p: 41.6)
+
+    def fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"RIFF")
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+    monkeypatch.setattr(fasm.subprocess, "run", fake_run)
+
+    out = fasm._align_music_tail(music, 34.4)
+    assert out != music
+    # 41.6 - 34.4 = 7.2s cut off the FRONT, so the final chord still lands last.
+    assert "-ss" in calls["cmd"]
+    assert calls["cmd"][calls["cmd"].index("-ss") + 1].startswith("7.2")
