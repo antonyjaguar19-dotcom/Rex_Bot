@@ -1074,8 +1074,23 @@ def _attach_publish_kit(story: dict, out: dict, backgrounds: list) -> dict:
             source_image=still,
             thumbnail=rs.get_facts_thumbnail_enabled(),
         )
-        return {"publish": kit, "title": kit.get("title"),
-                "thumbnail": kit.get("thumb_9x16") or kit.get("thumb_16x9")}
+        thumb = kit.get("thumb_9x16") or kit.get("thumb_16x9")
+
+        # Hold the thumbnail on the FRONT of the reel. Shorts custom thumbnails are
+        # not offered in every region, and where they are not the platform grabs the
+        # first frame — so the thumbnail has to BE the first frame. A generated
+        # thumbnail nobody can upload is just a nice file on disk.
+        hold = rs.get_facts_thumb_hold_sec()
+        if thumb and hold > 0:
+            for key in ("9x16", "16x9", "1x1"):
+                v = out.get(key)
+                if v and Path(v).exists():
+                    fasm.prepend_still(Path(v), Path(thumb), hold)
+            out["duration"] = _probe_dur(Path(video))
+
+        return {"publish": kit, "title": kit.get("title"), "thumbnail": thumb,
+                "thumb_held_sec": hold if thumb else 0.0,
+                "duration": out.get("duration")}
     except Exception as e:
         log.warning(f"publish kit skipped: {e}")
         return {}

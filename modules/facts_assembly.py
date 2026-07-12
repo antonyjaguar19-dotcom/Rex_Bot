@@ -20,7 +20,8 @@ _HERE = Path(__file__).parent.parent.resolve()
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from modules.assembly import FFMPEG_EXE, FINAL_DIR, ASPECTS, _probe_duration
+from modules.assembly import (FFMPEG_EXE, FFPROBE_EXE, FINAL_DIR, ASPECTS,
+                              _probe_duration)
 from modules.musicvideo_assembly import (
     TEMP_DIR, WATERMARK_TEXT, WATERMARK_PNG, logo_overlay_filter,
     _ken_burns_segment, _concat_segments,
@@ -130,6 +131,94 @@ def _write_facts_ass(total_dur: float, w: int, h: int, path: Path,
     )
     path.write_text(header + "".join(events), encoding="utf-8")
     return path
+
+
+# Stamped into the reel's metadata when the thumbnail is held on its front, so a
+# second pass can see it is already there.
+_THUMB_TAG = "rexjaw_thumb_hold"
+
+
+def _thumb_hold_of(video: Path) -> Optional[float]:
+    """Seconds of thumbnail already held on this reel, or None if it has none."""
+    r = subprocess.run(
+        [str(FFPROBE_EXE), "-v", "error", "-show_entries", "format_tags=comment",
+         "-of", "default=nw=1:nk=1", str(video)],
+        capture_output=True, text=True, timeout=60)
+    tag = (r.stdout or "").strip()
+    if tag.startswith(f"{_THUMB_TAG}="):
+        try:
+            return float(tag.split("=", 1)[1])
+        except ValueError:
+            return None
+    return None
+
+
+def _probe_dims(video: Path) -> tuple[int, int]:
+    """The reel's real frame size — never assume 1080x1920; 16x9 and 1x1 exist too."""
+    r = subprocess.run(
+        [str(FFPROBE_EXE), "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(video)],
+        capture_output=True, text=True, timeout=60)
+    try:
+        w, h = (int(x) for x in (r.stdout or "").strip().split("x")[:2])
+        return w, h
+    except Exception:
+        return 1080, 1920
+
+
+def prepend_still(video: Path, image: Path, hold_sec: float = 0.5) -> Path:
+    """Hold the thumbnail image on the front of the reel for a fraction of a second.
+
+    Shorts custom thumbnails are not offered in every region, and where they are not,
+    the platform grabs the FIRST FRAME. So the thumbnail has to BE the first frame —
+    generating a beautiful one that nobody can upload is just a nice file on disk.
+
+    Held, not animated: it is a poster frame, not a shot.
+
+    Rewrites the reel in place (same filename), so every path already handed out —
+    publish kit, Discord, the dashboard — keeps working. The narration moves with the
+    picture, and the captions are burned into the pixels, so nothing desyncs.
+    """
+    if not image or not Path(image).exists():
+        return video
+    # The reel remembers that it already carries a poster frame. Regenerating a
+    # thumbnail re-runs the publish kit against the SAME finished file, and without
+    # this the holds stack — every reroll would bolt another half-second of still
+    # onto the front.
+    if _thumb_hold_of(video) is not None:
+        log.info(f"{video.name} already opens on its thumbnail; not stacking another")
+        return video
+
+    hold = max(0.1, min(float(hold_sec), 3.0))
+    w, h = _probe_dims(video)
+    tmp = video.with_name(f"{video.stem}_thumbed.mp4")
+
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error",
+         "-loop", "1", "-t", f"{hold:.3f}", "-i", str(Path(image).resolve()),
+         "-i", str(video.resolve()),
+         "-f", "lavfi", "-t", f"{hold:.3f}",
+         "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+         "-filter_complex",
+         # The still is fitted to the reel's own frame — a thumbnail rendered at a
+         # different size would otherwise force a resolution change mid-file.
+         f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+         f"crop={w}:{h},setsar=1,fps=16,format=yuv420p[t];"
+         f"[1:v]scale={w}:{h},setsar=1,fps=16,format=yuv420p[v];"
+         f"[t][v]concat=n=2:v=1:a=0[outv];"
+         f"[2:a][1:a]concat=n=2:v=0:a=1[outa]",
+         "-map", "[outv]", "-map", "[outa]",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+         "-metadata", f"comment={_THUMB_TAG}={hold:.3f}",   # output option, not input
+         str(tmp)],
+        capture_output=True, text=True, timeout=900)
+    if r.returncode != 0 or not tmp.exists():
+        log.warning(f"thumbnail hold failed ({r.stderr[-200:]}); shipping without it")
+        return video
+    tmp.replace(video)
+    log.info(f"🖼️ thumbnail held on the front of {video.name} for {hold:.2f}s")
+    return video
 
 
 def trim_trailing_silence(music: Path) -> Path:

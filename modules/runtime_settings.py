@@ -700,6 +700,25 @@ def set_facts_music_mood(mood: str) -> None:
     log.info(f"Facts music mood: {mood}")
 
 
+# Shorts custom thumbnails are not offered in every region (Jeffy's included), and
+# where they are not, the platform grabs the FIRST FRAME. So the thumbnail is held
+# on the front of the reel: a poster frame, not an animated shot. 0 = off.
+def get_facts_thumb_hold_sec() -> float:
+    try:
+        v = float(_load().get("facts_thumb_hold_sec", 0.5))
+    except (TypeError, ValueError):
+        return 0.5
+    return v if 0.0 <= v <= 3.0 else 0.5
+
+
+def set_facts_thumb_hold_sec(seconds: float) -> None:
+    seconds = float(seconds)
+    if not 0.0 <= seconds <= 3.0:
+        raise ValueError("hold must be between 0 and 3 seconds (0 = off)")
+    data = _load(); data["facts_thumb_hold_sec"] = seconds; _save(data)
+    log.info(f"Facts thumbnail hold: {seconds:.2f}s")
+
+
 def get_facts_max_seconds() -> float:
     """Hard ceiling on a facts reel. Shorts die on length — 40s is the target.
 

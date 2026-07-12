@@ -1643,6 +1643,9 @@ async def on_ready():
                     "mascot_voice":        cmd_mascot_voice,
                     "facts_lipsync":       cmd_facts_lipsync,
                     "facts_music":         cmd_facts_music,
+                    "facts_length":        cmd_facts_length,
+                    "facts_thumb_hold":    cmd_facts_thumb_hold,
+                    "mascot_tone":         cmd_mascot_tone,
                     "stats":               cmd_stats,
                     "pending":             cmd_pending,
                     "resume_feedback":     cmd_resume_feedback,
@@ -3105,6 +3108,25 @@ async def cmd_help(ctx):
             "`!set_cfg <n>` — guidance scale (1.0-7.0 typical)\n"
             "  ↳ *Example:* `!set_cfg 1.5`\n"
             "`!reset_settings` — clear all overrides"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="🐆 Facts Reels (the mascot presents)",
+        value=(
+            "`!facts <topic>` — write + render a facts Short\n"
+            "  ↳ *Example:* `!facts honey bees`\n"
+            "`!facts_mascot on|off` — mascot in costume vs abstract backdrops\n"
+            "`!facts_length <sec>` — hard ceiling (default 40; pace is trimmed to fit)\n"
+            "`!facts_music on|off|<mood>` — bed under the narration (ends on an outro)\n"
+            "`!facts_thumb_hold <sec>` — hold the thumbnail as the FIRST FRAME (0 = off)\n"
+            "  ↳ *why:* Shorts custom thumbnails aren't offered in every region\n"
+            "`!mascot_voice clone` — the mascot's own voice (attach a 5-15s clip to set it)\n"
+            "`!mascot_voice <name>` — or a Qwen preset: Vivian/Serena/Dylan/Eric/Uncle_Fu\n"
+            "`!mascot_tone <emotion> [pace]` — 0.35 calm · 1.20x pace\n"
+            "`!facts_prompt <id> <shot#> image|motion|scene <text>` — edit a beat\n"
+            "`!facts_lipsync on|off` — Wan S2V mouth sync (slow; distorts hands — off)"
         ),
         inline=False,
     )
@@ -5627,6 +5649,69 @@ async def cmd_facts_music(ctx, arg: str = None):
         await ctx.send(f"⚠️ {e}"); return
     rs.set_facts_music_enabled(True)
     await ctx.send(f"✅ Facts music → `{rs.get_facts_music_mood()}`.")
+
+
+@bot.command(name="facts_length", aliases=["reel_length", "facts_max"])
+async def cmd_facts_length(ctx, seconds: float = None):
+    """Hard ceiling on a facts reel: `!facts_length 40`.
+
+    Enforced by measurement, not hope: the beats are voiced, the real total is
+    measured, and the narration's pace is trimmed to fit. If a script is so long it
+    would need more than 1.45x to fit, the render SAYS it will run over rather than
+    shipping a chipmunk read."""
+    if seconds is None:
+        await ctx.send(f"⏱️ Reel ceiling: `{rs.get_facts_max_seconds():.0f}s` — "
+                       f"`!facts_length <seconds>`")
+        return
+    try:
+        rs.set_facts_max_seconds(seconds)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    await ctx.send(f"✅ Reel ceiling → `{rs.get_facts_max_seconds():.0f}s`.")
+
+
+@bot.command(name="facts_thumb_hold", aliases=["thumb_hold"])
+async def cmd_facts_thumb_hold(ctx, seconds: float = None):
+    """Hold the thumbnail on the front of the reel: `!facts_thumb_hold 0.5` (0 = off).
+
+    Shorts custom thumbnails are not offered in every region. Where they are not, the
+    platform grabs the FIRST FRAME — so the thumbnail has to BE the first frame. It is
+    held as a still, not animated."""
+    if seconds is None:
+        cur = rs.get_facts_thumb_hold_sec()
+        state = f"`{cur:.1f}s`" if cur > 0 else "`off`"
+        await ctx.send(f"🖼️ Thumbnail hold: {state} — `!facts_thumb_hold <sec|0>`")
+        return
+    try:
+        rs.set_facts_thumb_hold_sec(seconds)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    cur = rs.get_facts_thumb_hold_sec()
+    await ctx.send(f"✅ Thumbnail hold → `{cur:.1f}s`."
+                   if cur > 0 else "✅ Thumbnail hold → `off` (reel starts on shot 1).")
+
+
+@bot.command(name="mascot_tone", aliases=["voice_tone"])
+async def cmd_mascot_tone(ctx, emotion: float = None, pace: float = None):
+    """The mascot's delivery: `!mascot_tone <emotion 0-1.5> [pace 0.5-2.0]`.
+
+    emotion — Chatterbox's knob. 0.35 is calm and even; higher gets theatrical, and
+    every voice we rejected failed by being too excited.
+    pace    — playback speed, pitch preserved, so a cloned voice stays itself."""
+    if emotion is None:
+        await ctx.send(
+            f"🎚️ Mascot tone: emotion `{rs.get_mascot_voice_exaggeration():.2f}` · "
+            f"pace `{rs.get_mascot_voice_speed():.2f}x`\n"
+            f"`!mascot_tone <emotion> [pace]`")
+        return
+    try:
+        rs.set_mascot_voice_exaggeration(emotion)
+        if pace is not None:
+            rs.set_mascot_voice_speed(pace)
+    except ValueError as e:
+        await ctx.send(f"⚠️ {e}"); return
+    await ctx.send(f"✅ Mascot tone → emotion `{rs.get_mascot_voice_exaggeration():.2f}`, "
+                   f"pace `{rs.get_mascot_voice_speed():.2f}x`.")
 
 
 @bot.command(name="mascot_voice", aliases=["set_mascot_voice"])

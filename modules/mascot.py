@@ -21,6 +21,7 @@ scene all fall back to the ordinary still-based thumbnail. A thumbnail must
 never cost you a render.
 """
 
+import json
 import logging
 import random
 import re
@@ -873,4 +874,16 @@ def render_for_video(title: str, context: str, out_dir: Path, stem: str,
         out["_seed"] = seed
         out["_backend"] = active_backend_id()
         out["_baked_headline"] = baked   # publish_kit must not paint over it
+        # Park the flags beside the art. publish_kit REUSES these PNGs on a rerun
+        # (a GPU render costs minutes, re-compositing a title costs nothing), and
+        # a cache hit that forgets `baked` makes the next run paint the title on
+        # top of type the model already drew — two headlines on one thumbnail.
+        try:
+            (out_dir / f"{stem}_mascot.json").write_text(json.dumps({
+                "baked": baked, "scene": scene, "seed": seed,
+                "backend": out["_backend"],
+                "headline_shown": out.get("_headline_shown", {}),
+            }), encoding="utf-8")
+        except Exception as e:
+            log.warning(f"could not park mascot art flags: {e}")
     return out

@@ -528,9 +528,28 @@ def _mascot_art(video: Path, title: str, context: str, mode: str,
         # font, tweaked scrim) must not go back to the GPU. Delete the
         # *_mascot_*.png files to force fresh art.
         cached = {a: video.parent / f"{stem}_mascot_{a}.png" for a in wanted}
+        flags_path = video.parent / f"{stem}_mascot.json"
         if cached and all(p.exists() for p in cached.values()):
-            log.info(f"reusing cached mascot art for {stem}")
-            return {a: p for a, p in cached.items()}
+            # The cache MUST carry `_baked_headline` with it. Returning bare paths
+            # made every rerun think the art had no headline in it, so it painted
+            # the title over type the model had already drawn — two headlines, one
+            # thumbnail. Art without its flags is unusable, so re-render instead of
+            # guessing (a warm render is ~15s; a doubled title ships forever).
+            if flags_path.exists():
+                try:
+                    flags = json.loads(flags_path.read_text(encoding="utf-8"))
+                    log.info(f"reusing cached mascot art for {stem} "
+                             f"(headline {'baked' if flags.get('baked') else 'overlaid'})")
+                    art = {a: p for a, p in cached.items()}
+                    art["_baked_headline"] = bool(flags.get("baked"))
+                    art["_scene"] = flags.get("scene", "")
+                    art["_seed"] = flags.get("seed")
+                    art["_backend"] = flags.get("backend", "")
+                    return art
+                except Exception as e:
+                    log.warning(f"mascot art flags unreadable ({e}); re-rendering")
+            else:
+                log.info(f"cached mascot art for {stem} has no flags; re-rendering")
 
         # KEEP_MODEL_WARM is set by bulk tools that loop over many videos; a
         # cold reload of the 13.5 GB model costs ~4 min, a warm render 15 s.

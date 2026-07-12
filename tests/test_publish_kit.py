@@ -251,13 +251,40 @@ def test_mascot_art_is_reused_not_rerendered(tmp_path, monkeypatch):
     video.write_bytes(b"x")
     cached = tmp_path / "reel_9x16_mascot_9x16.png"
     Image.new("RGB", (768, 1344), (10, 10, 10)).save(cached)
+    # Cached art is only usable WITH its flags. Bare PNGs used to come back without
+    # `_baked_headline`, so a rerun painted the title over type the model had
+    # already drawn — two headlines on one thumbnail.
+    (tmp_path / "reel_9x16_mascot.json").write_text(
+        json.dumps({"baked": True, "scene": "s", "seed": 7, "backend": "b"}))
 
     calls = []
     monkeypatch.setattr(mas, "render_for_video", lambda **k: calls.append(1) or {})
 
     art = pk._mascot_art(video, "T", "ctx", "facts", ("9x16",))
     assert art["9x16"] == cached
+    assert art["_baked_headline"] is True, "the cache must remember it was baked"
     assert not calls, "cached art must not trigger a USO render"
+
+
+def test_cached_art_without_flags_is_rerendered(tmp_path, monkeypatch):
+    """A PNG with no flags beside it cannot say whether its headline is already
+    baked in. Guessing 'no' is what doubled the title, so re-render instead — a
+    warm render costs seconds, a doubled title ships forever."""
+    import modules.mascot as mas
+    import modules.runtime_settings as rs
+    monkeypatch.setattr(rs, "get_mascot_thumbnails_enabled", lambda: True)
+
+    video = tmp_path / "reel_9x16.mp4"
+    video.write_bytes(b"x")
+    Image.new("RGB", (768, 1344), (10, 10, 10)).save(
+        tmp_path / "reel_9x16_mascot_9x16.png")          # no _mascot.json beside it
+
+    calls = []
+    monkeypatch.setattr(mas, "render_for_video",
+                        lambda **k: calls.append(1) or {"9x16": tmp_path / "new.png",
+                                                        "_baked_headline": True})
+    pk._mascot_art(video, "T", "ctx", "facts", ("9x16",))
+    assert calls, "flagless art must be re-rendered, not trusted"
 
 
 def test_missing_cached_art_triggers_a_render(tmp_path, monkeypatch):
