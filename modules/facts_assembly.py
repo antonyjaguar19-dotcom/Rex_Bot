@@ -274,17 +274,43 @@ def prepend_still(video: Path, image: Path, hold_sec: float = 0.5,
     return video
 
 
-def trim_trailing_silence(music: Path) -> Path:
-    """Cut the dead air off the end of a generated track.
+# A gap this long, this quiet, is not a musical rest — it is ACE-Step running out
+# of composition and padding the rest of the length it was asked for.
+_GAP_DB = -45
+_GAP_SEC = 1.5
+_MIN_BODY_SEC = 8.0     # never cut a bed down to a stub on one early silence
 
-    ACE-Step composes a piece SHORTER than the length asked for and pads the rest
-    with silence — a 34.4s request came back as 27s of music and 7.4s of nothing.
-    Left alone, that silence is what lands on the last fact. The music has to be
-    found before it can be aligned, so the padding goes first.
+
+def _music_body_end(music: Path) -> Optional[float]:
+    """Where the actual music stops, or None when the track plays all the way out.
+
+    ACE-Step under-fills: asked for 49s it composed ~30s, padded ~10s of digital
+    silence, then left ~8s of quiet junk at the very end. Trimming only the TAIL
+    left that hole in the middle — and since a long track is fitted by cutting
+    from the FRONT, the good music got thrown away and the dead air kept. The
+    music has to be found by its body, not by its edges.
+    """
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-hide_banner", "-i", str(music),
+         "-af", f"silencedetect=noise={_GAP_DB}dB:d={_GAP_SEC}", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=300)
+    starts = [float(ln.split("silence_start:")[1].split()[0])
+              for ln in (r.stderr or "").splitlines() if "silence_start:" in ln]
+    return next((s for s in starts if s >= _MIN_BODY_SEC), None)
+
+
+def trim_trailing_silence(music: Path) -> Path:
+    """Reduce a generated track to the music it actually contains.
+
+    Cuts at the first real gap (everything past it is padding, or the junk ACE
+    leaves after it), then shaves any residual silence off the new end so the
+    piece finishes on its last note.
     """
     out = music.with_name(f"{music.stem}_trimmed.wav")
+    body_end = _music_body_end(music)
+    cut = ["-t", f"{body_end:.3f}"] if body_end else []
     r = subprocess.run(
-        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(music),
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(music), *cut,
          "-af", "areverse,silenceremove=start_periods=1:start_threshold=-50dB:"
                 "start_silence=0.1,areverse",
          str(out)],
@@ -295,7 +321,11 @@ def trim_trailing_silence(music: Path) -> Path:
     before, after = _probe_duration(music), _probe_duration(out)
     if after < 1.0:                     # the whole thing read as silence — trust the source
         return music
-    log.info(f"🎵 trimmed dead tail: {before:.1f}s -> {after:.1f}s of music")
+    if body_end:
+        log.info(f"🎵 bed cut to its music body: {before:.1f}s -> {after:.1f}s "
+                 f"(dead air started at {body_end:.1f}s)")
+    else:
+        log.info(f"🎵 trimmed dead tail: {before:.1f}s -> {after:.1f}s of music")
     return out
 
 
@@ -319,6 +349,10 @@ def _align_music_tail(music: Path, total_dur: float) -> Path:
         args = ["-ss", f"{d - total_dur:.3f}", "-i", str(music)]
         af = []
     else:
+        # A short bed starts late rather than looping. Replaying its opening to
+        # cover the gap is heard for exactly what it is: the same eight bars
+        # twice. Silence at the head is a smaller sin than a stutter — and
+        # _music_bed's job is to not hand us a short bed in the first place.
         args = ["-i", str(music)]
         af = ["-af", f"adelay={int(round((total_dur - d) * 1000))}:all=1"]
     r = subprocess.run(
@@ -333,9 +367,71 @@ def _align_music_tail(music: Path, total_dur: float) -> Path:
     return out
 
 
+BED_FLOOR_DB = -50.0        # quieter than this, for 2s straight, is a dropout
+_AUDIT_BLOCK = 2.0
+
+
+def _decode_mono(src: Path, dst: Path, sr: int = 16000):
+    """Decode any audio/video to mono PCM so it can be measured. None on failure."""
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+         "-ac", "1", "-ar", str(sr), str(dst)],
+        capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not dst.exists():
+        return None
+    import wave
+    import numpy as np
+    with wave.open(str(dst)) as w:
+        raw = w.readframes(w.getnframes())
+    return np.frombuffer(raw, dtype="int16").astype("float64") / 32768.0
+
+
+def audit_music_bed(video: Path, narration: Path, hold_sec: float = 0.0) -> Optional[dict]:
+    """Measure the music actually present in a finished reel.
+
+    The bed cannot be checked by asking the mixer whether it added one — it always
+    thinks it did. So the narration is subtracted back out of the FINISHED file
+    (least-squares fit, because the mix is lossy) and what remains IS the bed. This
+    is the check that would have caught a reel whose music died 16s in and a reel
+    whose bed was silently absent: both looked fine everywhere else.
+
+    Returns {mean_db, min_db, dead_blocks, blocks} or None when it cannot measure.
+    """
+    try:
+        import numpy as np
+        tmp = TEMP_DIR / f"_audit_{Path(video).stem}"
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        mix = _decode_mono(Path(video), tmp.with_name(tmp.name + "_mix.wav"))
+        voice = _decode_mono(Path(narration), tmp.with_name(tmp.name + "_voi.wav"))
+        if mix is None or voice is None:
+            return None
+        sr = 16000
+        off = int(round(max(0.0, hold_sec) * sr))       # the poster frame shifts the mix
+        n = min(len(mix) - off, len(voice))
+        if n < sr:
+            return None
+        m, v = mix[off:off + n], voice[:n]
+        denom = float(np.dot(v, v))
+        if denom <= 0:
+            return None
+        bed = m - (float(np.dot(m, v)) / denom) * v     # what is left is the music
+        h = int(sr * _AUDIT_BLOCK)
+        blocks = [20 * np.log10(max(1e-6, float(np.sqrt((bed[i:i + h] ** 2).mean()))))
+                  for i in range(0, len(bed) - h + 1, h)]
+        if not blocks:
+            return None
+        return {"mean_db": sum(blocks) / len(blocks),
+                "min_db": min(blocks),
+                "dead_blocks": sum(1 for b in blocks if b < BED_FLOOR_DB),
+                "blocks": [round(b, 1) for b in blocks]}
+    except Exception as e:                              # never take a render down
+        log.warning(f"music audit could not run: {e}")
+        return None
+
+
 def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path],
                total_dur: float, subs_path: Path, out_path: Path,
-               w: int = 1080, h: int = 1920) -> Path:
+               w: int = 1080, h: int = 1920, progress_cb=None) -> Path:
     inputs = ["-i", str(Path(video_path).resolve()),
               "-i", str(Path(narration_path).resolve())]
     if music_path is not None and Path(music_path).exists():
@@ -387,7 +483,35 @@ def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path
                             cwd=str(TEMP_DIR))
     if result.returncode != 0 or not out_path.exists():
         raise RuntimeError(f"Facts mux failed:\n{result.stderr.strip()}")
+
+    # A bed that was asked for must be HEARD. Every music bug so far shipped a reel
+    # that looked correct at every step and was wrong in the file, so the file is
+    # what gets checked.
+    if music_path is not None and Path(music_path).exists():
+        _report_bed(out_path, narration_path, progress_cb)
     return out_path
+
+
+def _report_bed(out_path: Path, narration_path: Path, progress_cb=None) -> None:
+    def _p(msg):
+        log.info(msg)
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
+    a = audit_music_bed(out_path, narration_path)
+    if a is None:
+        _p("⚠️ the music bed could not be verified in the finished reel")
+    elif a["dead_blocks"]:
+        _p(f"⚠️ THE MUSIC DROPS OUT — {a['dead_blocks']} silent stretch(es) of "
+           f"{_AUDIT_BLOCK:.0f}s in the finished reel (quietest {a['min_db']:.0f} dB). "
+           f"The reel is usable but the bed is broken; re-render the music.")
+        log.error(f"bed dropout in {out_path.name}: levels {a['blocks']}")
+    else:
+        _p(f"🎵 bed verified in the finished reel: {a['mean_db']:.0f} dB under the "
+           f"voice, no dropouts")
 
 
 def assemble_facts_clips(
@@ -423,7 +547,8 @@ def assemble_facts_clips(
 
     _p("muxing...")
     out_path = FINAL_DIR / f"facts_{facts_id}_{aspect}.mp4"
-    _mux_facts(concat_path, narration_audio, music_path, total_dur, subs_path, out_path, w, h)
+    _mux_facts(concat_path, narration_audio, music_path, total_dur, subs_path,
+               out_path, w, h, progress_cb=progress_cb)
     log.info(f"✅ facts reel (animated) ready: {out_path.name}")
     return {"facts_id": facts_id, "beat_count": len(clip_paths),
             "duration": total_dur, aspect: out_path}
@@ -476,7 +601,8 @@ def assemble_facts(
 
     _p("muxing...")
     out_path = FINAL_DIR / f"facts_{facts_id}_{aspect}.mp4"
-    _mux_facts(concat_path, narration_audio, music_path, total_dur, subs_path, out_path, w, h)
+    _mux_facts(concat_path, narration_audio, music_path, total_dur, subs_path,
+               out_path, w, h, progress_cb=progress_cb)
     log.info(f"✅ facts reel ready: {out_path.name}")
     return {"facts_id": facts_id, "beat_count": n, "duration": total_dur,
             aspect: out_path}

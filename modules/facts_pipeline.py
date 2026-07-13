@@ -781,6 +781,13 @@ _MOOD_TAGS = {
 _OUTRO_LYRICS = "[inst]\n[intro]\n[verse]\n[outro]"
 
 
+# ACE-Step under-fills, so ask long and MEASURE what came back. 2.0x covered a
+# 36s reel from a model that had written only 29s when asked for 49s.
+_MUSIC_ASK_HEADROOM = 2.0
+_MUSIC_MAX_ASK = 150.0     # ACE gets slow and incoherent past this
+_MUSIC_TRIES = 2           # a second, longer ask — not an endless loop on the GPU
+
+
 def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
     """Write the background bed, or None.
 
@@ -802,12 +809,6 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
 
     mood = rs.get_facts_music_mood()
     reel = max(float(duration_sec), 8.0)
-    # Ask for MORE than the reel needs. ACE-Step composes a piece shorter than the
-    # length requested and pads the rest with silence — asked for 34.4s, it wrote 27s
-    # of music and 7.4s of nothing, so the last fact played over dead air. With
-    # headroom the music covers the reel, the padding is trimmed off, and the piece's
-    # real ending is then anchored to the final frame.
-    ask = reel * 1.35
 
     try:
         from modules import audio_backend, gpu_memory
@@ -815,23 +816,43 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         ok, why = ab.health_check()
         if not ok:
             raise RuntimeError(why)
-        _p(f"🎵 composing the music bed ({mood}, {reel:.0f}s, ACE-Step)…")
         gpu_memory.evict_all()
-        track = ab.generate(
-            tags=_MOOD_TAGS.get(mood, _MOOD_TAGS["cheerful"]) + ", instrumental, no vocals",
-            lyrics=_OUTRO_LYRICS,
-            duration_sec=ask,
-            output_filename=f"facts_bed_{facts_id}.mp3",
-        )
-        if track and Path(track).exists():
+
+        # ACE-Step does not compose for as long as it is asked to: told 49s it wrote
+        # 29s of music and padded the rest. So the ASK is not the answer — the
+        # composed BODY is measured, and if it is short we ask again for longer.
+        # (Looping a short bed to fill the reel is not an option: replaying the
+        # opening is heard as a stutter, which is how this bug was reported.)
+        best, best_len = None, 0.0
+        ask = reel * _MUSIC_ASK_HEADROOM
+        for attempt in range(1, _MUSIC_TRIES + 1):
+            _p(f"🎵 composing the music bed ({mood}, {reel:.0f}s reel, "
+               f"asking ACE-Step for {ask:.0f}s"
+               + (f", try {attempt}/{_MUSIC_TRIES}" if attempt > 1 else "") + ")…")
+            track = ab.generate(
+                tags=_MOOD_TAGS.get(mood, _MOOD_TAGS["cheerful"]) + ", instrumental, no vocals",
+                lyrics=_OUTRO_LYRICS,
+                duration_sec=ask,
+                output_filename=f"facts_bed_{facts_id}"
+                                + (f"_try{attempt}" if attempt > 1 else "") + ".mp3",
+            )
+            if not (track and Path(track).exists()):
+                raise RuntimeError("ACE-Step produced no file")
             track = fasm.trim_trailing_silence(Path(track))
             got = _probe_dur(track)
-            if got < reel - 0.5:
-                _p(f"⚠️ the bed is only {got:.1f}s of music for a {reel:.1f}s reel — "
-                   f"it will start late so its ending still lands on the last frame")
-            _p(f"🎵 music bed: {Path(track).name} ({got:.1f}s, ends on an outro)")
-            return Path(track)
-        raise RuntimeError("ACE-Step produced no file")
+            if got > best_len:
+                best, best_len = Path(track), got
+            if got >= reel - 0.5:
+                break
+            # It under-filled. Scale the next ask by how badly it fell short.
+            ask = min(_MUSIC_MAX_ASK, ask * max(1.4, (reel / max(got, 1.0)) * 1.15))
+            _p(f"⚠️ only {got:.1f}s of music for a {reel:.1f}s reel — asking again, longer")
+
+        if best_len < reel - 0.5:
+            _p(f"⚠️ the bed is {best_len:.1f}s for a {reel:.1f}s reel — it will start "
+               f"late so its ending still lands on the last frame (never looped)")
+        _p(f"🎵 music bed: {best.name} ({best_len:.1f}s, ends on an outro)")
+        return best
     except Exception as e:
         _p(f"⚠️ ACE-Step bed failed ({e}); falling back to MusicGen (it will fade out)")
 
