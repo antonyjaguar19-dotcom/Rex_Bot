@@ -1442,13 +1442,164 @@ async def _handle_sync_event(ev: dict):
         await ch.send(embed=embed,
                       file=discord.File(str(path), filename=path.name))
 
-    elif etype in ("video_done", "storyboard_done", "final_done"):
+    elif etype == "job_start":
+        ch = get_channel_by_name(guild, "claw-bot") or get_channel_by_name(guild, "videos")
+        if not ch:
+            return
+        label = data.get("label", "job")
+        embed = discord.Embed(
+            title=f"🖥️ Dashboard job — {label}",
+            description="Started in the browser. Progress lands here too.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=f"mode: {data.get('mode', '?')} · web")
+        msg = await ch.send(embed=embed)
+        _WEB_JOBS[data.get("job", "")] = {
+            "msg": msg, "label": label, "mode": data.get("mode", ""),
+            "started": time.time(), "lines": [],
+        }
+
+    elif etype == "job_progress":
+        job = _WEB_JOBS.get(data.get("job", ""))
+        line = (data.get("line") or "").strip()
+        if not job or not line:
+            return
+        job["lines"] = (job["lines"] + [line])[-6:]
+        mins = (time.time() - job["started"]) / 60
+        embed = discord.Embed(
+            title=f"🖥️ Dashboard job — {job['label']}",
+            description="```\n" + "\n".join(job["lines"])[-1800:] + "\n```",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=f"running {mins:.0f} min · mode: {job['mode']} · web")
+        try:
+            await job["msg"].edit(embed=embed)
+        except discord.HTTPException as e:      # rate limit / message gone
+            log.debug(f"job progress edit failed: {e}")
+
+    elif etype == "job_end":
+        job = _WEB_JOBS.pop(data.get("job", ""), None)
+        if not job:
+            return
+        mins = (time.time() - job["started"]) / 60
+        tail = job["lines"][-1] if job["lines"] else ""
+        failed = any(k in tail.lower() for k in ("fail", "crash"))
+        embed = discord.Embed(
+            title=("❌ Dashboard job failed — " if failed else "✅ Dashboard job done — ")
+                  + job["label"],
+            description=("```\n" + "\n".join(job["lines"])[-1800:] + "\n```") if job["lines"] else None,
+            color=discord.Color.red() if failed else discord.Color.green(),
+        )
+        embed.set_footer(text=f"{mins:.0f} min · mode: {job['mode']} · web")
+        try:
+            await job["msg"].edit(embed=embed)
+        except discord.HTTPException as e:
+            log.debug(f"job end edit failed: {e}")
+
+    elif etype == "script_ready":
+        # A script written in the browser still needs a decision — post the same
+        # approval view Discord would have posted, so either front-end can green-
+        # light it and the pipeline runs from there.
+        ch = get_channel_by_name(guild, "claw-bot")
+        script = _load_script(sid)
+        if ch and script:
+            await ch.send(f"🖥️ Script `{sid}` was written on the dashboard.")
+            await _post_with_approval_reactions(ch, script, owner_id)
+
+    elif etype == "storyboard_ready":
+        ch = get_channel_by_name(guild, "storyboards") or get_channel_by_name(guild, "claw-bot")
+        if not ch:
+            return
+        frames = sorted((_STORYBOARDS_DIR / sid).glob("shot*.png")) if sid else []
+        await _delete_pending_storyboard_approvals(ch, sid)
+        await ch.send(f"🖥️ Storyboard for `{sid}` rendered on the dashboard "
+                      f"({len(frames)} frames).")
+        for f in frames[:10]:
+            await _sync_upload(ch, f)
+        view = approval_buttons.StoryboardApprovalView(script_id=sid, owner_id=owner_id)
+        msg = await ch.send(f"**Storyboard `{sid}`** — awaiting your decision.", view=view)
+        PENDING_STORYBOARD_APPROVALS[msg.id] = {"script_id": sid, "owner_id": owner_id}
+
+    elif etype in ("video_ready", "video_done"):
         ch = get_channel_by_name(guild, "videos") or get_channel_by_name(guild, "claw-bot")
-        if ch:
-            label = {"video_done": "🎥 Video render",
-                     "storyboard_done": "🎨 Storyboard",
-                     "final_done": "🎬 Final assembly"}.get(etype, etype)
-            await ch.send(f"🔄 {label} for `{sid}` finished on the dashboard.")
+        if not ch:
+            return
+        clips = sorted(_CLIPS_DIR.glob(f"clip_{sid}_shot*.mp4")) if sid else []
+        await ch.send(f"🖥️ Clips for `{sid}` rendered on the dashboard "
+                      f"({len(clips)} shots).")
+        for c in clips[:10]:
+            await _sync_upload(ch, c)
+        view = approval_buttons.VideoApprovalView(script_id=sid, owner_id=owner_id)
+        msg = await ch.send(f"**Video `{sid}`** — awaiting your decision.", view=view)
+        PENDING_VIDEO_APPROVALS[msg.id] = {"script_id": sid, "owner_id": owner_id}
+
+    elif etype in ("reel_ready", "final_done", "storyboard_done"):
+        ch = get_channel_by_name(guild, "videos") or get_channel_by_name(guild, "claw-bot")
+        if not ch:
+            return
+        title = data.get("title") or sid or ""
+        mode = data.get("mode", "story")
+        await ch.send(f"🖥️ **{mode.title()} render finished on the dashboard**"
+                      + (f" — {title}" if title else ""))
+        for f in [Path(p) for p in data.get("files", [])][:3]:
+            await _sync_upload(ch, f)
+
+
+# Live Discord message per running dashboard job: job id -> {msg, label, ...}.
+_WEB_JOBS: dict = {}
+
+# OUTPUTS_DIR is 04_Outputs/scripts (script_generator's), so its parent is the
+# outputs root — the storyboards and clips the dashboard just wrote live there.
+_STORYBOARDS_DIR = OUTPUTS_DIR.parent / "storyboards"
+_CLIPS_DIR = OUTPUTS_DIR.parent / "clips"
+
+
+def _load_script(script_id: str):
+    """Read a script JSON off disk (the dashboard already wrote it)."""
+    if not script_id:
+        return None
+    p = OUTPUTS_DIR / f"script_{script_id}.json"
+    if not p.exists():
+        log.warning(f"sync: script {script_id} not on disk")
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning(f"sync: script {script_id} unreadable: {e}")
+        return None
+
+
+async def _sync_upload(channel, path: Path, note: str = ""):
+    """Upload a rendered file, or say where it is when Discord won't take it."""
+    if not path.exists():
+        return
+    size_mb = path.stat().st_size / (1024 * 1024)
+    if size_mb > 24:
+        await channel.send(f"📁 `{path.name}` ({size_mb:.1f} MB) — too large to "
+                           f"upload. File at:\n`{path}`")
+        return
+    try:
+        await channel.send(content=note or None,
+                           file=discord.File(str(path), filename=path.name))
+    except discord.HTTPException as e:
+        await channel.send(f"📁 `{path.name}` — upload failed ({e.status}). "
+                           f"File at:\n`{path}`")
+
+
+def _coalesce(events: list) -> list:
+    """Drop superseded progress lines.
+
+    The poller wakes every 5s and a long render can queue a dozen lines in that
+    window. Editing the message once per line burns the Discord edit budget for
+    no benefit — only the newest line per job is worth showing.
+    """
+    latest: dict = {}
+    for ev in events:
+        if ev.get("type") == "job_progress":
+            latest[ev.get("data", {}).get("job")] = ev["id"]
+    return [ev for ev in events
+            if ev.get("type") != "job_progress"
+            or latest.get(ev.get("data", {}).get("job")) == ev["id"]]
 
 
 async def _sync_bridge_loop():
@@ -1461,14 +1612,16 @@ async def _sync_bridge_loop():
     while not bot.is_closed():
         try:
             await asyncio.sleep(SYNC_POLL_SEC)
-            for ev in sbr.read_new(cursor):
-                cursor = ev["id"]
+            batch = sbr.read_new(cursor)
+            for ev in _coalesce(batch):
                 try:
                     await _handle_sync_event(ev)
                 except Exception as e:
                     log.warning(f"sync event {ev.get('type')} #{ev.get('id')} failed: {e}")
-                # Persist per event — a crash mid-batch otherwise re-posts
-                # every already-handled event on the next boot.
+            if batch:
+                # Persist the whole drained batch — a crash mid-batch otherwise
+                # re-posts every already-handled event on the next boot.
+                cursor = batch[-1]["id"]
                 sbr.set_cursor(cursor)
         except asyncio.CancelledError:
             break
@@ -4881,6 +5034,18 @@ async def _post_publish_kit(channel, video: Path):
         log.exception("could not post publish kit")
 
 
+def _facts_voice_label() -> str:
+    """What will actually speak this reel — the mascot's clone/preset when
+    mascot mode is on, the plain narrator otherwise. The old label said
+    'kokoro' either way, which was a lie in mascot mode."""
+    if rs.get_facts_mascot_mode():
+        if rs.get_mascot_tts_engine() == "chatterbox":
+            return f"clone @ {rs.get_mascot_voice_speed():.2f}x"
+        if rs.get_mascot_tts_engine() == "qwen":
+            return f"{rs.get_mascot_voice()} @ {rs.get_mascot_voice_speed():.2f}x"
+    return f"{rs.get_facts_voice()} @ {rs.get_facts_voice_speed()}x"
+
+
 @bot.command(name="facts", aliases=["make_facts", "fact"])
 @_gpu_job("facts reel")
 async def cmd_make_facts(ctx, *, topic: str = None):
@@ -4927,8 +5092,7 @@ async def cmd_make_facts(ctx, *, topic: str = None):
         if b.get("kind") == "fact":
             emb.add_field(name=f"#{b['index']} · {b['on_screen']}",
                           value=(b.get("narration") or "")[:200], inline=False)
-    emb.set_footer(text=f"Topic: {topic} · voice {rs.get_facts_voice()} @ "
-                        f"{rs.get_facts_voice_speed()}x · 9x16 IG reel")
+    emb.set_footer(text=f"Topic: {topic} · voice {_facts_voice_label()} · 9x16 IG reel")
     await ctx.send(embed=emb)
 
     # Milestone progress — post each render stage as its OWN message so the whole
@@ -4944,7 +5108,7 @@ async def cmd_make_facts(ctx, *, topic: str = None):
     def _render_cb(m):
         ml = (m or "").lower()
         stages = (
-            ("voicing", f"🎙️ Voicing narration (kokoro {rs.get_facts_voice()})…"),
+            ("voicing", f"🎙️ Voicing narration ({_facts_voice_label()})…"),
             ("building", "🖼️ Generating the fact images…"),
             ("assembling", "🎬 Assembling the reel (Ken Burns + captions)…"),
         )
@@ -5716,19 +5880,20 @@ async def cmd_mascot_tone(ctx, emotion: float = None, pace: float = None):
 
 @bot.command(name="mascot_voice", aliases=["set_mascot_voice"])
 async def cmd_mascot_voice(ctx, voice: str = None):
-    """The mascot's voice: `!mascot_voice Vivian|Serena|Dylan|Eric|Uncle_Fu`.
+    """The mascot's voice: `!mascot_voice clone|Vivian|Serena|Dylan|Eric|Uncle_Fu`.
 
-    Qwen3-TTS + an emotion instruct — natural, expressive, and the same voice on
-    every clip. `!mascot_voice kokoro` switches back to the plain fast engine."""
+    `clone` reads the reference clip (chatterbox); the named voices are Qwen3-TTS
+    presets. Kokoro is no longer offered — it stays in the pipeline only as a
+    silent fallback if the chosen engine dies mid-render."""
     if not voice:
         ref = rs.get_mascot_voice_ref()
         await ctx.send(
             f"🎙️ Mascot voice: `{rs.get_mascot_voice()}` "
             f"(engine `{rs.get_mascot_tts_engine()}`)\n"
             f"Clone reference: `{ref.name if ref else 'none'}`\n"
-            f"Options: `{'`, `'.join(rs.VALID_QWEN_SPEAKERS)}` — or `kokoro` for the "
-            f"plain engine, or `clone` to voice-clone a reference clip (attach a "
-            f"5-15s WAV/MP3 to set it).")
+            f"Options: `clone` (voice-clone a reference clip — attach a 5-15s "
+            f"WAV/MP3 to set it), or a preset: "
+            f"`{'`, `'.join(rs.VALID_QWEN_SPEAKERS)}`.")
         return
     v = voice.strip().lower()
 
@@ -5760,9 +5925,10 @@ async def cmd_mascot_voice(ctx, voice: str = None):
         return
 
     try:
-        if v in ("kokoro", "qwen"):
+        if v == "qwen":
             rs.set_mascot_tts_engine(v)
-            await ctx.send(f"✅ Mascot TTS engine → `{v}`.")
+            await ctx.send(f"✅ Mascot TTS engine → `{v}` "
+                           f"(voice `{rs.get_mascot_voice()}`).")
             return
         rs.set_mascot_tts_engine("qwen")
         rs.set_mascot_voice(voice.strip())

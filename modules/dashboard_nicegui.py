@@ -139,10 +139,28 @@ def _kit_sig(video) -> tuple:
     """
     stem = Path(video).with_suffix("")
     out = []
-    for suffix in ("_thumb_9x16.jpg", "_thumb_16x9.jpg", "_publish.json"):
+    for suffix in ("_thumb_9x16.jpg", "_thumb_16x9.jpg", "_publish.json",
+                   "_description.txt"):
         f = Path(f"{stem}{suffix}")
         out.append(f.stat().st_mtime_ns if f.exists() else 0)
     return tuple(out)
+
+
+def _description_file(video) -> Optional[Path]:
+    """The upload description written beside a final.
+
+    publish_kit names it after the video's FULL stem (…_9x16_description.txt);
+    the old facts path wrote a per-id name (facts_<id>_description.txt). Reels
+    rendered through the mascot path only ever get the first one — which is why
+    the dashboard, looking only for the second, showed no description at all.
+    """
+    stem = Path(video).with_suffix("")
+    candidates = [Path(f"{stem}_description.txt")]
+    for aspect in ("_9x16", "_16x9", "_1x1"):
+        if stem.name.endswith(aspect):
+            candidates.append(stem.parent /
+                              f"{stem.name[: -len(aspect)]}_description.txt")
+    return next((c for c in candidates if c.exists()), None)
 
 
 def _media_url(p) -> str:
@@ -189,6 +207,24 @@ class State:
         self.log_lines = self.log_lines[-300:]
         log.info(line)
         self._checkpoint()
+        self._mirror_progress(line)
+
+    def _mirror_progress(self, line: str):
+        """Feed the running job's progress to Discord. Throttled — a render
+        pushes a line every few seconds and Discord rate-limits edits. Loud
+        lines (done / failed / warning) always go through."""
+        job = self.active_job
+        if not job or not job.get("id"):
+            return                      # idle chatter is nobody's business
+        now = time.time()
+        low = line.lower()
+        loud = (line.lstrip()[:1] in ("✅", "❌", "⚠️")
+                or any(k in low for k in ("failed", "crashed", "ready", "complete")))
+        if not loud and now - job.get("mirrored", 0.0) < MIRROR_EVERY_SEC:
+            return
+        job["mirrored"] = now
+        _mirror("job_progress", job=job["id"], mode=job["mode"],
+                label=job.get("label", ""), line=line)
 
     def _checkpoint(self):
         """Persist the running job's stage as it progresses, so a resume after a
@@ -389,6 +425,31 @@ def _bg(fn, *args, **kwargs):
     threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
 
 
+# ------------------------------------------------------------------ mirror ---
+# A job started in the browser used to be invisible from Discord: the phone
+# showed nothing until the file appeared on disk, and the approval buttons only
+# ever existed on whichever front-end started the run. These events close that:
+# the bot's sync poller turns them into a live progress message, the finished
+# media, and the same approval view Discord would have posted itself.
+MIRROR_EVERY_SEC = 4.0      # progress lines are chatty; Discord is not
+
+def _mirror(event: str, **data) -> None:
+    """Fire-and-forget sync event. Never allowed to break a render."""
+    try:
+        sbr.emit(event, **data)
+    except Exception as e:
+        log.debug(f"mirror {event} failed: {e}")
+
+
+def _mirror_files(event: str, out, mode: str, **data) -> None:
+    """Mirror a finished render. `out` is a {aspect: path} dict or a path list."""
+    if isinstance(out, dict):
+        files = [str(out[k]) for k in ("9x16", "16x9", "1x1") if out.get(k)]
+    else:
+        files = [str(p) for p in (out or []) if p]
+    _mirror(event, mode=mode, files=files, **data)
+
+
 def _try_begin(label: str) -> bool:
     """Admission check before queueing a GPU job.
 
@@ -482,10 +543,20 @@ def _bg_gpu(label: str, worker) -> None:
                               context=_job_context(mode))
         except Exception as e:
             log.warning(f"recovery register failed: {e}")
-        S.active_job = {"id": job_id, "mode": mode, "checkpointed": 0.0}
+        # The mirror keys off this id, so a failed recovery register must not
+        # also cost us the Discord progress message.
+        mirror_id = job_id or f"web{int(time.time())}"
+        S.active_job = {"id": mirror_id, "mode": mode, "label": label,
+                        "checkpointed": 0.0, "mirrored": 0.0}
+        _mirror("job_start", job=mirror_id, mode=mode, label=label)
+        ok = True
         try:
             worker()
+        except Exception:
+            ok = False
+            raise
         finally:
+            _mirror("job_end", job=mirror_id, mode=mode, label=label, ok=ok)
             S.active_job = None
             if job_id:
                 jr.finish(job_id)
@@ -547,6 +618,7 @@ def generate_script_action(theme: str, culture: str, style: str, refresh_cb):
             S.script = script
             S.script_id = script.get("_id") or script.get("script_id")
             S.push(f"Script {S.script_id} ready — '{script.get('title')}'")
+            _mirror("script_ready", script_id=S.script_id)
         except Exception as e:
             S.push(f"Script gen failed: {e}")
         finally:
@@ -570,6 +642,7 @@ def revise_script_action(feedback: str, refresh_cb):
             S.script = new_script
             S.script_id = new_script.get("_id") or new_script.get("script_id")
             S.push(f"Revision {S.script_id} ready")
+            _mirror("script_ready", script_id=S.script_id)
         except Exception as e:
             S.push(f"Revision failed: {e}")
         finally:
@@ -661,6 +734,8 @@ def render_musicvideo_action(refresh_cb):
             S.music_stage = "done"
             done = [k for k in ("9x16", "16x9", "1x1") if outputs.get(k)]
             S.push(f"✅ Music video ready: {', '.join(done)} in 04_Outputs/final")
+            _mirror_files("reel_ready", outputs, mode="music",
+                          title=S.song.get("title", ""))
         except Exception as e:
             S.push(f"Music video render failed: {e}")
         finally:
@@ -716,6 +791,8 @@ def render_horror_action(refresh_cb):
             from modules import horrorstory_pipeline as hsp
             out = hsp.render_horror(S.horror, progress_cb=lambda m: S.push(f"· {m}"))
             S.push(f"✅ Horror video ready: {out.get('16x9')}")
+            _mirror_files("reel_ready", out, mode="horror",
+                          title=S.horror.get("title", ""))
         except Exception as e:
             S.push(f"Horror render failed: {e}")
         finally:
@@ -760,6 +837,8 @@ def generate_facts_action(topic: str, refresh_cb):
             out = fp.render_facts(story, progress_cb=_p)
             S.facts_stage = "done"
             S.push(f"✅ Facts reel ready: {Path(out.get('9x16')).name}")
+            _mirror_files("reel_ready", out, mode="facts",
+                          title=story.get("title", ""))
         except Exception as e:
             S.push(f"Facts reel failed: {e}")
         finally:
@@ -825,6 +904,8 @@ def approve_all_run_storyboard(refresh_cb):
             )
             if result.success:
                 S.push(f"Storyboard done — {result.total_frames} frames")
+                _mirror("storyboard_ready", script_id=sid,
+                        frames=result.total_frames)
             else:
                 S.push(f"Storyboard FAILED: {result.error}")
         except Exception as e:
@@ -900,7 +981,7 @@ def run_video(refresh_cb):
                     )
                 S.push(f"  Clip shot {num} done → {cg_out.name}")
             S.push("Video render complete")
-            sbr.emit("video_done", script_id=sid)
+            _mirror("video_ready", script_id=sid)
         except Exception as e:
             S.push(f"Video worker crashed: {e}")
         finally:
@@ -925,7 +1006,9 @@ def assemble_final(refresh_cb):
             result = asm.assemble_final(sid, None)
             S.push(f"Final ready — {result['shot_count']} shots, "
                    f"{result['total_duration_sec']:.1f}s")
-            sbr.emit("final_done", script_id=sid)
+            finals = sorted((PROJECT_ROOT / "04_Outputs" / "final")
+                            .glob(f"final_{sid}_*.mp4"))
+            _mirror_files("final_done", finals, mode="story", script_id=sid)
         except Exception as e:
             S.push(f"Assembly failed: {e}")
         finally:
@@ -1291,6 +1374,8 @@ def resume_facts_render_action(story: dict, refresh_cb):
             out = fp.render_facts(story, progress_cb=lambda m: S.push(f"· {m}"))
             S.facts_stage = "done"
             S.push(f"✅ Facts reel ready: {Path(out.get('9x16')).name}")
+            _mirror_files("reel_ready", out, mode="facts",
+                          title=story.get("title", ""))
         except Exception as e:
             S.push(f"Facts resume failed: {e}")
         finally:
@@ -1647,6 +1732,8 @@ def manual_assemble_action(aspects: list, refresh_cb):
                                  progress_cb=lambda m: S.push(f"  {m}"))
             for a, p in finals.items():
                 S.push(f"Manual final [{a}] → {p.name}")
+            _mirror_files("reel_ready", list(finals.values()), mode="manual",
+                          title=proj.get("title") or proj["_id"])
         except Exception as e:
             S.push(f"Manual assembly failed: {e}")
         finally:
@@ -2037,20 +2124,6 @@ def main_page():
             ui.button("💡 Generate Facts Reel",
                       on_click=lambda: generate_facts_action(facts_topic.value, full_refresh)) \
                 .classes("rex-btn-primary")
-            facts_voice_sel = ui.select(
-                list(FACTS_VOICE_CHOICES),
-                value=_sel(rs.get_facts_voice(), FACTS_VOICE_CHOICES,
-                           voices.DEFAULT_FACTS_VOICE), label="Voice") \
-                .props("outlined dark dense").style("min-width: 130px")
-            facts_voice_sel.on("update:model-value",
-                               lambda e: rs.set_facts_voice(facts_voice_sel.value))
-            facts_pace_sel = ui.select(
-                _FACTS_PACE,
-                value=_sel(rs.get_facts_voice_speed(), _FACTS_PACE, 1.06),
-                label="Pace") \
-                .props("outlined dark dense").style("min-width: 120px")
-            facts_pace_sel.on("update:model-value",
-                              lambda e: rs.set_facts_voice_speed(float(facts_pace_sel.value)))
             facts_video_sel = ui.select(
                 _FACTS_VIDEO,
                 value=_sel(rs.get_facts_video_mode(), _FACTS_VIDEO, "kenburns"),
@@ -2080,25 +2153,26 @@ def main_page():
             # presets are adult timbres pitch-shifted. The clone reads the reference
             # clip in assets/mascot_voice.wav.
             _ref = rs.get_mascot_voice_ref()
-            _mvoices = (["clone"] if _ref else []) + list(rs.VALID_QWEN_SPEAKERS) + ["kokoro"]
+            _mvoices = (["clone"] if _ref else []) + list(rs.VALID_QWEN_SPEAKERS)
+            # kokoro is no longer offered (it stays in the pipeline only as a
+            # silent fallback). A config still holding it would make this select
+            # lie about what will be spoken, so migrate it on sight.
+            if rs.get_mascot_tts_engine() == "kokoro":
+                rs.set_mascot_tts_engine("chatterbox" if _ref else "qwen")
             _cur = ("clone" if rs.get_mascot_tts_engine() == "chatterbox"
-                    else "kokoro" if rs.get_mascot_tts_engine() == "kokoro"
                     else rs.get_mascot_voice())
             mascot_voice_sel = ui.select(
                 _mvoices, value=_sel(_cur, _mvoices, _mvoices[0]),
-                label="Mascot voice") \
+                label="Voice") \
                 .props("outlined dark dense").style("min-width: 130px") \
                 .tooltip(f"clone = the mascot's own voice, cloned from "
                          f"{_ref.name if _ref else '(no reference clip yet)'}. "
-                         f"The named voices are Qwen3-TTS presets; kokoro is the "
-                         f"plain fast engine.")
+                         f"The named voices are Qwen3-TTS presets.")
 
             def _set_mascot_voice(_=None):
                 v = mascot_voice_sel.value
                 if v == "clone":
                     rs.set_mascot_tts_engine("chatterbox")
-                elif v == "kokoro":
-                    rs.set_mascot_tts_engine("kokoro")
                 else:
                     rs.set_mascot_tts_engine("qwen")
                     rs.set_mascot_voice(v)
@@ -3101,6 +3175,18 @@ def main_page():
         ui.input(value=title).props("readonly outlined dense") \
             .classes("w-full").style("max-width:640px;")
 
+        # Upload-ready description (caption + hashtags) — paste into YouTube/IG.
+        dfile = _description_file(video)
+        if dfile:
+            dtext = dfile.read_text(encoding="utf-8")
+            with ui.row().classes("items-center gap-2").style("margin-top:8px;"):
+                ui.label("Description").classes("text-sm font-bold opacity-80")
+                ui.button("📋 Copy", on_click=lambda j=json.dumps(dtext):
+                          ui.run_javascript(f"navigator.clipboard.writeText({j})")) \
+                    .props("flat dense color=accent")
+            ui.textarea(value=dtext).props("readonly outlined dense autogrow") \
+                .classes("w-full").style("max-width:640px;")
+
         thumbs = [Path(f"{stem}_thumb_9x16.jpg"), Path(f"{stem}_thumb_16x9.jpg")]
         thumbs = [t for t in thumbs if t.exists()]
         if not thumbs:
@@ -3209,20 +3295,8 @@ def main_page():
                         .classes("text-xs").style("color:#7cf;")
                     ui.label(p.name).classes("text-xs opacity-75")
 
-                # Upload kit: the title to paste and the thumbnail to set.
+                # Upload kit: title, description, thumbnail — all in one place.
                 _render_publish_kit(p)
-
-                # Upload-ready description (copy-paste for YouTube/IG).
-                dfile = fdir / (p.stem.replace("_9x16", "") + "_description.txt")
-                if dfile.exists():
-                    dtext = dfile.read_text(encoding="utf-8")
-                    with ui.row().classes("items-center gap-2").style("margin-top:8px;"):
-                        ui.label("Upload description").classes("text-sm font-bold opacity-80")
-                        ui.button("📋 Copy", on_click=lambda j=json.dumps(dtext):
-                                  ui.run_javascript(f"navigator.clipboard.writeText({j})")) \
-                            .props("flat dense color=accent")
-                    ui.textarea(value=dtext).props("readonly outlined dense autogrow") \
-                        .classes("w-full").style("max-width:640px;")
 
     def render_music_finals():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
