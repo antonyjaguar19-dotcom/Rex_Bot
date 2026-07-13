@@ -42,7 +42,8 @@ def test_the_page_builds(page):
 
 def test_every_mode_tab_is_there(page):
     labels = _labels(page)
-    for tab in ("Story", "Facts", "Music", "Manual", "Mascots", "Models", "Queue"):
+    for tab in ("Story", "Facts", "Music", "Lessons", "Manual", "Mascots",
+                "Models", "Queue"):
         assert tab in labels, f"missing nav tab: {tab}"
 
 

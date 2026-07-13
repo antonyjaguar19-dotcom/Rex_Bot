@@ -47,5 +47,11 @@ jsonschema==4.26.0
 nicegui==3.12.1            # ACTIVE dashboard (localhost:7860)
 gradio==6.15.2             # legacy fallback dashboard
 
+# --- Document ingest -----------------------------------------
+# Lesson mode reads a school textbook PDF. pypdf is pure-Python with no system
+# binaries: poppler (pdf2image) and tesseract (pytesseract) would have to be
+# installed OUTSIDE E:\Rexjaw_VFX, which the containment rule forbids.
+pypdf==6.14.2
+
 # --- Tests ---------------------------------------------------
 pytest==9.0.3

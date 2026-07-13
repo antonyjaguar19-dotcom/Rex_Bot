@@ -221,6 +221,8 @@ class State:
         self.facts: Optional[dict] = None      # facts-shorts pipeline: current reel
         self.facts_stage: str = "idle"         # facts stepper: write|voice|images|assemble|done
         self.music_stage: str = "idle"         # music stepper: lyrics|song|visuals|assemble|done
+        self.book_id: str = ""                 # lesson pipeline: the textbook in hand
+        self.lesson_stage: str = "idle"        # lesson stepper: book|topics|script|...
         # Set by _bg_gpu while a job runs: {"id", "mode", "checkpointed"}.
         self.active_job: Optional[dict] = None
 
@@ -261,7 +263,8 @@ class State:
             return
         job["checkpointed"] = now
         mode = job["mode"]
-        stage = {"facts": self.facts_stage, "music": self.music_stage}.get(mode, self.stage)
+        stage = {"facts": self.facts_stage, "music": self.music_stage,
+                 "lesson": self.lesson_stage}.get(mode, self.stage)
         try:
             jr.checkpoint(job["id"], stage=stage, **_job_context_for(mode, self))
         except Exception as e:
@@ -543,6 +546,8 @@ def _mode_for_label(label: str) -> str:
         return "manual"
     if "facts" in l:
         return "facts"
+    if "lesson" in l or "book" in l:
+        return "lesson"
     if "horror" in l:
         return "horror"
     if any(k in l for k in ("song", "music video", "lyrics")):
@@ -564,6 +569,8 @@ def _job_context_for(mode: str, state) -> dict:
         return {"song_id": state.song.get("_id") or state.song.get("song_id")}
     if mode == "horror" and state.horror:
         return {"horror_id": state.horror.get("_id") or state.horror.get("horror_id")}
+    if mode == "lesson" and state.book_id:
+        return {"book_id": state.book_id}
     if mode == "manual":
         pid = mm.current_project_id()
         return {"project_id": pid} if pid else {}
@@ -913,6 +920,59 @@ def generate_facts_action(topic: str, refresh_cb):
             _end()
             refresh_cb()
     _bg_gpu("facts reel", worker)
+
+
+def add_book_action(pdf: Path, title: str, refresh_cb):
+    """Ingest a textbook PDF. CPU only (pypdf) — no GPU lock needed.
+
+    A scan raises `BookUnreadable` and NOTHING lands on disk: a book with no text
+    would let the splitter invent topics out of empty strings, and the first anyone
+    would know is a rendered lesson that has no relation to the book.
+    """
+    from modules import lesson_book as lb
+    try:
+        book = lb.add_book(pdf, title=title)
+    except lb.BookUnreadable as e:
+        ui.notify(f"❌ {e}", type="negative", timeout=15000, multiline=True)
+        S.push(f"Book refused: {e}")
+        refresh_cb()
+        return
+    except Exception as e:
+        ui.notify(f"❌ could not read that PDF: {e}", type="negative")
+        return
+
+    S.book_id = book["book_id"]
+    msg = f"📖 '{book['title']}' — {book['n_pages']} pages"
+    if book["scanned_pages"]:
+        # Loud, not silent: those pages will not reach any lesson.
+        where = lb.page_ranges(book["scanned_pages"])
+        msg += f" · ⚠️ no text on page(s) {where} (scanned?) — they cannot be taught"
+    S.push(msg)
+    ui.notify(msg, type="positive", timeout=10000, multiline=True)
+    refresh_cb()
+
+
+def propose_topics_action(book_id: str, refresh_cb):
+    """Read the book in windows and propose its topics (Ollama → GPU → job lock)."""
+    if not book_id:
+        ui.notify("Upload a textbook first.", type="warning")
+        return
+    if not _try_begin("lesson topics"):
+        return
+    S.lesson_stage = "topics"
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import lesson_topics as lt
+            topics = lt.propose(book_id, progress_cb=lambda m: S.push(f"· {m}"))
+            S.push(f"✅ {len(topics)} topic(s) — edit the list, then pick one to teach")
+        except Exception as e:
+            S.push(f"Topic split failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("lesson topics", worker)
 
 
 def approve_script_gen_prompts(refresh_cb):
@@ -1939,6 +1999,7 @@ def main_page():
             tab_pipeline = ui.tab("Story", icon="movie")
             tab_facts = ui.tab("Facts", icon="lightbulb")
             tab_music = ui.tab("Music", icon="music_note")
+            tab_lesson = ui.tab("Lessons", icon="menu_book")
             tab_manual = ui.tab("Manual", icon="tune")
             tab_mascots = ui.tab("Mascots", icon="pets")
             tab_models = ui.tab("Models", icon="swap_horiz")
@@ -1953,6 +2014,7 @@ def main_page():
         pipeline_panel = ui.tab_panel(tab_pipeline).classes("w-full")
         facts_panel = ui.tab_panel(tab_facts).classes("w-full")
         music_panel = ui.tab_panel(tab_music).classes("w-full")
+        lesson_panel = ui.tab_panel(tab_lesson).classes("w-full")
         manual_panel = ui.tab_panel(tab_manual).classes("w-full")
         mascots_panel = ui.tab_panel(tab_mascots).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
@@ -2516,6 +2578,47 @@ def main_page():
                 .style("margin-left: 8px;")._props["innerHTML"] = "PAUSED"
         queue_container = ui.column().classes("w-full gap-2")
 
+    # ============== LESSONS (own tab) — a school textbook, taught ==============
+    # Phase 1: the book goes in, the topics come out, and YOU edit the list. Nothing
+    # is rendered from a topic list the bot chose on its own.
+    with ui.card().classes("rex-card w-full") as card_lesson:
+        with ui.row().classes("items-center"):
+            ui.label("📚 Lessons").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-mint") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "16x9 · SCHOOL"
+        ui.label("Upload a school textbook PDF. The bot reads it and proposes the "
+                 "topics it teaches; you rename, merge or delete them, then pick one "
+                 "to turn into a lesson the mascot presents.") \
+            .classes("text-xs opacity-70")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 8px;"):
+            book_title_in = ui.input(label="Book name (optional)",
+                                     placeholder="e.g. Class 5 Science") \
+                .classes("flex-1").props("outlined dark dense")
+
+            # NiceGUI 3.x: the payload is e.file (a FileUpload); .save() is async.
+            async def _on_pdf(e):
+                staging = PROJECT_ROOT / "04_Outputs" / "lessons" / "_staging"
+                staging.mkdir(parents=True, exist_ok=True)
+                tmp = staging / Path(e.file.name).name
+                try:
+                    await e.file.save(tmp)
+                    add_book_action(tmp, book_title_in.value or Path(e.file.name).stem,
+                                    full_refresh)
+                finally:
+                    shutil.rmtree(staging, ignore_errors=True)
+
+            ui.upload(label="Textbook PDF", on_upload=_on_pdf, auto_upload=True) \
+                .props("accept=.pdf flat dense color=accent") \
+                .style("width: 260px;") \
+                .tooltip("A text PDF. A SCAN (photographs of pages) has no text in it "
+                         "and will be refused — OCR is not built yet.")
+
+        lesson_books_row = ui.row().classes("w-full gap-2 items-center") \
+            .style("margin-top: 4px;")
+        lesson_topics_container = ui.column().classes("w-full gap-1") \
+            .style("margin-top: 8px;")
+
     # ============== MASCOTS (own tab) ==============
     # A mascot is a folder under 02_Agent/assets/mascots/ (see mascot_library).
     # Whichever one is ACTIVE is the character facts mode stars — in every
@@ -2901,6 +3004,7 @@ def main_page():
     card_final.move(pipeline_panel)
     card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
     card_manual.move(manual_panel)
+    card_lesson.move(lesson_panel)
     card_mascots.move(mascots_panel)
     card_models.move(models_panel)
     card_queue.move(queue_panel)
@@ -3779,6 +3883,157 @@ def main_page():
                     ui.upload(label="Replace", on_upload=_upload, auto_upload=True) \
                         .props("flat dense color=accent").classes("w-full")
 
+    def render_lessons():
+        """The book picker and its topic list. The list is a PROPOSAL — every row is
+        editable, and nothing renders from a topic the user has not looked at."""
+        from modules import lesson_book as lb
+        from modules import lesson_topics as lt
+        try:
+            books = lb.list_books()
+        except Exception as e:
+            log.warning(f"lesson books unreadable: {e}")
+            books = []
+
+        if books and not S.book_id:
+            S.book_id = books[0]["book_id"]
+        book = next((b for b in books if b["book_id"] == S.book_id), None)
+
+        sig = (tuple((b["book_id"], b["title"]) for b in books), S.book_id,
+               tuple((t["id"], t["title"], t["first_page"], t["last_page"])
+                     for t in (book or {}).get("topics", [])))
+        if not _changed("lessons", sig):
+            return
+
+        lesson_books_row.clear()
+        with lesson_books_row:
+            if not books:
+                ui.label("_(no textbook yet — upload a PDF above)_").classes("opacity-60")
+            else:
+                sel = ui.select({b["book_id"]: b["title"] for b in books},
+                                value=S.book_id, label="Textbook") \
+                    .props("outlined dark dense").style("min-width: 220px")
+
+                def _pick(_=None, _s=sel):
+                    S.book_id = _s.value
+                    full_refresh()
+                sel.on_value_change(_pick)
+
+                if book:
+                    bits = [f"{book['n_pages']} pages"]
+                    if book["scanned_pages"]:
+                        bits.append(f"⚠️ no text on p{lb.page_ranges(book['scanned_pages'])}")
+                    ui.label(" · ".join(bits)).classes("text-xs opacity-70")
+
+                    ui.button("🔍 Find topics",
+                              on_click=lambda: propose_topics_action(S.book_id,
+                                                                     full_refresh)) \
+                        .classes("rex-btn-primary")
+
+                    def _drop_book():
+                        with ui.dialog() as dlg, ui.card():
+                            ui.label(f"Delete “{book['title']}”?").classes("font-bold")
+                            ui.label("The PDF, its extracted text and its topic list "
+                                     "go. Lessons already rendered are untouched.") \
+                                .classes("text-xs opacity-70")
+                            with ui.row():
+                                ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                def _yes():
+                                    lb.remove_book(book["book_id"])
+                                    S.book_id = ""
+                                    dlg.close()
+                                    full_refresh()
+                                ui.button("Delete", on_click=_yes).props("flat color=red")
+                        dlg.open()
+                    ui.button("🗑️", on_click=_drop_book).props("flat dense color=red") \
+                        .tooltip("Delete this textbook")
+
+        lesson_topics_container.clear()
+        if not book:
+            return
+        topics = book.get("topics", [])
+        with lesson_topics_container:
+            if not topics:
+                ui.label("_(no topics yet — press Find topics)_").classes("opacity-60")
+                return
+
+            merge_pick: dict = {}
+            ui.label(f"{len(topics)} topic(s) — the bot's proposal. Fix it before you "
+                     f"teach from it.").classes("text-xs opacity-70")
+
+            for t in topics:
+                with ui.element("div").classes("rex-shot-card w-full"):
+                    with ui.row().classes("items-center w-full gap-2"):
+                        cb = ui.checkbox().props("dense") \
+                            .tooltip("Tick two or more, then Merge")
+                        merge_pick[t["id"]] = cb
+
+                        name = ui.input(value=t["title"]) \
+                            .props("outlined dark dense").classes("flex-1")
+
+                        def _rename(_=None, _t=t, _f=name):
+                            try:
+                                lt.rename(S.book_id, _t["id"], _f.value)
+                            except ValueError as e:
+                                ui.notify(f"❌ {e}", type="negative")
+                                return
+                            ui.notify("✏️ renamed", type="positive")
+                            full_refresh()
+                        name.on("blur", _rename)
+
+                        ui.label(f"p{t['first_page']}-{t['last_page']}") \
+                            .classes("text-xs opacity-70")
+
+                        def _rm(_t=t):
+                            lt.remove(S.book_id, _t["id"])
+                            ui.notify(f"🗑️ {_t['title']} removed", type="warning")
+                            full_refresh()
+                        ui.button("🗑️", on_click=_rm).props("flat dense color=red")
+                    if t.get("summary"):
+                        ui.label(t["summary"]).classes("text-xs opacity-60")
+
+            def _merge():
+                picked = [tid for tid, cb in merge_pick.items() if cb.value]
+                try:
+                    got = lt.merge(S.book_id, picked)
+                except ValueError as e:
+                    ui.notify(f"❌ {e}", type="negative")
+                    return
+                ui.notify(f"🔗 merged into “{got['title']}”", type="positive")
+                full_refresh()
+
+            with ui.row().classes("gap-2 items-center").style("margin-top: 6px;"):
+                ui.button("🔗 Merge ticked", on_click=_merge).props("flat dense") \
+                    .tooltip("The book split one subject across two topics — fuse them, "
+                             "and the lesson is written from all of their pages.")
+
+                def _add():
+                    with ui.dialog() as dlg, ui.card():
+                        ui.label("Add a topic the bot missed").classes("font-bold")
+                        ti = ui.input(label="Title").props("outlined dark dense")
+                        with ui.row():
+                            p1 = ui.number(label="First page", value=1, min=1,
+                                           max=book["n_pages"]).props("outlined dark dense")
+                            p2 = ui.number(label="Last page", value=1, min=1,
+                                           max=book["n_pages"]).props("outlined dark dense")
+                        ui.label("The pages are what the lesson gets written FROM.") \
+                            .classes("text-xs opacity-70")
+                        with ui.row():
+                            ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                            def _save():
+                                try:
+                                    lt.add(S.book_id, ti.value, int(p1.value),
+                                           int(p2.value))
+                                except ValueError as e:
+                                    ui.notify(f"❌ {e}", type="negative")
+                                    return
+                                dlg.close()
+                                full_refresh()
+                            ui.button("Add", on_click=_save).props("flat color=accent")
+                    dlg.open()
+                ui.button("➕ Add topic", on_click=_add).props("flat dense")
+
     def render_queue():
         try:
             items = pf.list_all()
@@ -4071,6 +4326,7 @@ def main_page():
             render_manual()
             render_recovery()
             render_mascots()
+            render_lessons()
             render_queue()
             render_log()
         except RuntimeError as e:

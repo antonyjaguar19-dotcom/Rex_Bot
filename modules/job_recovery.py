@@ -53,7 +53,7 @@ MAX_RECORDS = 50
 
 # Modes that own a dashboard tab. `manual` is included: an interrupted animate
 # or assemble is worth offering back.
-MODES = ("story", "facts", "music", "horror", "manual")
+MODES = ("story", "facts", "music", "horror", "manual", "lesson")
 
 _lock = threading.Lock()
 
@@ -209,7 +209,7 @@ def describe(rec: dict) -> str:
     """One-line human summary for a banner / Discord embed."""
     age_min = (time.time() - rec.get("updated", time.time())) / 60
     ctx = rec.get("context") or {}
-    ident = (ctx.get("script_id") or ctx.get("facts_id") or ctx.get("song_id")
+    ident = (ctx.get("script_id") or ctx.get("facts_id") or ctx.get("book_id") or ctx.get("song_id")
              or ctx.get("horror_id") or ctx.get("project_id") or "")
     bits = [f"{rec.get('label', 'job')}"]
     if rec.get("stage"):
