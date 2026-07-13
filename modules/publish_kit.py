@@ -619,6 +619,39 @@ def latest_videos(limit: int = 10) -> list:
     return sorted(vids, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
 
 
+def _sibling_aspects(video: Path) -> list:
+    """The same render's other aspect files (…_9x16 / _16x9 / _1x1), if any."""
+    stem = video.with_suffix("").name
+    for a in ("_9x16", "_16x9", "_1x1"):
+        if stem.endswith(a):
+            base = stem[: -len(a)]
+            return [p for p in (video.parent / f"{base}{x}.mp4"
+                                for x in ("_9x16", "_16x9", "_1x1")) if p.exists()]
+    return [video]
+
+
+def _refresh_poster_frame(video: Path, kit: dict) -> None:
+    """Swap the poster frame on any reel that opens on its thumbnail.
+
+    Only reels that ALREADY carry one are touched — this never decides on its own
+    that a video should start with a still. Best-effort: a failure here must not
+    take a good thumbnail down with it.
+    """
+    thumb = kit.get("thumb_9x16") or kit.get("thumb_16x9")
+    if not thumb or not Path(thumb).exists():
+        return
+    try:
+        from modules import facts_assembly as fasm
+        for v in _sibling_aspects(Path(video)):
+            hold = fasm.thumb_hold_of(v)
+            if hold is None:
+                continue                       # this one never opened on a poster
+            fasm.prepend_still(v, Path(thumb), hold_sec=hold, replace=True)
+            log.info(f"poster frame on {v.name} refreshed with the new thumbnail")
+    except Exception as e:
+        log.warning(f"could not refresh the poster frame: {e}")
+
+
 def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
                          aspects: Optional[tuple] = None,
                          headline: Optional[str] = None) -> dict:
@@ -710,6 +743,12 @@ def regenerate_thumbnail(video, scene: str = "", title=None, seed=None,
                 "mascot_scene": art.get("_scene", scene),
                 "mascot_seed": art.get("_seed"),
                 "headline": "baked into the art" if baked else "overlaid"})
+
+    # A reel that OPENS on its thumbnail must open on the NEW one. Rerolling used
+    # to rewrite the .jpg and leave the video showing the old poster frame — the
+    # thumbnail you rejected was still the first thing anyone saw.
+    _refresh_poster_frame(video, kit)
+
     try:
         Path(f"{stem}_publish.json").write_text(json.dumps(kit, indent=2),
                                                 encoding="utf-8")

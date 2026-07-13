@@ -11,6 +11,7 @@ Reuses the Ken Burns / concat helpers from musicvideo_assembly.
 """
 
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -137,6 +138,11 @@ def _write_facts_ass(total_dur: float, w: int, h: int, path: Path,
 # second pass can see it is already there.
 _THUMB_TAG = "rexjaw_thumb_hold"
 
+# The reel exactly as assembled, before any poster frame was held on its front.
+# A SUBFOLDER of final/ — every finals glob in the project is non-recursive, so
+# these masters never show up as a second copy of the reel.
+POSTERLESS_DIR = FINAL_DIR / "_posterless"
+
 
 def _thumb_hold_of(video: Path) -> Optional[float]:
     """Seconds of thumbnail already held on this reel, or None if it has none."""
@@ -166,7 +172,42 @@ def _probe_dims(video: Path) -> tuple[int, int]:
         return 1080, 1920
 
 
-def prepend_still(video: Path, image: Path, hold_sec: float = 0.5) -> Path:
+def thumb_hold_of(video: Path) -> Optional[float]:
+    """Public read of the poster-hold tag — callers outside this module need to
+    know whether a reel already opens on its thumbnail."""
+    return _thumb_hold_of(video)
+
+
+def _posterless_copy(video: Path, existing_hold: Optional[float]) -> Optional[Path]:
+    """The reel as it was BEFORE a poster frame was held on its front.
+
+    Kept so a re-rolled thumbnail can replace the old one instead of stacking on
+    top of it (or forcing a re-encode of a re-encode). Reels made before this
+    existed are rebuilt by cutting the recorded hold back off.
+    """
+    src = POSTERLESS_DIR / video.name
+    if src.exists():
+        return src
+    POSTERLESS_DIR.mkdir(parents=True, exist_ok=True)
+    if existing_hold is None:
+        shutil.copy2(video, src)
+        return src
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-y", "-loglevel", "error",
+         "-ss", f"{existing_hold:.3f}", "-i", str(video.resolve()),
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+         str(src)],
+        capture_output=True, text=True, timeout=900)
+    if r.returncode != 0 or not src.exists():
+        log.warning(f"could not strip the old poster frame ({r.stderr[-200:]})")
+        src.unlink(missing_ok=True)
+        return None
+    return src
+
+
+def prepend_still(video: Path, image: Path, hold_sec: float = 0.5,
+                  replace: bool = False) -> Path:
     """Hold the thumbnail image on the front of the reel for a fraction of a second.
 
     Shorts custom thumbnails are not offered in every region, and where they are not,
@@ -178,16 +219,28 @@ def prepend_still(video: Path, image: Path, hold_sec: float = 0.5) -> Path:
     Rewrites the reel in place (same filename), so every path already handed out —
     publish kit, Discord, the dashboard — keeps working. The narration moves with the
     picture, and the captions are burned into the pixels, so nothing desyncs.
+
+    `replace=True` swaps a poster the reel already carries (a re-rolled thumbnail).
+    It is built from a pristine posterless copy, so re-rolling ten times costs one
+    generation of re-encode, not ten — and never stacks holds.
     """
     if not image or not Path(image).exists():
         return video
-    # The reel remembers that it already carries a poster frame. Regenerating a
-    # thumbnail re-runs the publish kit against the SAME finished file, and without
-    # this the holds stack — every reroll would bolt another half-second of still
-    # onto the front.
-    if _thumb_hold_of(video) is not None:
-        log.info(f"{video.name} already opens on its thumbnail; not stacking another")
-        return video
+
+    existing = _thumb_hold_of(video)
+    source = video
+    if existing is not None:
+        # The reel remembers that it already carries a poster frame. Without this
+        # a publish-kit re-run would bolt ANOTHER half-second of still onto the
+        # front; with it, a re-rolled thumbnail never reached the video at all.
+        if not replace:
+            log.info(f"{video.name} already opens on its thumbnail; not stacking another")
+            return video
+        source = _posterless_copy(video, existing)
+        if source is None:
+            return video
+    else:
+        _posterless_copy(video, None)      # keep the clean master for later re-rolls
 
     hold = max(0.1, min(float(hold_sec), 3.0))
     w, h = _probe_dims(video)
@@ -196,7 +249,7 @@ def prepend_still(video: Path, image: Path, hold_sec: float = 0.5) -> Path:
     r = subprocess.run(
         [str(FFMPEG_EXE), "-y", "-loglevel", "error",
          "-loop", "1", "-t", f"{hold:.3f}", "-i", str(Path(image).resolve()),
-         "-i", str(video.resolve()),
+         "-i", str(Path(source).resolve()),
          "-f", "lavfi", "-t", f"{hold:.3f}",
          "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
          "-filter_complex",
