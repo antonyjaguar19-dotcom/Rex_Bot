@@ -161,7 +161,7 @@ a mascot on **Create**, so a failed intake leaves nothing behind.
 - **Dashboard → Mascots tab**: add (name + image), delete, set active, upload extra
   angles or a voice clip. **Facts tab → Mascot dropdown** picks who presents.
   **Discord**: `!mascot list` · `!mascot use <id>` · `!mascot new <name>` (attach an
-  image) · `!mascot rm <id>`.
+  image) · `!mascot rename <id> <new name>` · `!mascot rm <id>`.
 - A mascot with no `voice.wav` of its own falls back to the shared
   `mascot_voice_ref` clip. Give a new character its own clip or it speaks in the
   cub's voice.

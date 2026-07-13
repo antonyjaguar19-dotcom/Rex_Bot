@@ -412,12 +412,23 @@ def put_file(mid: str, role: str, src: Optional[Path] = None,
     return dest
 
 
-def rename(mid: str, name: str) -> None:
+def rename(mid: str, name: str) -> str:
+    """Change a mascot's DISPLAY name. Returns the new name.
+
+    The folder id never changes with it, and that is deliberate: the id is what
+    `runtime_settings.active_mascot` points at and what every file lives under, so
+    renaming the folder would orphan the active mascot and move art that reels are
+    still being rendered from. The name is a label; the id is an address.
+    """
     d = mascots_dir() / mid
     if not d.is_dir():
         raise ValueError(f"no mascot named {mid!r}")
-    (d / "meta.json").write_text(json.dumps({"name": name.strip()}),
-                                 encoding="utf-8")
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("a mascot needs a name")
+    (d / "meta.json").write_text(json.dumps({"name": clean}), encoding="utf-8")
+    log.info(f"mascot {mid} renamed to '{clean}'")
+    return clean
 
 
 def remove(mid: str) -> None:

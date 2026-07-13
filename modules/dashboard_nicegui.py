@@ -3662,6 +3662,36 @@ def main_page():
                             .props("flat dense" + (" disable" if is_active else "")) \
                             .classes("text-xs")
 
+                        def _rename(_mid=mid, _name=m["name"]):
+                            with ui.dialog() as dlg, ui.card():
+                                ui.label(f"Rename “{_name}”").classes("font-bold")
+                                field = ui.input(label="Name", value=_name) \
+                                    .props("outlined dark dense autofocus") \
+                                    .style("min-width: 260px;")
+                                # The folder id is the mascot's ADDRESS (it is what
+                                # active_mascot points at and where the art lives).
+                                # Only the label changes.
+                                ui.label(f"Its files and id (`{_mid}`) stay as they "
+                                         f"are — this is the name you see.") \
+                                    .classes("text-xs opacity-70")
+                                with ui.row():
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                    def _save():
+                                        try:
+                                            got = ml.rename(_mid, field.value)
+                                        except ValueError as ex:
+                                            ui.notify(f"❌ {ex}", type="negative")
+                                            return
+                                        ui.notify(f"✏️ Renamed to {got}", type="positive")
+                                        dlg.close()
+                                        full_refresh()
+                                    ui.button("Save", on_click=_save) \
+                                        .props("flat color=accent")
+                            dlg.open()
+                        ui.button("✏️", on_click=_rename).props("flat dense") \
+                            .tooltip("Rename this mascot")
+
                         def _delete(_mid=mid, _name=m["name"]):
                             with ui.dialog() as dlg, ui.card():
                                 ui.label(f"Delete “{_name}”?").classes("font-bold")

@@ -5304,8 +5304,9 @@ async def _regen_thumb(ctx, video, scene: str):
 async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
     """Mascot: `!mascot` status · `!mascot on|off` (thumbnails) ·
     `!mascot list` · `!mascot use <id>` · `!mascot new <name>` (attach an image) ·
-    `!mascot rm <id>` · attach an image to `!mascot` to replace the ACTIVE
-    mascot's art. The shelf lives in 02_Agent/assets/mascots/."""
+    `!mascot rename <id> <new name>` · `!mascot rm <id>` · attach an image to
+    `!mascot` to replace the ACTIVE mascot's art. The shelf lives in
+    02_Agent/assets/mascots/."""
     from modules import mascot as mas
     from modules import mascot_library as ml
 
@@ -5407,6 +5408,21 @@ async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
             f"Preview: `!mascot_test bees`")
         return
 
+    if sub == "rename":
+        # `!mascot rename <id> <new name>` — the id stays, only the label changes.
+        bits = arg.split(maxsplit=1)
+        if len(bits) < 2:
+            await ctx.send("Usage: `!mascot rename <id> <new name>` — see `!mascot list`.")
+            return
+        mid, new_name = bits[0], bits[1]
+        try:
+            got = ml.rename(mid, new_name)
+        except ValueError as e:
+            await ctx.send(f"⚠️ {e}")
+            return
+        await ctx.send(f"✏️ `{mid}` is now **{got}** (its files and id are unchanged).")
+        return
+
     if sub in ("rm", "remove", "delete"):
         if not arg:
             await ctx.send("Usage: `!mascot rm <id>` — see `!mascot list`.")
@@ -5453,7 +5469,8 @@ async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
     if sub:
         if sub not in ("on", "off"):
             await ctx.send("Usage: `!mascot on|off` · `list` · `use <id>` · "
-                           "`new <name>` · `rm <id>` (or attach an image)")
+                           "`new <name>` · `rename <id> <new name>` · `rm <id>` "
+                           "(or attach an image)")
             return
         rs.set_mascot_thumbnails_enabled(sub == "on")
         await ctx.send(f"✅ Mascot thumbnails **{sub.upper()}**.")

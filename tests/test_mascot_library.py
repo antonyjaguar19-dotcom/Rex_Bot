@@ -114,6 +114,33 @@ def test_an_active_mascot_with_no_art_says_so_by_name():
     assert "Nakshu" in why and "no image" in why
 
 
+def test_rename_changes_the_label_and_moves_nothing():
+    """The id is the mascot's ADDRESS — active_mascot points at it and the art
+    lives under it. Renaming the folder would orphan the active mascot and move
+    files a render may be reading. Only the label changes."""
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    ml.set_active_id(mid)
+    art = ml.primary_image()
+
+    assert ml.rename(mid, "  Captain Owl  ") == "Captain Owl"   # trimmed
+
+    got = ml.describe(mid)
+    assert got["name"] == "Captain Owl"
+    assert got["id"] == mid == "robot-owl"          # the id does NOT follow the name
+    assert ml.get_active_id() == mid                # still active
+    assert ml.primary_image() == art                # art did not move
+    assert mas.active_mascot_name() == "Captain Owl"
+
+
+def test_rename_refuses_an_empty_name_and_an_unknown_mascot():
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    with pytest.raises(ValueError):
+        ml.rename(mid, "   ")
+    with pytest.raises(ValueError):
+        ml.rename("nobody", "Ghost")
+    assert ml.describe(mid)["name"] == "Robot Owl"
+
+
 def test_remove_unknown_raises():
     with pytest.raises(ValueError):
         ml.remove("nobody")
