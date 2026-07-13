@@ -452,9 +452,11 @@ def _voice_beats_clone(narrations: list, out_dir: Path, _p,
     Timbre AND pace come from the reference, so the speed/pitch knobs are NOT
     applied here: shifting a clone undoes the cloning.
     """
-    from modules import tts_chatterbox, gpu_memory
+    from modules import tts_chatterbox, gpu_memory, mascot_library as ml
 
-    ref = rs.get_mascot_voice_ref()
+    # The ACTIVE mascot's own clip when it carries one — a different character
+    # must not speak in the last one's voice. Falls back to the global clip.
+    ref = ml.voice_ref()
     if not ref:
         _p("⚠️ no mascot voice reference clip on disk; using qwen.")
         return None

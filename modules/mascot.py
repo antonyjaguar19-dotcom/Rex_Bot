@@ -249,13 +249,36 @@ _BG_RE = re.compile(
 # AVAILABILITY
 # ==============================================================================
 
+def _library():
+    """The mascot shelf, when there is one. Late import: mascot_library reads
+    ASSETS_DIR back off this module."""
+    from modules import mascot_library as ml
+    return ml if ml.library_exists() else None
+
+
+def active_mascot_name() -> str:
+    """Display name of the mascot in use — for logs and the UI."""
+    ml = _library()
+    got = ml.active() if ml else None
+    return got["name"] if got else "default"
+
+
 def mascot_path() -> Optional[Path]:
     """The primary mascot reference, or None when none has been added yet.
+
+    With a library on disk (assets/mascots/), this is the ACTIVE mascot's art —
+    switching mascot switches every thumbnail and presenter still with it. The
+    flat `assets/mascot.png` layout below is the pre-library fallback, and is only
+    consulted while no library exists (so deleting every mascot leaves you with
+    none, instead of resurrecting the old one).
 
     Falls back to the front angle: an angle set alone is a perfectly good
     install, and without this the whole feature silently no-ops when someone
     drops in mascot_front.png but no mascot.png.
     """
+    ml = _library()
+    if ml:
+        return ml.primary_image()
     for name in MASCOT_NAMES:
         p = ASSETS_DIR / name
         if p.exists() and p.stat().st_size > 0:
@@ -290,6 +313,9 @@ def mascot_refs(max_refs: int = 1) -> list:
     `reference_images=` explicitly, or raise max_refs, when a scene really needs
     the far side of the character.
     """
+    ml = _library()
+    if ml:
+        return ml.refs(max_refs=max_refs)
     angles = [ASSETS_DIR / n for n in MASCOT_ANGLE_NAMES]
     angles = [p for p in angles if p.exists() and p.stat().st_size > 0]
     if angles:
@@ -377,12 +403,13 @@ def is_available() -> tuple[bool, str]:
     """Can we render a mascot thumbnail right now? (file + backend)"""
     p = mascot_path()
     if p is None:
-        return False, (f"no mascot image — add one at "
-                       f"{ASSETS_DIR / 'mascot.png'}")
+        where = ("the Mascots tab (none on the shelf)" if _library()
+                 else str(ASSETS_DIR / "mascot.png"))
+        return False, f"no mascot image — add one in {where}"
     ok, msg = backend_healthy()
     if not ok:
         return False, msg
-    return True, f"mascot {p.name} + {BACKEND_ID}"
+    return True, f"mascot {active_mascot_name()} ({p.name}) + {BACKEND_ID}"
 
 
 # ==============================================================================

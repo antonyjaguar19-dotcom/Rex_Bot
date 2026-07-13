@@ -29,8 +29,9 @@ Live values in `05_Config/runtime_settings.json`; mirrored in `config_snapshot/`
 | Setting | Value | Why this value |
 |---|---|---|
 | `facts_mascot_mode` | `true` | The mascot presents. Backdrops are the fallback path, not the product. |
+| `active_mascot` | `default` | **Which** mascot presents (a folder under `02_Agent/assets/mascots/`). See "The mascot shelf" below. |
 | `mascot_tts_engine` | `chatterbox` | Voice **clone**. No local TTS has a child voice; every preset was an adult timbre pitch-shifted, and every one sounded wrong. |
-| `mascot_voice_ref` | `02_Agent/assets/mascot_voice.wav` | **Gitignored — a real recording of the owner's voice. Never commit it.** |
+| `mascot_voice_ref` | `02_Agent/assets/mascot_voice.wav` | The SHARED clone clip, used by any mascot that carries none of its own. **Gitignored — a real recording of the owner's voice. Never commit it.** |
 | `mascot_voice_exaggeration` | `0.35` | Calm and even. Higher gets theatrical; every earlier voice failed by being too excited. |
 | `mascot_voice_speed` | `1.20` | Pitch-preserving (`atempo`). The clone reads slow on its own. **Never pitch-shift a cloned voice** — it stops being the voice. |
 | `facts_mascot_lipsync` | `false` | Wan S2V moves the mouth but distorts hands and props. Voice-over wins. |
@@ -79,6 +80,40 @@ thumbnail replaces the old poster instead of bolting a second one on.
 
 **Kokoro is not offered** for the mascot anywhere in the UI. It survives inside the
 pipeline as a silent fallback only.
+
+---
+
+## The mascot shelf (2026-07-13)
+
+There can be more than one mascot, and the reel stars whichever is **active**.
+
+```
+02_Agent/assets/mascots/<id>/
+    mascot.png              primary reference (required)
+    mascot_front.png        optional angles — same filenames as the old flat layout
+    mascot_threequarter.png
+    mascot_side.png
+    mascot_back.png
+    voice.wav               optional: THIS mascot's cloned voice (gitignored)
+    meta.json               {"name": "Jaguar Cub"}
+```
+
+- `modules/mascot_library.py` owns the shelf; `rs.active_mascot` holds the id.
+  `mascot.mascot_path()` / `mascot_refs()` resolve through it, so switching mascot
+  switches every presenter still, every thumbnail and (when it carries a `voice.wav`)
+  the cloned narration — not just a label.
+- **Dashboard → Mascots tab**: add (name + image), delete, set active, upload extra
+  angles or a voice clip. **Facts tab → Mascot dropdown** picks who presents.
+  **Discord**: `!mascot list` · `!mascot use <id>` · `!mascot new <name>` (attach an
+  image) · `!mascot rm <id>`.
+- A mascot with no `voice.wav` of its own falls back to the shared
+  `mascot_voice_ref` clip. Give a new character its own clip or it speaks in the
+  cub's voice.
+- **Back-compat:** the old flat `assets/mascot.png` still works while no shelf exists.
+  `mascot_library.migrate()` copies it in as `default` on first use (the originals are
+  left alone). Once `assets/mascots/` exists it is the only truth — deleting every
+  mascot leaves you with none rather than resurrecting the flat file, and
+  `preflight()` then raises instead of quietly rendering backdrops.
 
 ---
 

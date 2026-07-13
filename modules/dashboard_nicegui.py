@@ -50,6 +50,7 @@ from modules import config_check
 from modules import manual_mode as mm
 from modules import publish_kit as pk
 from modules import voices
+from modules import mascot_library as ml
 
 # How often a running job rewrites its stage into the recovery register.
 CHECKPOINT_EVERY_SEC = 10.0
@@ -129,6 +130,26 @@ try:
     app.add_media_files("/media", str(OUTPUTS_DIR))
 except Exception as _e:
     logging.getLogger("claw_bot.dashboard").warning(f"media mount failed: {_e}")
+
+# Mascot art (02_Agent/assets/, incl. the mascots/ shelf) — same reason as
+# sb_static: the browser cannot fetch "E:\...", it needs a URL. Behind the login
+# gate like everything else; only /sb_static and /login are open.
+ASSETS_DIR = PROJECT_ROOT / "02_Agent" / "assets"
+try:
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    app.add_static_files("/assets", str(ASSETS_DIR))
+except Exception as _e:
+    logging.getLogger("claw_bot.dashboard").warning(f"assets mount failed: {_e}")
+
+
+def _asset_url(p) -> str:
+    """A cache-busted URL for a file under 02_Agent/assets/."""
+    p = Path(p)
+    try:
+        rel = p.resolve().relative_to(ASSETS_DIR.resolve()).as_posix()
+    except Exception:
+        return ""
+    return f"/assets/{rel}?v={p.stat().st_mtime_ns}"
 
 
 def _kit_sig(video) -> tuple:
@@ -1917,6 +1938,7 @@ def main_page():
             tab_facts = ui.tab("Facts", icon="lightbulb")
             tab_music = ui.tab("Music", icon="music_note")
             tab_manual = ui.tab("Manual", icon="tune")
+            tab_mascots = ui.tab("Mascots", icon="pets")
             tab_models = ui.tab("Models", icon="swap_horiz")
             tab_queue = ui.tab("Queue", icon="pause_circle")
 
@@ -1930,6 +1952,7 @@ def main_page():
         facts_panel = ui.tab_panel(tab_facts).classes("w-full")
         music_panel = ui.tab_panel(tab_music).classes("w-full")
         manual_panel = ui.tab_panel(tab_manual).classes("w-full")
+        mascots_panel = ui.tab_panel(tab_mascots).classes("w-full")
         models_panel = ui.tab_panel(tab_models).classes("w-full")
         queue_panel = ui.tab_panel(tab_queue).classes("w-full")
 
@@ -2204,10 +2227,34 @@ def main_page():
             facts_mascot_sw.on("update:model-value",
                                lambda e: rs.set_facts_mascot_mode(facts_mascot_sw.value))
 
+            # WHICH mascot presents. The options are refreshed by render_mascots()
+            # so a character added in the Mascots tab shows up here without a reload.
+            try:
+                ml.migrate()
+                _shelf = {m["id"]: m["name"] for m in ml.list_mascots()}
+                _active = ml.get_active_id()
+            except Exception:
+                _shelf, _active = {}, None
+            facts_mascot_sel = ui.select(
+                _shelf, value=_active, label="Mascot") \
+                .props("outlined dark dense").style("min-width: 150px") \
+                .tooltip("Which character presents the facts. Manage the shelf in "
+                         "the Mascots tab.")
+
+            def _set_active_mascot(_=None):
+                if not facts_mascot_sel.value:
+                    return
+                try:
+                    ml.set_active_id(facts_mascot_sel.value)
+                except ValueError as e:
+                    ui.notify(f"❌ {e}", type="negative")
+            facts_mascot_sel.on("update:model-value", _set_active_mascot)
+
             # "clone" is the real answer here: no local TTS has a child voice, so the
             # presets are adult timbres pitch-shifted. The clone reads the reference
             # clip in assets/mascot_voice.wav.
-            _ref = rs.get_mascot_voice_ref()
+            # The active mascot's own clip when it carries one, else the shared one.
+            _ref = ml.voice_ref()
             _mvoices = (["clone"] if _ref else []) + list(rs.VALID_QWEN_SPEAKERS)
             # kokoro is no longer offered (it stays in the pipeline only as a
             # silent fallback). A config still holding it would make this select
@@ -2560,6 +2607,61 @@ def main_page():
                 .style("margin-left: 8px;")._props["innerHTML"] = "PAUSED"
         queue_container = ui.column().classes("w-full gap-2")
 
+    # ============== MASCOTS (own tab) ==============
+    # A mascot is a folder under 02_Agent/assets/mascots/ (see mascot_library).
+    # Whichever one is ACTIVE is the character facts mode stars — in every
+    # presenter still, every thumbnail, and (if it carries a voice.wav) the
+    # cloned narration too.
+    with ui.card().classes("rex-card w-full") as card_mascots:
+        with ui.row().classes("items-center"):
+            ui.label("🎭 Mascots").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-purple") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "CAST"
+        ui.label("The character Facts mode stars. The active one is used for every "
+                 "presenter still and thumbnail. A front-facing, full-body shot on a "
+                 "plain background works best — that is what the identity transfer "
+                 "keys off.").classes("text-xs opacity-70")
+
+        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 8px;"):
+            new_mascot_name = ui.input(label="New mascot name",
+                                       placeholder="e.g. Robot Owl") \
+                .classes("flex-1").props("outlined dark dense")
+
+            # NiceGUI 3.x: the payload is e.file (a FileUpload); .save() is async.
+            async def _add_mascot(e):
+                name = (new_mascot_name.value or "").strip()
+                if not name:
+                    ui.notify("Give the mascot a name first.", type="warning")
+                    return
+                mid = None
+                try:
+                    ml.migrate()
+                    mid = ml.create(name)
+                    tmp = ml.mascots_dir() / mid / f"upload{Path(e.file.name).suffix}"
+                    await e.file.save(tmp)
+                    ml.put_file(mid, "main", image=tmp, filename=tmp.name)
+                    tmp.unlink(missing_ok=True)
+                    ml.set_active_id(mid)
+                except Exception as ex:
+                    if mid:                      # never leave a half-built mascot
+                        try:
+                            ml.remove(mid)
+                        except Exception:
+                            pass
+                    ui.notify(f"❌ {ex}", type="negative")
+                    return
+                new_mascot_name.set_value("")
+                ui.notify(f"✅ {name} added and made active.", type="positive")
+                full_refresh()
+
+            ui.upload(label="Main image", on_upload=_add_mascot, auto_upload=True) \
+                .props("accept=image/* flat dense color=accent") \
+                .classes("max-w-xs") \
+                .tooltip("Pick the image and the mascot is created with it.")
+
+        mascots_container = ui.row().classes("w-full gap-3 flex-wrap") \
+            .style("margin-top: 10px;")
+
     # ============== TOOLS ==============
     with ui.card().classes("rex-card w-full") as card_tools:
         with ui.row().classes("items-center"):
@@ -2818,6 +2920,7 @@ def main_page():
     card_final.move(pipeline_panel)
     card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
     card_manual.move(manual_panel)
+    card_mascots.move(mascots_panel)
     card_models.move(models_panel)
     card_queue.move(queue_panel)
 
@@ -3374,6 +3477,129 @@ def main_page():
                     ui.label(p.name).classes("text-xs opacity-75")
                 _render_publish_kit(p)
 
+    _MASCOT_ROLES = {
+        "main": "Main image",
+        "front": "Front view",
+        "threequarter": "Three-quarter",
+        "side": "Side",
+        "back": "Back",
+        "voice": "Voice clip (wav)",
+    }
+
+    def render_mascots():
+        try:
+            ml.migrate()                    # old flat mascot -> the shelf, once
+            shelf = ml.list_mascots()
+            active_id = ml.get_active_id()
+        except Exception as e:
+            log.warning(f"mascot shelf unreadable: {e}")
+            shelf, active_id = [], None
+
+        # The Facts dropdown lives on another card but lists the same shelf —
+        # keep it in step, or a mascot added here stays invisible until reload.
+        try:
+            opts = {m["id"]: m["name"] for m in shelf}
+            if facts_mascot_sel.options != opts:
+                facts_mascot_sel.set_options(opts, value=active_id)
+            elif facts_mascot_sel.value != active_id:
+                facts_mascot_sel.set_value(active_id)
+        except Exception as e:
+            log.debug(f"facts mascot select not updated: {e}")
+
+        sig = tuple(
+            (m["id"], m["name"], m["id"] == active_id, len(m["angles"]),
+             bool(m["voice"]),
+             m["image"].stat().st_mtime_ns if m["image"] else 0)
+            for m in shelf)
+        if not _changed("mascots", sig):
+            return
+
+        mascots_container.clear()
+        if not shelf:
+            with mascots_container:
+                ui.label("_(no mascots yet — name one above and pick its image)_") \
+                    .classes("opacity-60")
+            return
+
+        with mascots_container:
+            for m in shelf:
+                mid, is_active = m["id"], (m["id"] == active_id)
+                with ui.element("div").classes("rex-shot-card").style(
+                        "width: 240px;" + (" outline: 2px solid #7cf;" if is_active else "")):
+                    if m["image"]:
+                        ui.image(_asset_url(m["image"])).style(
+                            "border-radius: 8px; width: 100%; aspect-ratio: 1; "
+                            "object-fit: contain; background: #0008;")
+                    else:
+                        ui.label("⚠️ no image").classes("opacity-70") \
+                            .style("padding: 28px 0; text-align: center;")
+
+                    with ui.row().classes("items-center w-full gap-1"):
+                        ui.label(m["name"]).classes("font-bold")
+                        if is_active:
+                            ui.element("span").classes("rex-badge rex-badge-purple") \
+                                ._props["innerHTML"] = "ACTIVE"
+                    bits = [f"{len(m['angles'])} angles"] if m["angles"] else []
+                    bits.append("own voice" if m["voice"] else "shared voice")
+                    ui.label(f"`{mid}` · {' · '.join(bits)}").classes("text-xs opacity-70")
+
+                    with ui.row().classes("items-center gap-1 w-full") \
+                            .style("margin-top: 4px;"):
+                        def _use(_mid=mid):
+                            ml.set_active_id(_mid)
+                            ui.notify(f"Active mascot → {_mid}", type="positive")
+                            full_refresh()
+                        ui.button("▶️ Use", on_click=_use) \
+                            .props("flat dense" + (" disable" if is_active else "")) \
+                            .classes("text-xs")
+
+                        def _delete(_mid=mid, _name=m["name"]):
+                            with ui.dialog() as dlg, ui.card():
+                                ui.label(f"Delete “{_name}”?").classes("font-bold")
+                                ui.label("Its images and voice clip are removed from "
+                                         "disk. Reels already rendered are untouched.") \
+                                    .classes("text-xs opacity-70")
+                                with ui.row():
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                    def _yes():
+                                        try:
+                                            ml.remove(_mid)
+                                        except Exception as ex:
+                                            ui.notify(f"❌ {ex}", type="negative")
+                                        else:
+                                            ui.notify(f"🗑️ {_name} deleted", type="warning")
+                                        dlg.close()
+                                        full_refresh()
+                                    ui.button("Delete", on_click=_yes) \
+                                        .props("flat color=red")
+                            dlg.open()
+                        ui.button("🗑️", on_click=_delete).props("flat dense color=red") \
+                            .tooltip("Delete this mascot")
+
+                    role_sel = ui.select(_MASCOT_ROLES, value="main", label="Add file") \
+                        .props("outlined dark dense").classes("w-full") \
+                        .tooltip("Extra angles sharpen identity transfer; a voice clip "
+                                 "(5-15s, one speaker, no music) gives THIS mascot its "
+                                 "own cloned voice.")
+
+                    async def _upload(e, _mid=mid, _role=role_sel):
+                        tmp = ml.mascots_dir() / _mid / f"upload{Path(e.file.name).suffix}"
+                        try:
+                            await e.file.save(tmp)
+                            ml.put_file(_mid, _role.value, image=tmp,
+                                        filename=e.file.name)
+                        except Exception as ex:
+                            ui.notify(f"❌ {ex}", type="negative")
+                            return
+                        finally:
+                            tmp.unlink(missing_ok=True)
+                        ui.notify(f"✅ {_role.value} updated", type="positive")
+                        full_refresh()
+
+                    ui.upload(on_upload=_upload, auto_upload=True) \
+                        .props("flat dense color=accent").classes("w-full")
+
     def render_queue():
         try:
             items = pf.list_all()
@@ -3664,6 +3890,7 @@ def main_page():
             render_music_finals()
             render_manual()
             render_recovery()
+            render_mascots()
             render_queue()
             render_log()
         except RuntimeError as e:

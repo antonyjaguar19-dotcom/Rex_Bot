@@ -70,6 +70,8 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `pending_feedback.py` — JSON paused-revisions queue.
 - `sync_bridge.py` — Web→Discord on-disk event queue (emit + cursor files); drained by claw_bot poller. Carries job start/progress/end, finished media, and the approval views.
 - `job_feed.py` — Discord→Web live job snapshot (`05_Config/bot_job.json`; bot writes, dashboard reads). Fed by `_gpu_job` tapping the log stream.
+- `mascot.py` — mascot thumbnails + presenter stills (scene prompt → Qwen-Edit/USO render).
+- `mascot_library.py` — the mascot SHELF: `assets/mascots/<id>/` (art + angles + optional `voice.wav` + `meta.json`); `rs.active_mascot` picks who presents. `mascot.mascot_path()/refs()` resolve through it.
 - `progress_bar.py` — Unicode bar + rolling-window ETA.
 - `prompt_approval.py` — batch image+motion prompt gen → per-shot embed Edit/Reseed/Approve + master Approve-All + JSON state.
 - `prompt_assembler.py` — Qwen builds final Z-Image prompts + Wan motion prompts (beat-aware char scrub).
@@ -110,6 +112,13 @@ Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice,
 - **No silent downgrade** — `facts_pipeline.preflight()` proves the backend answers BEFORE the story is written; mascot mode ON now RAISES instead of quietly rendering abstract backdrops (a dead ComfyUI used to cost a 40-min render of the wrong film).
 - **Poster frame replaceable** — `prepend_still(replace=True)` rebuilds from a pristine copy in `final/_posterless/`; a re-rolled thumbnail now reaches the VIDEO (it used to rewrite only the .jpg, leaving the reel opening on the poster you just rejected). `publish_kit._refresh_poster_frame` does it for every aspect.
 - **Kokoro removed from all facts UI** (survives as a silent in-pipeline fallback). Reel **description** now shows in the dashboard (it looked for `facts_<id>_description.txt`; publish_kit writes `<video-stem>_description.txt`, so mascot reels showed none).
+
+## 3M. MASCOT SHELF (2026-07-13) — more than one mascot
+A mascot used to be ONE file (`assets/mascot.png`), so facts mode could only ever star one character. Now: `modules/mascot_library.py` + `assets/mascots/<id>/` (primary art, optional angles, optional `voice.wav`, `meta.json` name). `rs.active_mascot` = who presents; `mascot.mascot_path()/mascot_refs()` resolve through the shelf, so switching mascot switches every presenter still, thumbnail and (with its own clip) the cloned voice. **Dashboard: new left-nav "Mascots" tab** (add / delete / set active / upload angles + voice) and a **Mascot dropdown on the Facts card**. **Discord: `!mascot list|use <id>|new <name>|rm <id>`.** Details in `FACTS_MODE.md` § The mascot shelf.
+- **Migration is a copy, once** — `migrate()` copies the old flat `assets/mascot*.png` + `mascot_voice.wav` into `mascots/default/` and leaves the originals. Once `assets/mascots/` exists the flat layout is never read again (deleting every mascot must NOT resurrect the old one).
+- **A mascot with no `voice.wav` uses the shared `mascot_voice_ref` clip** — give a new character its own clip or it speaks in the cub's voice.
+- **`tests/test_dashboard_build.py` is new and load-bearing** — it builds the real page inside a manual NiceGUI `Client`. A dashboard HTTP 200 proves NOTHING: NiceGUI runs a `@ui.page` builder on websocket CONNECT, so a bad widget arg served a healthy 200 and only exploded in the browser. That is how `e.content`/`e.name` (NiceGUI 2.x upload API) nearly shipped — 3.x gives `e.file`, and `await e.file.save(path)`.
+- 596 tests green.
 
 ## 3S. Sync — BOTH directions now (2026-07-13)
 Discord ↔ Web are interchangeable mid-job.

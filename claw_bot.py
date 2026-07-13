@@ -5302,16 +5302,103 @@ async def _regen_thumb(ctx, video, scene: str):
 
 
 @bot.command(name="mascot")
-async def cmd_mascot(ctx, switch: str = None):
-    """Mascot thumbnails: `!mascot` status · `!mascot on|off` · attach an image
-    to this command to INSTALL it as the mascot reference."""
+async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
+    """Mascot: `!mascot` status · `!mascot on|off` (thumbnails) ·
+    `!mascot list` · `!mascot use <id>` · `!mascot new <name>` (attach an image) ·
+    `!mascot rm <id>` · attach an image to `!mascot` to replace the ACTIVE
+    mascot's art. The shelf lives in 02_Agent/assets/mascots/."""
     from modules import mascot as mas
+    from modules import mascot_library as ml
 
-    # An attached image becomes the mascot reference.
+    sub = (switch or "").strip().lower()
+    arg = rest.strip()
+
+    if sub == "list":
+        ml.migrate()
+        shelf = ml.list_mascots()
+        if not shelf:
+            await ctx.send("No mascots yet. `!mascot new <name>` with an image attached.")
+            return
+        act = ml.get_active_id()
+        lines = ["🎭 **Mascots**"]
+        for m in shelf:
+            mark = "▶️" if m["id"] == act else "  "
+            bits = [f"{len(m['angles'])} angles"] if m["angles"] else []
+            if m["voice"]:
+                bits.append("own voice")
+            if not m["ready"]:
+                bits.append("⚠️ no art")
+            tail = f" — {', '.join(bits)}" if bits else ""
+            lines.append(f"{mark} `{m['id']}` · {m['name']}{tail}")
+        lines.append("\n`!mascot use <id>` to switch.")
+        await ctx.send("\n".join(lines))
+        return
+
+    if sub == "use":
+        ml.migrate()
+        try:
+            ml.set_active_id(arg)
+        except ValueError as e:
+            await ctx.send(f"⚠️ {e} — see `!mascot list`.")
+            return
+        got = ml.active()
+        await ctx.send(f"✅ Active mascot → **{got['name']}** (`{got['id']}`).")
+        if got["image"]:
+            try:
+                await ctx.send(file=discord.File(str(got["image"])))
+            except Exception:
+                pass
+        return
+
+    if sub == "new":
+        if not arg:
+            await ctx.send("Usage: `!mascot new <name>` (attach the image).")
+            return
+        ml.migrate()
+        att = next((a for a in ctx.message.attachments
+                    if (a.content_type or "").startswith("image")), None)
+        mid = ml.create(arg)
+        if att:
+            tmp = ml.mascots_dir() / mid / f"upload{Path(att.filename).suffix or '.png'}"
+            await att.save(tmp)
+            ml.put_file(mid, "main", image=tmp, filename=tmp.name)
+            tmp.unlink(missing_ok=True)
+        ml.set_active_id(mid)
+        await ctx.send(f"✅ Mascot **{arg}** added as `{mid}` and made active."
+                       + ("" if att else "\n⚠️ No image attached — add one with "
+                                         "`!mascot` + an attachment."))
+        return
+
+    if sub in ("rm", "remove", "delete"):
+        if not arg:
+            await ctx.send("Usage: `!mascot rm <id>` — see `!mascot list`.")
+            return
+        try:
+            ml.remove(arg)
+        except ValueError as e:
+            await ctx.send(f"⚠️ {e}")
+            return
+        now = ml.active()
+        await ctx.send(f"🗑️ Removed `{arg}`. Active mascot is now "
+                       f"{'**' + now['name'] + '**' if now else '❌ none'}.")
+        return
+
+    # An attached image replaces the ACTIVE mascot's art (or the flat reference,
+    # pre-library).
     if ctx.message.attachments:
         att = ctx.message.attachments[0]
         if not (att.content_type or "").startswith("image"):
             await ctx.send("Attach an image file.")
+            return
+        ml.migrate()
+        mdir = ml.mascot_dir()
+        if mdir:
+            tmp = mdir / f"upload{Path(att.filename).suffix or '.png'}"
+            await att.save(tmp)
+            ml.put_file(ml.get_active_id(), "main", image=tmp, filename=tmp.name)
+            tmp.unlink(missing_ok=True)
+            await ctx.send(f"✅ Art replaced for **{ml.active()['name']}**.\n"
+                           f"Preview: `!mascot_test bees`")
             return
         mas.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
         dest = mas.ASSETS_DIR / "mascot.png"
@@ -5325,24 +5412,27 @@ async def cmd_mascot(ctx, switch: str = None):
                        f"Thumbnails will now star it. Preview: `!mascot_test bees`")
         return
 
-    if switch:
-        s = switch.strip().lower()
-        if s not in ("on", "off"):
-            await ctx.send("Usage: `!mascot on|off` (or attach an image)")
+    if sub:
+        if sub not in ("on", "off"):
+            await ctx.send("Usage: `!mascot on|off` · `list` · `use <id>` · "
+                           "`new <name>` · `rm <id>` (or attach an image)")
             return
-        rs.set_mascot_thumbnails_enabled(s == "on")
-        await ctx.send(f"✅ Mascot thumbnails **{s.upper()}**.")
+        rs.set_mascot_thumbnails_enabled(sub == "on")
+        await ctx.send(f"✅ Mascot thumbnails **{sub.upper()}**.")
         return
 
     ok, why = mas.is_available()
     enabled = rs.get_mascot_thumbnails_enabled()
     p = mas.mascot_path()
+    act = ml.active()
     lines = [f"🎭 **Mascot thumbnails:** {'ON' if enabled else 'OFF'}",
+             f"Active mascot: {'**' + act['name'] + '** (`' + act['id'] + '`)' if act else '(flat reference)'}",
              f"Reference image: {'`' + p.name + '`' if p else '❌ none'}",
              f"Renderer: {'✅ ' if ok else '❌ '}{why}"]
     if not p:
         lines.append(f"\nAdd one by attaching an image to `!mascot`, or save it to:\n"
                      f"`{mas.ASSETS_DIR / 'mascot.png'}`")
+    lines.append("`!mascot list` to see every mascot.")
     await ctx.send("\n".join(lines))
     if p:
         try:
@@ -5939,8 +6029,9 @@ async def cmd_mascot_voice(ctx, voice: str = None):
     `clone` reads the reference clip (chatterbox); the named voices are Qwen3-TTS
     presets. Kokoro is no longer offered — it stays in the pipeline only as a
     silent fallback if the chosen engine dies mid-render."""
+    from modules import mascot_library as ml
     if not voice:
-        ref = rs.get_mascot_voice_ref()
+        ref = ml.voice_ref()
         await ctx.send(
             f"🎙️ Mascot voice: `{rs.get_mascot_voice()}` "
             f"(engine `{rs.get_mascot_tts_engine()}`)\n"
@@ -5958,7 +6049,12 @@ async def cmd_mascot_voice(ctx, voice: str = None):
                     if a.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a"))),
                    None)
         if att:
-            dest = _MASCOT_VOICE_REF_DIR / "mascot_voice.wav"
+            # The clip belongs to the ACTIVE mascot when there is one — each
+            # character keeps its own voice. Without a library it stays the
+            # single global reference, as before.
+            mdir = ml.mascot_dir()
+            dest = (mdir / "voice.wav" if mdir
+                    else _MASCOT_VOICE_REF_DIR / "mascot_voice.wav")
             dest.parent.mkdir(parents=True, exist_ok=True)
             raw = dest.with_suffix(Path(att.filename).suffix or ".wav")
             await att.save(raw)
@@ -5966,10 +6062,11 @@ async def cmd_mascot_voice(ctx, voice: str = None):
                 if raw != dest:
                     _to_wav_mono16k(raw, dest)
                     raw.unlink(missing_ok=True)
-                rs.set_mascot_voice_ref(dest)
+                if not mdir:
+                    rs.set_mascot_voice_ref(dest)
             except Exception as e:
                 await ctx.send(f"⚠️ could not use that clip: {e}"); return
-        ref = rs.get_mascot_voice_ref()
+        ref = ml.voice_ref()
         if not ref:
             await ctx.send("⚠️ No reference clip. Attach a clean 5-15s recording "
                            "(one speaker, no music) to `!mascot_voice clone`.")

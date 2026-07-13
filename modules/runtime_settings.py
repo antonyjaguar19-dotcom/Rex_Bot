@@ -671,6 +671,26 @@ def set_mascot_voice_ref(path) -> None:
     log.info(f"Mascot voice ref: {p.name}")
 
 
+# --- Which mascot ----------------------------------------------------------
+# A folder name under 02_Agent/assets/mascots/ (see modules/mascot_library.py).
+# Kept as a plain string here, deliberately: runtime_settings is the bottom of the
+# import graph and must not reach up into the library to validate. The library
+# resolves a stale id to the first mascot on the shelf.
+def get_active_mascot() -> str:
+    return (_load().get("active_mascot") or "").strip()
+
+
+def set_active_mascot(mascot_id: str) -> None:
+    data = _load()
+    mid = (mascot_id or "").strip()
+    if mid:
+        data["active_mascot"] = mid
+    else:
+        data.pop("active_mascot", None)
+    _save(data)
+    log.info(f"Active mascot: {mid or '(none)'}")
+
+
 # --- Facts background music ------------------------------------------------
 # facts_assembly has always been able to MIX a bed (at 0.16, well under the voice)
 # — nothing ever generated one, so every facts reel shipped with silence under the
