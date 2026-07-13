@@ -29,6 +29,7 @@ _HERE = Path(__file__).parent.parent.resolve()
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from modules import facts_memory as fm
 from modules import safety_filter as sf
 from modules.file_utils import atomic_write_json
 from modules.script_generator import _call_llm, _extract_json
@@ -56,9 +57,9 @@ _SYS = (
 )
 
 
-def _prompt(topic: str, n: int) -> str:
+def _prompt(topic: str, n: int, avoid: str = "") -> str:
     return (
-        f"Write a facts reel about: {topic}.\n\n"
+        f"Write a facts reel about: {topic}.{avoid}\n\n"
         f"Return JSON with EXACTLY this shape:\n"
         f"{{\n"
         f'  "title": "short scroll-stopping title (max 8 words)",\n'
@@ -159,6 +160,35 @@ class FactsUnavailable(RuntimeError):
     placeholder narration ("Here is an interesting thing about bees number 1")."""
 
 
+class _StaleFacts(RuntimeError):
+    """The model wrote facts we have already used. Not a bad roll — a stale one,
+    and the retry has to be TOLD what it repeated or it just repeats it again."""
+
+    def __init__(self, msg: str, avoid: str):
+        super().__init__(msg)
+        self.avoid = avoid
+
+
+def _drop_repeats(facts: list, prior: list) -> tuple:
+    """(facts we have never told, the earlier facts the rest repeated).
+
+    Also de-duplicates WITHIN the batch: asked for five facts about octopuses,
+    the model has written "three hearts" twice in one reel.
+    """
+    fresh, repeats, kept = [], [], list(prior or [])
+    for f in facts or []:
+        spoken = (f.get("spoken") or "").strip()
+        if not spoken:
+            continue
+        old = fm.is_repeat(spoken, kept)
+        if old:
+            repeats.append(old)
+            continue
+        fresh.append(f)
+        kept.append(spoken)
+    return fresh, repeats
+
+
 # One bad JSON sample shouldn't cost you a reel; a dead server should fail fast.
 LLM_ATTEMPTS = 3
 
@@ -209,16 +239,56 @@ def generate_facts_short(
     placeholder = False
     data = None
     last_err = None
+
+    # What we've already told people about this topic. Ask for facts that aren't
+    # on the list — and then CHECK, because a model told not to repeat itself will
+    # cheerfully reword the same fact, and a reworded fact is the same fact.
+    try:
+        fm.backfill_from_reels()   # once, for the reels that predate the memory
+    except Exception as e:
+        log.warning(f"facts memory backfill skipped: {e}")
+    prior = fm.seen_facts(topic, limit=fm.PROMPT_LIMIT)
+    avoid = fm.avoid_clause(topic)
+    if prior and progress_cb:
+        progress_cb(f"skipping {len(prior)} fact(s) already used on '{topic}'")
+
     # A malformed-JSON roll is transient (one bad sample, a stray delimiter), so
     # re-roll before giving up. A connection error is not — bail on it at once
     # rather than hammering a server that isn't there.
     for attempt in range(1, LLM_ATTEMPTS + 1):
         try:
-            raw = _call_llm(_prompt(topic, n), _SYS, role="creative")
+            raw = _call_llm(_prompt(topic, n, avoid), _SYS, role="creative")
             data = _extract_json(raw)
             if not data.get("facts"):
                 raise ValueError("LLM returned no facts")
+            data["facts"], repeats = _drop_repeats(data["facts"], prior)
+            if repeats:
+                log.info(f"Facts: dropped {len(repeats)} already-told fact(s) "
+                         f"about '{topic}'")
+            # STALE, not bad: the model wrote facts we have already used, and the
+            # repeats are what left the reel short. A thin roll with NO repeats is
+            # a different failure (the model just wrote too few) and must not be
+            # blamed on the memory — it falls through to the "usable facts" path
+            # below, or the reel would be refused with "0 facts on record".
+            if repeats and len(data["facts"]) < MIN_FACTS:
+                told = "; ".join(f'"{r}"' for r in repeats[:4])
+                avoid_now = avoid + (
+                    f"\n\nYour last answer repeated facts we have already used "
+                    f"({told}). Those are burned. Write {n} facts we have NEVER "
+                    f"used, even if they are less famous."
+                )
+                raise _StaleFacts(
+                    f"only {len(data['facts'])}/{n} facts were new", avoid_now)
             break
+        except _StaleFacts as e:
+            last_err = e
+            avoid = e.avoid          # carry the "you repeated X" note into the retry
+            data = None
+            if attempt < LLM_ATTEMPTS:
+                log.warning(f"Facts attempt {attempt}/{LLM_ATTEMPTS}: {e}; re-rolling.")
+                if progress_cb:
+                    progress_cb(f"too many repeats, asking for new ones "
+                                f"({attempt + 1}/{LLM_ATTEMPTS})…")
         except Exception as e:
             last_err = e
             if _is_connection_error(e):
@@ -231,8 +301,17 @@ def generate_facts_short(
 
     if data is None or not data.get("facts"):
         if not allow_placeholder:
-            hint = ("Is Ollama running?" if _is_connection_error(last_err)
-                    else f"The model returned unusable JSON {LLM_ATTEMPTS}x.")
+            if isinstance(last_err, _StaleFacts):
+                # Not a broken model — an exhausted topic. Say so, or the user
+                # re-runs it forever waiting for a different answer.
+                hint = (f"Everything it wrote had already been used in an earlier "
+                        f"reel about '{topic}' ({len(prior)} facts on record). "
+                        f"Try a narrower topic, or clear this topic's history "
+                        f"with `!facts_forget {topic}`.")
+            elif _is_connection_error(last_err):
+                hint = "Is Ollama running?"
+            else:
+                hint = f"The model returned unusable JSON {LLM_ATTEMPTS}x."
             raise FactsUnavailable(
                 f"Could not write facts about '{topic}': {last_err}. "
                 f"{hint} (nothing was rendered)"
@@ -285,6 +364,19 @@ def generate_facts_short(
 
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     atomic_write_json(OUTPUTS_DIR / f"facts_{facts_id}.json", story)
+
+    # Remember what this reel says, so the NEXT one about this topic says
+    # something else. Placeholder narration is never remembered — "here is an
+    # interesting thing about bees number 1" is not a fact, and putting it on the
+    # do-not-repeat list would poison the topic forever.
+    if not placeholder:
+        try:
+            fm.record(topic, facts_id,
+                      [b["narration"] for b in beats if b["kind"] == "fact"])
+        except Exception as e:
+            # A memory write must never cost you the reel you just wrote.
+            log.warning(f"could not record facts memory: {e}")
+
     if progress_cb:
         progress_cb(f"facts written: '{story['title']}' — {len(beats)} beats "
                     f"in {_t.time()-t0:.0f}s")

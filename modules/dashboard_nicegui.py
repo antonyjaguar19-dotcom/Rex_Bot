@@ -52,6 +52,7 @@ from modules import manual_mode as mm
 from modules import publish_kit as pk
 from modules import voices
 from modules import mascot_library as ml
+from modules import facts_library as fl
 
 # How often a running job rewrites its stage into the recovery register.
 CHECKPOINT_EVERY_SEC = 10.0
@@ -2235,6 +2236,17 @@ def main_page():
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
 
+        # Everything ever finished. One line per reel; open it for the video, the
+        # facts it told, and its upload kit. Delete takes the WHOLE reel — story,
+        # stills, every aspect, the publish kit and the poster-less master (see
+        # facts_library). It does not take the reel's facts off the do-not-repeat
+        # list: a bad reel is a reason to want a DIFFERENT one next time.
+        ui.separator().style("margin-top: 14px;")
+        with ui.row().classes("items-center gap-2").style("margin-top: 8px;"):
+            ui.label("📚 Past reels").classes("text-sm font-bold")
+            facts_lib_count = ui.label("").classes("text-xs opacity-60")
+        facts_library_container = ui.column().classes("w-full gap-1")
+
     # ============== STAGE 2 — PROMPTS ==============
     with ui.card().classes("rex-card w-full") as card_prompts:
         with ui.row().classes("items-center"):
@@ -3425,6 +3437,118 @@ def main_page():
                 # Upload kit: title, description, thumbnail — all in one place.
                 _render_publish_kit(p)
 
+    def render_facts_library():
+        """The outliner: every finished reel, newest first, one line each."""
+        try:
+            reels = fl.list_reels()
+        except Exception as e:
+            log.warning(f"facts library unreadable: {e}")
+            reels = []
+
+        sig = tuple((r["id"], r["title"], r["size_mb"]) for r in reels)
+        if not _changed("facts_library", sig):
+            return
+
+        facts_lib_count.set_text(
+            f"{len(reels)} reel(s) · "
+            f"{sum(r['size_mb'] for r in reels):.0f} MB" if reels else "")
+        facts_library_container.clear()
+        if not reels:
+            with facts_library_container:
+                ui.label("_(nothing finished yet)_").classes("opacity-60")
+            return
+
+        with facts_library_container:
+            for r in reels:
+                when = r["when"].strftime("%d %b %Y · %H:%M") if r["when"] else r["id"]
+                head = f"{r['title']}"
+                if r["placeholder"]:
+                    head = f"⚠️ {head}"          # narrated by the offline stub
+                with ui.expansion(head).classes("w-full rex-shot-card") \
+                        .props("dense expand-separator"):
+                    ui.label(f"{when} · topic: {r['topic'] or '—'} · "
+                             f"{r['n_facts']} facts · {r['size_mb']} MB · "
+                             f"`{r['id']}`").classes("text-xs opacity-70")
+
+                    with ui.row().classes("gap-3 flex-wrap items-start") \
+                            .style("margin-top:6px;"):
+                        with ui.column().classes("gap-1") \
+                                .style("width: 260px; flex: none;"):
+                            # preload=none: the whole library is in the DOM, and a
+                            # <video> otherwise fetches metadata for every reel on
+                            # page load — 31 requests for clips nobody opened.
+                            ui.video(_media_url(r["video"])) \
+                                .props(f'preload=none poster="{_media_url(r["thumb"])}"'
+                                       if r["thumb"] else "preload=none") \
+                                .style("border-radius: 8px; width: 100%;")
+                            with ui.row().classes("gap-2 items-center"):
+                                for v in r["videos"]:
+                                    tag = v.stem.split("_")[-1]
+                                    ui.link(f"⬇ {tag}", _media_url(v)) \
+                                        .props("download").classes("text-xs") \
+                                        .style("color:#7cf;")
+
+                        if r["facts"]:
+                            with ui.column().classes("gap-0 flex-1") \
+                                    .style("min-width: 240px;"):
+                                ui.label("Facts it told") \
+                                    .classes("text-xs font-bold opacity-80")
+                                for f in r["facts"]:
+                                    ui.label(f"• {f}").classes("text-xs opacity-75")
+
+                    _render_publish_kit(r["video"])
+
+                    def _delete(_r=r):
+                        try:
+                            n_files, mb = fl.footprint(_r["id"])
+                        except Exception as e:
+                            ui.notify(f"❌ {e}", type="negative")
+                            return
+                        with ui.dialog() as dlg, ui.card():
+                            ui.label(f"Delete “{_r['title']}”?").classes("font-bold")
+                            ui.label(
+                                f"{n_files} file(s), {mb} MB — the video in every "
+                                f"aspect, its thumbnails and upload text, the "
+                                f"stills, and the story. This cannot be undone."
+                            ).classes("text-xs opacity-70").style("max-width:420px;")
+                            # The facts stay remembered on purpose: you delete a
+                            # reel because it was bad, and the next one about this
+                            # topic should say something ELSE.
+                            forget_sw = ui.switch(
+                                "Also let these facts be used again", value=False) \
+                                .props("dense color=accent") \
+                                .tooltip("Off (default): the facts it told stay on "
+                                         "the do-not-repeat list, so the next reel "
+                                         "about this topic is different. On: they "
+                                         "are released and can come back.")
+                            with ui.row():
+                                ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                def _yes():
+                                    try:
+                                        got = fl.delete_reel(
+                                            _r["id"], forget_facts=forget_sw.value)
+                                    except Exception as e:
+                                        ui.notify(f"❌ {e}", type="negative")
+                                        dlg.close()
+                                        return
+                                    msg = f"🗑️ Deleted {len(got['removed'])} file(s)"
+                                    if got["failed"]:
+                                        msg += f" — {len(got['failed'])} could not be removed"
+                                    if got["forgotten"]:
+                                        msg += f", {got['forgotten']} fact(s) released"
+                                    ui.notify(msg, type="warning")
+                                    S.push(f"Deleted facts reel {_r['id']}")
+                                    dlg.close()
+                                    full_refresh()
+                                ui.button("Delete reel", on_click=_yes) \
+                                    .props("flat color=red")
+                        dlg.open()
+
+                    with ui.row().classes("gap-2").style("margin-top:8px;"):
+                        ui.button("🗑️ Delete reel", on_click=_delete) \
+                            .props("flat dense color=red")
+
     def render_music_finals():
         fdir = PROJECT_ROOT / "04_Outputs" / "final"
         reels = (sorted(fdir.glob("song_*_9x16.mp4"),
@@ -3856,6 +3980,7 @@ def main_page():
             render_video()
             render_final()
             render_facts_reel()
+            render_facts_library()
             render_music_finals()
             render_manual()
             render_recovery()

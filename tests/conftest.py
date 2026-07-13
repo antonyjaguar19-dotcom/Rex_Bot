@@ -38,3 +38,21 @@ def _no_gpu_mascot(monkeypatch, tmp_path_factory):
     # falls back exactly as it does on a machine that has none.
     monkeypatch.setattr(rs, "DEFAULT_MASCOT_VOICE_REF", empty / "mascot_voice.wav",
                         raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_facts_memory(monkeypatch, tmp_path_factory):
+    """No test may write to the real facts memory.
+
+    facts_writer now records every fact it writes, so a test that generates a reel
+    would put "Here is an interesting thing about bees number 1" on the live
+    do-not-repeat list — poisoning the topic on the owner's machine. Tests that
+    exercise the memory point it somewhere themselves; this is the floor.
+    """
+    try:
+        import modules.facts_memory as fm
+    except Exception:
+        return
+    d = tmp_path_factory.mktemp("facts_memory")
+    monkeypatch.setattr(fm, "MEMORY_PATH", d / "_memory.json", raising=False)
+    monkeypatch.setattr(fm, "PROJECT_ROOT", d, raising=False)

@@ -91,6 +91,44 @@ pipeline as a silent fallback only.
 
 ---
 
+## The reel library + the fact memory (2026-07-13)
+
+**Past reels** (`modules/facts_library.py`) — the Facts tab lists every finished reel,
+newest first; open one for its video, the facts it told, and its upload kit. Delete
+removes the WHOLE footprint, which is why this lives in one module: a reel is scattered
+over `04_Outputs/facts/facts_{id}.json`, `storyboards/facts_{id}/`, `final/facts_{id}_*`
+(video, thumbnails, title, description, publish.json, mascot art, Discord preview) and
+`final/_posterless/facts_{id}_*`. Deleting by hand meant remembering all five, which is
+why `final/` had 212 facts files in it. The id is validated against `^\d{8}_\d{6}$`
+before it is interpolated into a delete glob — `*` would take the lot.
+Discord: `!facts_list` · `!facts_delete <id> [forget]`.
+
+**Fact memory** (`modules/facts_memory.py`, `04_Outputs/facts/_memory.json`) — every fact
+that ships is written down, keyed by topic, and the next reel about that topic is asked
+for facts that are NOT on the list. Ask Qwen about octopuses three times and you get the
+three famous ones three times: the second reel is a re-upload with new pictures.
+- **The prompt is not the feature; the CHECK is.** A model told "don't repeat these"
+  rewords the fact instead, and a reworded fact is the same fact. `is_repeat()` compares
+  content-word sets (order-free, plurals folded, **numbers kept** — "three hearts" and
+  "nine brains" differ only by the number). Measured: reworded repeat 1.00 / 0.75 / 0.71,
+  genuinely new 0.25 / 0.20 → threshold **0.55**.
+- Repeats are dropped from the reel; if that leaves it short, the roll is re-rolled and
+  the model is **told what it repeated** ("those are burned") — "try again" alone just
+  returns the same famous facts. An exhausted topic fails LOUDLY rather than shipping
+  four repeats.
+- A **thin** roll (too few facts, none repeated) is a different failure and must not be
+  blamed on the memory — it says "usable facts", not "already used (0 on record)".
+- `backfill_from_reels()` runs once and learns from the reels already on disk (31 of them
+  when this shipped), or the first repeat topic would repeat itself.
+- **Deleting a reel does NOT forget its facts.** A bad reel is a reason to want a
+  *different* one next time. Release them explicitly: the delete dialog's switch,
+  `!facts_delete <id> forget`, or `!facts_forget <topic>`.
+- Placeholder reels are never remembered — "here is an interesting thing about bees
+  number 1" is not a fact, and it would poison the topic forever.
+- Discord: `!facts_memory [topic]` · `!facts_forget <topic>`.
+
+---
+
 ## The mascot shelf (2026-07-13)
 
 There can be more than one mascot, and the reel stars whichever is **active**.

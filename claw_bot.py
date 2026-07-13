@@ -6135,6 +6135,121 @@ async def cmd_set_lipsync(ctx, switch: str = None):
     await ctx.send(f"✅ Lip-sync → `{'on' if want else 'off'}`{note}.")
 
 
+@bot.command(name="facts_list", aliases=["facts_reels", "reels"])
+async def cmd_facts_list(ctx, count: int = 15):
+    """Every finished facts reel, newest first: `!facts_list [how many]`."""
+    from modules import facts_library as fl
+    reels = fl.list_reels(limit=max(1, min(count, 40)))
+    if not reels:
+        await ctx.send("No finished facts reels yet.")
+        return
+    total = len(fl.list_reels())
+    lines = [f"📚 **Facts reels** — showing {len(reels)} of {total}"]
+    for r in reels:
+        when = r["when"].strftime("%d %b %H:%M") if r["when"] else r["id"]
+        flag = "⚠️ " if r["placeholder"] else ""
+        lines.append(f"`{r['id']}` · {flag}**{r['title'][:52]}** — "
+                     f"{r['topic'] or '—'} · {r['n_facts']} facts · "
+                     f"{r['size_mb']} MB · {when}")
+    lines.append("\n`!facts_delete <id>` to remove one.")
+    await ctx.send("\n".join(lines)[:1990])
+
+
+@bot.command(name="facts_delete", aliases=["delete_facts", "facts_rm"])
+async def cmd_facts_delete(ctx, facts_id: str = None, forget: str = None):
+    """Delete a facts reel and everything it owns: `!facts_delete <id>`.
+
+    Takes the video in every aspect, its thumbnails and upload text, the stills
+    and the story. Irreversible. The facts it told STAY on the do-not-repeat list
+    (a bad reel is a reason to want a different one next time) — add `forget` to
+    release them: `!facts_delete <id> forget`."""
+    from modules import facts_library as fl
+    if not facts_id:
+        await ctx.send("Usage: `!facts_delete <id> [forget]` — see `!facts_list`.")
+        return
+    if not fl.valid_id(facts_id):
+        await ctx.send(f"⚠️ `{facts_id}` is not a reel id (see `!facts_list`).")
+        return
+    got = fl.describe(facts_id)
+    if not got:
+        await ctx.send(f"❌ No finished reel `{facts_id}`.")
+        return
+    n_files, mb = fl.footprint(facts_id)
+    release = (forget or "").strip().lower() in ("forget", "release", "yes")
+
+    msg = await ctx.send(
+        f"🗑️ Delete **{got['title']}** (`{facts_id}`)?\n"
+        f"{n_files} file(s), {mb} MB — video, thumbnails, upload text, stills, "
+        f"story. **This cannot be undone.**\n"
+        f"Its {got['n_facts']} facts will "
+        f"{'be released for reuse' if release else 'stay on the do-not-repeat list'}.\n"
+        f"React ✅ within 30s to confirm.")
+    await msg.add_reaction("✅")
+
+    def _check(reaction, user):
+        return (user == ctx.author and str(reaction.emoji) == "✅"
+                and reaction.message.id == msg.id)
+    try:
+        await bot.wait_for("reaction_add", timeout=30.0, check=_check)
+    except asyncio.TimeoutError:
+        await ctx.send("Cancelled — nothing deleted.")
+        return
+
+    res = fl.delete_reel(facts_id, forget_facts=release)
+    note = f", {res['forgotten']} fact(s) released" if res["forgotten"] else ""
+    fail = (f"\n⚠️ {len(res['failed'])} file(s) could not be removed (in use?)"
+            if res["failed"] else "")
+    await ctx.send(f"🗑️ Deleted `{facts_id}` — {len(res['removed'])} path(s){note}.{fail}")
+
+
+@bot.command(name="facts_memory", aliases=["facts_seen"])
+async def cmd_facts_memory(ctx, *, topic: str = None):
+    """What the bot has already said: `!facts_memory` · `!facts_memory <topic>`.
+
+    Every fact that has shipped is remembered, so the next reel on the same topic
+    has to say something new."""
+    from modules import facts_memory as fm
+    fm.backfill_from_reels()
+    if not topic:
+        topics = fm.all_topics()
+        if not topics:
+            await ctx.send("Nothing remembered yet — no facts reel has shipped.")
+            return
+        top = sorted(topics.items(), key=lambda kv: -kv[1])[:20]
+        lines = [f"🧠 **Facts memory** — {sum(topics.values())} facts across "
+                 f"{len(topics)} topic(s)"]
+        lines += [f"`{k}` — {n} fact(s)" for k, n in top]
+        lines.append("\n`!facts_memory <topic>` to read them · "
+                     "`!facts_forget <topic>` to say it all again.")
+        await ctx.send("\n".join(lines)[:1990])
+        return
+
+    seen = fm.seen_facts(topic)
+    if not seen:
+        await ctx.send(f"Nothing remembered about `{topic}` — the next reel is free "
+                       f"to say anything.")
+        return
+    lines = [f"🧠 **{len(seen)} fact(s) already used on `{fm.topic_key(topic)}`** "
+             f"(the writer is told to avoid these):"]
+    lines += [f"• {f}" for f in seen]
+    await ctx.send("\n".join(lines)[:1990])
+
+
+@bot.command(name="facts_forget")
+async def cmd_facts_forget(ctx, *, topic: str = None):
+    """Wipe a topic's history so the facts can be told again: `!facts_forget bees`."""
+    from modules import facts_memory as fm
+    if not topic:
+        await ctx.send("Usage: `!facts_forget <topic>` — see `!facts_memory`.")
+        return
+    n = fm.forget_topic(topic)
+    if not n:
+        await ctx.send(f"Nothing was remembered about `{topic}`.")
+        return
+    await ctx.send(f"🧠 Forgot {n} fact(s) about `{fm.topic_key(topic)}` — "
+                   f"the next reel may use them again.")
+
+
 @bot.command(name="set_facts_thumbnail", aliases=["facts_thumbnail", "facts_thumb"])
 async def cmd_set_facts_thumbnail(ctx, switch: str = None):
     """Toggle the facts-reel thumbnail: `!facts_thumb on|off`.
