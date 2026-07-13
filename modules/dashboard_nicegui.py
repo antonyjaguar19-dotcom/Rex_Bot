@@ -829,6 +829,8 @@ def generate_facts_action(topic: str, refresh_cb):
         try:
             from modules import facts_writer as fw
             from modules import facts_pipeline as fp
+            # Prove the renderer is alive BEFORE Qwen spends a minute writing.
+            fp.preflight(_p)
             story = fw.generate_facts_short(topic, 6, progress_cb=_p)
             S.facts = story
             S.facts_stage = "voice"

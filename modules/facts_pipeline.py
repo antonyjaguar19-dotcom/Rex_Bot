@@ -586,8 +586,8 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
 
     ok, why = mascot.is_available()
     if not ok:
-        _p(f"mascot mode off: {why}")
-        return None
+        # Caller no longer downgrades behind your back — say what died.
+        raise RuntimeError(f"mascot cannot render: {why}")
     cfg = mr.get_available("video_backend", "comfyui_wan22_s2v")
     if rs.get_facts_mascot_lipsync() and not cfg:
         _p("lip-sync requested but the S2V backend is not registered; "
@@ -668,8 +668,7 @@ def _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id):
         s2v = vb.build_backend(cfg)
         ok, msg = s2v.health_check()
         if not ok:
-            _p(f"mascot mode off: S2V unhealthy ({msg}).")
-            return None
+            raise RuntimeError(f"lip-sync (S2V) backend unhealthy: {msg}")
         gpu_memory.acquire(gpu_memory.WAN_VIDEO)
         try:
             for i, b in enumerate(beats):
@@ -853,6 +852,31 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         return None
 
 
+def preflight(_p=lambda m: None) -> None:
+    """Prove the renderer can actually run, BEFORE the reel is voiced.
+
+    A dead ComfyUI used to be discovered deep in the render: the narration was
+    already cut, and the pipeline then quietly downgraded to gradient cards (or,
+    with mascot mode on, to abstract backdrops). The failure is loud now and it
+    arrives in seconds instead of minutes.
+    """
+    from modules import mascot
+    if rs.get_facts_mascot_mode():
+        ok, why = mascot.is_available()
+        if not ok:
+            raise RuntimeError(
+                f"Mascot mode is ON but the mascot cannot render — {why}. "
+                f"Start ComfyUI, or switch Mascot off to render abstract backdrops.")
+        _p(f"✅ preflight: {why}")
+        return
+    ok, why = mascot.backend_healthy()      # same image backend the backdrops use
+    if not ok:
+        raise RuntimeError(
+            f"The image backend is not answering — {why}. Start ComfyUI and try "
+            f"again (rendering now would give you a reel of plain gradient cards).")
+    _p(f"✅ preflight: {why}")
+
+
 def render_facts(
     story: dict,
     progress_cb: Optional[Callable[[str], None]] = None,
@@ -881,22 +905,26 @@ def render_facts(
     # outro. Generating it up front meant guessing the length, and a guessed length
     # is what forced the old loop-and-chop ending.
 
-    # Mascot mode: the mascot presents every fact in costume. Falls back to the
-    # normal abstract-backdrop path if the mascot is unavailable, so enabling it
-    # never breaks a render.
+    preflight(_p)
+
+    # Mascot mode: the mascot presents every fact in costume. _preflight has
+    # already proved the mascot CAN render, so anything that fails past here is a
+    # real fault — see the raise below.
     if rs.get_facts_mascot_mode():
-        try:
-            out = _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id)
-            if out:
-                # This return used to skip the publish kit entirely — a mascot
-                # reel shipped with no title and no thumbnail beside it.
-                stills = sorted((STILLS_DIR / f"facts_{facts_id}").glob("still_*.png"))
-                out.update(_attach_publish_kit(story, out, stills))
-                return out
-            _p("mascot mode unavailable; using abstract backdrops.")
-        except Exception as e:
-            log.exception("mascot facts render failed")
-            _p(f"⚠️ mascot mode failed ({e}); falling back to abstract backdrops.")
+        # No silent downgrade. Mascot mode ON used to fall back to abstract
+        # backdrops when anything went wrong (ComfyUI asleep, say) and hand back
+        # a reel that looked nothing like what was asked for — 40 minutes spent
+        # on the wrong film. Ask for the mascot, get the mascot or an error.
+        out = _render_facts_mascot(story, beats, aspect, music_path, _p, facts_id)
+        if not out:
+            raise RuntimeError(
+                "Mascot mode is ON but the mascot render produced nothing. Turn "
+                "Mascot off to render abstract backdrops instead.")
+        # This return used to skip the publish kit entirely — a mascot reel
+        # shipped with no title and no thumbnail beside it.
+        stills = sorted((STILLS_DIR / f"facts_{facts_id}").glob("still_*.png"))
+        out.update(_attach_publish_kit(story, out, stills))
+        return out
 
     import json as _json
     gpu_utils.ensure_vram_free()

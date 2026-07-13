@@ -58,6 +58,7 @@ def test_mascot_reel_still_gets_a_title_and_thumbnail(tmp_path, monkeypatch):
     import modules.runtime_settings as rs
 
     monkeypatch.setattr(rs, "get_facts_mascot_mode", lambda: True)
+    monkeypatch.setattr(fp, "preflight", lambda _p=None: None)   # no GPU here
     monkeypatch.setattr(fp, "STILLS_DIR", tmp_path)
     (tmp_path / "facts_T9").mkdir()
     (tmp_path / "facts_T9" / "still_00.png").write_bytes(b"")

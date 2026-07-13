@@ -5076,6 +5076,12 @@ async def cmd_make_facts(ctx, *, topic: str = None):
 
     status = await ctx.send(f"🧠 **Facts Mode** — writing facts about **{topic}**…")
     try:
+        # Renderer alive? Ask now — a dead ComfyUI found later used to cost the
+        # whole write, and then quietly hand back a reel nobody asked for.
+        await asyncio.to_thread(fp.preflight)
+    except Exception as e:
+        await _edit(f"❌ {e}"); return
+    try:
         story = await asyncio.to_thread(fw.generate_facts_short, topic, 6, _cb("🧠"))
     except Exception as e:
         log.exception("Facts writing failed")
