@@ -448,7 +448,8 @@ _REMOTE_EVERY_SEC = 1.0
 # doing, in words. Same trick the Discord milestone poster already uses.
 _REMOTE_FACTS_STAGE = (
     ("done",     ("facts reel complete", "reel ready", "✅ done")),
-    ("assemble", ("assembling", "ken burns", "animating", "muxing", "music bed", "bed verified")),
+    ("assemble", ("assembling", "ken burns", "animating", "wan clip", "muxing",
+                  "music bed", "composing the music", "bed verified", "thumbnail")),
     ("images",   ("backdrop", "mascot base", "still_", "building")),
     ("voice",    ("voicing", "narration", "tts")),
     ("write",    ("writing", "facts written")),

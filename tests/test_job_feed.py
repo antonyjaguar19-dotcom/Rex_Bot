@@ -88,12 +88,19 @@ def test_dashboard_sees_the_discord_job():
 
 
 def test_stepper_follows_the_render_by_what_it_says():
+    """Lines copied VERBATIM from a real Discord facts render's log — a table of
+    keywords I invented would only prove I can match my own guesses. `wan clip
+    3/8` read as stage "write" until a live smoke test caught it."""
     cases = {
         "🧠 writing 6 facts about bees": "write",
+        "facts written: 'Fire Facts' — 8 beats in 13s": "write",
         "🎙️ voicing 8 beats (clone)": "voice",
-        "Mascot base rendered: still_03.png": "images",
-        "🎬 animating 8 clips (Wan I2V)": "assemble",
-        "🎵 bed verified in the finished reel": "assemble",
+        "Mascot base rendered: still_04.png (9x16, comfyui_qwen_edit)": "images",
+        "🎬 animating 8 clips (Wan I2V, narration as voice-over)": "assemble",
+        "wan clip 3/8...": "assemble",
+        "🎵 composing the music bed (cheerful, 34s reel)": "assemble",
+        "🎵 bed verified in the finished reel: -31 dB under the voice": "assemble",
+        "🖼️ thumbnail held on the front of facts_20260713_152428_9x16.mp4": "assemble",
         "✅ facts reel complete": "done",
     }
     for line, expected in cases.items():
