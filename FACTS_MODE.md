@@ -138,14 +138,14 @@ There can be more than one mascot, and the reel stars whichever is **active**.
     mascot.png              primary reference (required)
     mascot_front.png        optional angles — same filenames as the old flat layout
     mascot_threequarter.png
-    mascot_side.png
-    mascot_back.png
+    mascot_side.png         (no BACK view: no face, no chest logo — it was never
+                             what identity transfer keyed on, so it is not asked for)
     voice.wav               optional: THIS mascot's cloned voice (gitignored)
     meta.json               {"name": "Jaguar Cub"}
 ```
 
 **Adding one** (dashboard Mascots tab → *New mascot*, or `!mascot new <name>` with the
-files attached): a name, **four views** (front / three-quarter / side / back) and a
+files attached): a name, **three views** (front / three-quarter / side) and a
 **~10s voice clip**. Only the FRONT view is required — it is the reference the renderer
 conditions on, and it is installed as the primary too (`mascot_refs()` still hands over
 ONE reference by default; three of them made Qwen copy a reference's stance instead of

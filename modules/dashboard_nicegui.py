@@ -3570,14 +3570,20 @@ def main_page():
                     ui.label(p.name).classes("text-xs opacity-75")
                 _render_publish_kit(p)
 
+    # The slots a mascot has. No BACK view: it carries no face and no chest logo,
+    # so identity transfer never keyed on it (see mascot_library.ANGLE_NAMES).
     _MASCOT_ROLES = {
         "main": "Main image",
         "front": "Front view",
         "threequarter": "Three-quarter",
         "side": "Side",
-        "back": "Back",
-        "voice": "Voice clip (wav)",
+        "voice": "Voice clip",
     }
+
+    # Which slot each mascot card is LOOKING at. Kept outside render_mascots so the
+    # choice survives the rebuild an upload triggers — otherwise you drop in a voice
+    # clip, the card redraws, and it snaps back to showing the front image.
+    _MASCOT_SLOT: dict = {}
 
     def render_mascots():
         try:
@@ -3599,10 +3605,21 @@ def main_page():
         except Exception as e:
             log.debug(f"facts mascot select not updated: {e}")
 
+        # Every slot's mtime, not just "has a voice / has N angles": REPLACING a
+        # clip or a view leaves those counts identical, and the card would never
+        # redraw — you'd upload a new side view and go on looking at the old one.
+        def _slot_sig(m) -> tuple:
+            out = []
+            for role in _MASCOT_ROLES:
+                p = ml.file_for(m["id"], role)
+                out.append((role, p.stat().st_mtime_ns if p else 0))
+            return tuple(out)
+
+        # The SLOT a card is looking at is deliberately not in here: _show_slot()
+        # repaints that box itself, and folding it in would rebuild the whole card
+        # (and flicker) every time you touched the dropdown.
         sig = tuple(
-            (m["id"], m["name"], m["id"] == active_id, len(m["angles"]),
-             bool(m["voice"]),
-             m["image"].stat().st_mtime_ns if m["image"] else 0)
+            (m["id"], m["name"], m["id"] == active_id, _slot_sig(m))
             for m in shelf)
         if not _changed("mascots", sig):
             return
@@ -3619,13 +3636,12 @@ def main_page():
                 mid, is_active = m["id"], (m["id"] == active_id)
                 with ui.element("div").classes("rex-shot-card").style(
                         "width: 240px;" + (" outline: 2px solid #7cf;" if is_active else "")):
-                    if m["image"]:
-                        ui.image(_asset_url(m["image"])).style(
-                            "border-radius: 8px; width: 100%; aspect-ratio: 1; "
-                            "object-fit: contain; background: #0008;")
-                    else:
-                        ui.label("⚠️ no image").classes("opacity-70") \
-                            .style("padding: 28px 0; text-align: center;")
+                    # Shows whatever slot the dropdown below names — the image for a
+                    # view, a player for the voice clip. It used to always show the
+                    # primary image, so picking "voice clip" told you nothing about
+                    # whether a clip had ever landed.
+                    slot_view = ui.column().classes("w-full gap-1") \
+                        .style("min-height: 150px;")
 
                     with ui.row().classes("items-center w-full gap-1"):
                         ui.label(m["name"]).classes("font-bold")
@@ -3670,11 +3686,50 @@ def main_page():
                         ui.button("🗑️", on_click=_delete).props("flat dense color=red") \
                             .tooltip("Delete this mascot")
 
-                    role_sel = ui.select(_MASCOT_ROLES, value="main", label="Add file") \
+                    role_sel = ui.select(_MASCOT_ROLES,
+                                         value=_MASCOT_SLOT.get(mid, "main"),
+                                         label="Slot") \
                         .props("outlined dark dense").classes("w-full") \
-                        .tooltip("Extra angles sharpen identity transfer; a voice clip "
-                                 "(5-15s, one speaker, no music) gives THIS mascot its "
-                                 "own cloned voice.")
+                        .tooltip("Shows what this mascot has in the slot — and the "
+                                 "upload below replaces it. Extra views sharpen "
+                                 "identity transfer; a voice clip (~10s, one speaker, "
+                                 "no music) gives THIS mascot its own cloned voice.")
+
+                    # Every widget this card owns is bound as a DEFAULT ARGUMENT.
+                    # Closing over the loop variables instead would give every card
+                    # the LAST mascot's select — one card, repeated.
+                    def _show_slot(_=None, _mid=mid, _sel=role_sel, _box=slot_view):
+                        role = _sel.value or "main"
+                        _MASCOT_SLOT[_mid] = role
+                        path = ml.file_for(_mid, role)
+                        _box.clear()
+                        with _box:
+                            if not path:
+                                ui.label(f"— nothing in “{_MASCOT_ROLES[role]}” yet") \
+                                    .classes("text-xs opacity-60") \
+                                    .style("padding: 40px 0; text-align: center;")
+                                return
+                            if role == "voice":
+                                ui.audio(_asset_url(path)).classes("w-full")
+                                secs = ml.audio_duration(path)
+                                ui.label(f"{path.name}"
+                                         + (f" · {secs:.0f}s" if secs else "")) \
+                                    .classes("text-xs opacity-70")
+                                warn = ml.voice_warning(path)
+                                if warn:
+                                    ui.label(f"⚠️ {warn}").classes("text-xs") \
+                                        .style("color:#fc9;")
+                            else:
+                                ui.image(_asset_url(path)).style(
+                                    "border-radius: 8px; width: 100%; aspect-ratio: 1; "
+                                    "object-fit: contain; background: #0008;")
+                                ui.label(path.name).classes("text-xs opacity-60")
+
+                    # on_value_change, not .on("update:model-value"): the DOM event
+                    # only fires for a real click in a real browser, which means the
+                    # preview could be neither driven nor tested any other way.
+                    role_sel.on_value_change(_show_slot)
+                    _show_slot()
 
                     async def _upload(e, _mid=mid, _role=role_sel):
                         tmp = ml.mascots_dir() / _mid / f"upload{Path(e.file.name).suffix}"
@@ -3687,10 +3742,11 @@ def main_page():
                             return
                         finally:
                             tmp.unlink(missing_ok=True)
-                        ui.notify(f"✅ {_role.value} updated", type="positive")
-                        full_refresh()
+                        ui.notify(f"✅ {_MASCOT_ROLES[_role.value]} updated",
+                                  type="positive")
+                        full_refresh()      # the card redraws on the SAME slot
 
-                    ui.upload(on_upload=_upload, auto_upload=True) \
+                    ui.upload(label="Replace", on_upload=_upload, auto_upload=True) \
                         .props("flat dense color=accent").classes("w-full")
 
     def render_queue():

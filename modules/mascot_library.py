@@ -11,7 +11,6 @@ one character. This module turns that into a shelf you pick from:
             mascot_front.png        <- optional angles, same names as before
             mascot_threequarter.png
             mascot_side.png
-            mascot_back.png
             voice.wav               <- optional: THIS mascot's cloned voice
             meta.json               <- {"name": "Jaguar Cub"} display name
         robot-owl/
@@ -46,11 +45,15 @@ PRIMARY_NAMES = ("mascot.png", "mascot.jpg", "mascot.jpeg", "mascot.webp")
 
 # Optional extra views. Same filenames the flat layout used, so a folder is just
 # the old assets dir with a name on it.
+#
+# There is no BACK view. It carries no face and no chest logo — the two things
+# identity transfer keys on — so it was always the last of the three references
+# Qwen-Edit accepts, which means it was never actually used. Asking for a fourth
+# image nobody looks at is just work. An old mascot_back.png on disk is ignored.
 ANGLE_NAMES = (
     "mascot_front.png",
     "mascot_threequarter.png",
     "mascot_side.png",
-    "mascot_back.png",
 )
 
 # The clip Chatterbox clones this mascot's voice from.
@@ -65,15 +68,14 @@ ROLE_FILES = {
     "front": "mascot_front.png",
     "threequarter": "mascot_threequarter.png",
     "side": "mascot_side.png",
-    "back": "mascot_back.png",
     "voice": "voice.wav",
 }
 
 # What a NEW mascot is asked for. The front view is the one the renderer actually
 # conditions on (mascot_refs() hands over ONE reference by default — three of them
 # made Qwen copy a reference's stance instead of acting out the scene). The other
-# three are stored for the paths that ask for more, and they cost nothing.
-INTAKE_VIEWS = ("front", "threequarter", "side", "back")
+# two are stored for the paths that ask for more, and they cost nothing.
+INTAKE_VIEWS = ("front", "threequarter", "side")
 REQUIRED_VIEWS = ("front",)
 
 # The voice is CLONED, not trained: Chatterbox reads this clip and speaks in its
@@ -219,6 +221,28 @@ def primary_image(mid: Optional[str] = None) -> Optional[Path]:
     or empty. mascot.mascot_path() falls back to the flat layout on None."""
     got = describe(mid) if mid else active()
     return got["image"] if got else None
+
+
+def file_for(mid: str, role: str) -> Optional[Path]:
+    """The file a mascot currently has in one slot, or None when that slot is empty.
+
+    The UI needs this to SHOW you what it is holding: picking "voice clip" in the
+    slot dropdown used to keep showing the front image, so there was no way to
+    tell whether a clip had ever landed.
+    """
+    got = describe(mid)
+    if not got:
+        return None
+    role = (role or "main").strip().lower()
+    if role == "main":
+        return got["image"]
+    if role == "voice":
+        return got["voice"]
+    name = ROLE_FILES.get(role)
+    if not name:
+        return None
+    p = got["dir"] / name
+    return p if p.exists() and p.stat().st_size > 0 else None
 
 
 def refs(mid: Optional[str] = None, max_refs: int = 1) -> list:

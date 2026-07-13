@@ -5352,10 +5352,10 @@ async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
     if sub == "new":
         if not arg:
             await ctx.send(
-                "Usage: `!mascot new <name>` — attach up to 4 images (front, "
-                "three-quarter, side, back, **in that order**) and a ~10s voice "
-                "clip. Only the FRONT image is required; the voice clip is what "
-                "the mascot's cloned voice is read from.")
+                "Usage: `!mascot new <name>` — attach up to 3 images (front, "
+                "three-quarter, side, **in that order**) and a ~10s voice clip. "
+                "Only the FRONT image is required; the voice clip is what the "
+                "mascot's cloned voice is read from.")
             return
         ml.migrate()
         images = [a for a in ctx.message.attachments

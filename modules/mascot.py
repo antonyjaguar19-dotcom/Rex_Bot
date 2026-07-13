@@ -403,9 +403,17 @@ def is_available() -> tuple[bool, str]:
     """Can we render a mascot thumbnail right now? (file + backend)"""
     p = mascot_path()
     if p is None:
-        where = ("the Mascots tab (none on the shelf)" if _library()
-                 else str(ASSETS_DIR / "mascot.png"))
-        return False, f"no mascot image — add one in {where}"
+        ml = _library()
+        if ml:
+            # An ACTIVE mascot with no art is the confusing case: the shelf is not
+            # empty and the dropdown names a character, so "no mascot" reads like a
+            # lie. Name the one that is missing its image.
+            got = ml.active()
+            where = (f"“{got['name']}” has no image yet — add one in the Mascots tab"
+                     if got else "no mascots on the shelf — add one in the Mascots tab")
+            return False, where
+        where = str(ASSETS_DIR / "mascot.png")
+        return False, f"no mascot image — add one at {where}"
     ok, msg = backend_healthy()
     if not ok:
         return False, msg

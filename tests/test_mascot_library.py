@@ -101,7 +101,17 @@ def test_remove_hands_the_crown_to_whats_left():
     assert ml.list_mascots() == []
     assert mas.mascot_path() is None      # empty shelf = no mascot, full stop
     ok, why = mas.is_available()
-    assert not ok and "no mascot" in why
+    assert not ok and "no mascots on the shelf" in why
+
+
+def test_an_active_mascot_with_no_art_says_so_by_name():
+    """The confusing case: the shelf is not empty and the dropdown names a
+    character, so a bare "no mascot image" reads like a lie."""
+    mid = ml.create("Nakshu")             # named, never given a picture
+    ml.set_active_id(mid)
+    ok, why = mas.is_available()
+    assert not ok
+    assert "Nakshu" in why and "no image" in why
 
 
 def test_remove_unknown_raises():
@@ -132,6 +142,34 @@ def test_a_new_main_replaces_the_old_one_rather_than_stacking():
     assert not (d / "mascot.png").exists()
 
 
+def test_there_is_no_back_view():
+    """It carries no face and no chest logo — the two things identity transfer
+    keys on — so it was never actually used as a reference. Asking for a fourth
+    image nobody looks at is just work."""
+    assert "back" not in ml.INTAKE_VIEWS
+    assert "back" not in ml.ROLE_FILES
+    assert not any("back" in n for n in ml.ANGLE_NAMES)
+
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    with pytest.raises(ValueError):
+        ml.put_file(mid, "back", data=PNG, filename="back.png")
+
+
+def test_file_for_reports_what_is_actually_in_each_slot():
+    """The card shows the slot the dropdown names. It used to show the primary
+    image whatever you picked, so choosing 'voice clip' told you nothing about
+    whether a clip had ever landed."""
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    ml.put_file(mid, "side", data=PNG, filename="s.png")
+    ml.put_file(mid, "voice", data=WAV, filename="v.wav")
+
+    assert ml.file_for(mid, "main").name == "mascot.png"
+    assert ml.file_for(mid, "side").name == "mascot_side.png"
+    assert ml.file_for(mid, "voice").name == "voice.wav"
+    assert ml.file_for(mid, "threequarter") is None      # empty slot, not the main image
+    assert ml.file_for("nobody", "main") is None
+
+
 def test_bad_file_types_are_refused():
     mid = ml.create("Robot Owl", image_bytes=PNG)
     with pytest.raises(ValueError):
@@ -157,7 +195,7 @@ def test_intake_installs_every_view_and_the_voice(tmp_path):
     ml.set_active_id(mid)
     got = ml.describe(mid)
 
-    assert len(got["angles"]) == 4
+    assert len(got["angles"]) == 3      # front, three-quarter, side — no BACK view
     assert got["voice"].name == "voice.wav"
     # The FRONT view is also the primary: a mascot whose primary is a side view
     # renders a character seen from the side in every thumbnail.
