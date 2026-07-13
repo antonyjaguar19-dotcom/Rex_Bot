@@ -15,6 +15,7 @@ import os
 import random
 import re
 import secrets as pysecrets
+import shutil
 import sys
 import threading
 import time
@@ -2622,43 +2623,115 @@ def main_page():
                  "plain background works best — that is what the identity transfer "
                  "keys off.").classes("text-xs opacity-70")
 
-        with ui.row().classes("w-full gap-2 items-end").style("margin-top: 8px;"):
-            new_mascot_name = ui.input(label="New mascot name",
-                                       placeholder="e.g. Robot Owl") \
-                .classes("flex-1").props("outlined dark dense")
+        # --- intake: name + four views + a voice clip ---------------------------
+        # Files are STAGED in a scratch folder and only become a mascot when
+        # "Create" is pressed — an upload that fails halfway must not leave a
+        # half-built character on the shelf.
+        NEW_MASCOT: dict = {"views": {}, "voice": None}
+        _STAGING = ASSETS_DIR / "mascots" / "_staging"
+
+        with ui.column().classes("w-full").style("margin-top: 10px;"):
+            ui.label("➕ New mascot").classes("font-bold")
+            ui.label("Four views of the character, and a ~10-second recording of its "
+                     "voice. The FRONT view is required — it is the reference the "
+                     "renderer conditions on; the other three are stored for the "
+                     "shots that ask for them. The voice is CLONED from the clip "
+                     "(there is no training step): one speaker, no music, no echo.") \
+                .classes("text-xs opacity-70")
+
+            with ui.row().classes("w-full gap-2 items-end").style("margin-top: 6px;"):
+                new_mascot_name = ui.input(label="Name",
+                                           placeholder="e.g. Robot Owl") \
+                    .classes("flex-1").props("outlined dark dense")
+
+            intake_status = ui.label("").classes("text-xs").style("color:#7cf;")
+
+            def _stage_status():
+                got = [v for v in ml.INTAKE_VIEWS if NEW_MASCOT["views"].get(v)]
+                bits = [f"views: {', '.join(got) if got else '— none yet'}"]
+                bits.append(f"voice: {Path(NEW_MASCOT['voice']).name}"
+                            if NEW_MASCOT["voice"] else "voice: — none yet")
+                intake_status.set_text(" · ".join(bits))
 
             # NiceGUI 3.x: the payload is e.file (a FileUpload); .save() is async.
-            async def _add_mascot(e):
+            def _make_view_uploader(view: str, required: bool):
+                async def _on(e, _view=view):
+                    _STAGING.mkdir(parents=True, exist_ok=True)
+                    dest = _STAGING / f"{_view}{Path(e.file.name).suffix.lower()}"
+                    await e.file.save(dest)
+                    NEW_MASCOT["views"][_view] = dest
+                    _stage_status()
+                    ui.notify(f"✅ {_view} view staged", type="positive")
+                label = view.replace("threequarter", "3/4").title()
+                ui.upload(label=f"{label}{' *' if required else ''}",
+                          on_upload=_on, auto_upload=True) \
+                    .props("accept=image/* flat dense color=accent") \
+                    .style("width: 210px;") \
+                    .tooltip("Required — the renderer's identity reference."
+                             if required else "Optional extra angle.")
+
+            with ui.row().classes("w-full gap-2 flex-wrap"):
+                for _v in ml.INTAKE_VIEWS:
+                    _make_view_uploader(_v, required=_v in ml.REQUIRED_VIEWS)
+
+                async def _on_voice(e):
+                    _STAGING.mkdir(parents=True, exist_ok=True)
+                    dest = _STAGING / f"voice{Path(e.file.name).suffix.lower()}"
+                    await e.file.save(dest)
+                    warn = ml.voice_warning(dest)
+                    NEW_MASCOT["voice"] = dest
+                    _stage_status()
+                    if warn:
+                        # A short clip still clones — thinly. Say so, don't refuse.
+                        ui.notify(f"⚠️ {warn}", type="warning", timeout=8000)
+                    else:
+                        secs = ml.audio_duration(dest)
+                        ui.notify(f"✅ voice staged ({secs:.0f}s)" if secs
+                                  else "✅ voice staged", type="positive")
+                ui.upload(label=f"Voice ~{ml.VOICE_IDEAL_SEC:.0f}s",
+                          on_upload=_on_voice, auto_upload=True) \
+                    .props("accept=audio/* flat dense color=accent") \
+                    .style("width: 210px;") \
+                    .tooltip("A clean recording of the character speaking. Chatterbox "
+                             "clones it — the clip IS the voice, so a noisy one is a "
+                             "noisy mascot.")
+
+            def _create_mascot():
                 name = (new_mascot_name.value or "").strip()
                 if not name:
                     ui.notify("Give the mascot a name first.", type="warning")
                     return
-                mid = None
+                if not NEW_MASCOT["views"].get("front"):
+                    ui.notify("The front view is required.", type="warning")
+                    return
                 try:
                     ml.migrate()
-                    mid = ml.create(name)
-                    tmp = ml.mascots_dir() / mid / f"upload{Path(e.file.name).suffix}"
-                    await e.file.save(tmp)
-                    ml.put_file(mid, "main", image=tmp, filename=tmp.name)
-                    tmp.unlink(missing_ok=True)
+                    mid = ml.create_from_intake(name, NEW_MASCOT["views"],
+                                                NEW_MASCOT["voice"])
                     ml.set_active_id(mid)
                 except Exception as ex:
-                    if mid:                      # never leave a half-built mascot
-                        try:
-                            ml.remove(mid)
-                        except Exception:
-                            pass
                     ui.notify(f"❌ {ex}", type="negative")
                     return
+                shutil.rmtree(_STAGING, ignore_errors=True)
+                NEW_MASCOT["views"], NEW_MASCOT["voice"] = {}, None
                 new_mascot_name.set_value("")
-                ui.notify(f"✅ {name} added and made active.", type="positive")
+                _stage_status()
+                ui.notify(f"✅ {name} created and made active.", type="positive")
                 full_refresh()
 
-            ui.upload(label="Main image", on_upload=_add_mascot, auto_upload=True) \
-                .props("accept=image/* flat dense color=accent") \
-                .classes("max-w-xs") \
-                .tooltip("Pick the image and the mascot is created with it.")
+            with ui.row().classes("gap-2 items-center").style("margin-top: 4px;"):
+                ui.button("➕ Create mascot", on_click=_create_mascot) \
+                    .classes("rex-btn-primary")
 
+                def _clear_intake():
+                    shutil.rmtree(_STAGING, ignore_errors=True)
+                    NEW_MASCOT["views"], NEW_MASCOT["voice"] = {}, None
+                    _stage_status()
+                    ui.notify("Staged files cleared.", type="info")
+                ui.button("✖ Clear", on_click=_clear_intake).props("flat dense")
+            _stage_status()
+
+        ui.separator().style("margin-top: 12px;")
         mascots_container = ui.row().classes("w-full gap-3 flex-wrap") \
             .style("margin-top: 10px;")
 
@@ -3587,7 +3660,7 @@ def main_page():
                         tmp = ml.mascots_dir() / _mid / f"upload{Path(e.file.name).suffix}"
                         try:
                             await e.file.save(tmp)
-                            ml.put_file(_mid, _role.value, image=tmp,
+                            ml.put_file(_mid, _role.value, src=tmp,
                                         filename=e.file.name)
                         except Exception as ex:
                             ui.notify(f"❌ {ex}", type="negative")

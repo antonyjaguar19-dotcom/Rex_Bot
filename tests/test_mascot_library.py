@@ -142,6 +142,83 @@ def test_bad_file_types_are_refused():
         ml.put_file(mid, "hat", data=PNG, filename="hat.png")
 
 
+# --- intake (the creation form) ---------------------------------------------
+
+def test_intake_installs_every_view_and_the_voice(tmp_path):
+    views = {}
+    for v in ml.INTAKE_VIEWS:
+        p = tmp_path / f"{v}.png"
+        p.write_bytes(PNG)
+        views[v] = p
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(WAV)
+
+    mid = ml.create_from_intake("Robot Owl", views, clip)
+    ml.set_active_id(mid)
+    got = ml.describe(mid)
+
+    assert len(got["angles"]) == 4
+    assert got["voice"].name == "voice.wav"
+    # The FRONT view is also the primary: a mascot whose primary is a side view
+    # renders a character seen from the side in every thumbnail.
+    assert got["image"].name == "mascot.png"
+    assert got["image"].read_bytes() == views["front"].read_bytes()
+
+
+def test_intake_without_the_front_view_is_refused():
+    with pytest.raises(ValueError, match="front"):
+        ml.create_from_intake("Robot Owl", {}, None)
+    assert ml.list_mascots() == []
+
+
+def test_a_failed_intake_leaves_nothing_behind(tmp_path):
+    """Half a mascot is worse than none: it lists, it activates, and it renders
+    an empty reference."""
+    front = tmp_path / "front.png"
+    front.write_bytes(PNG)
+    bad = tmp_path / "voice.txt"          # not an audio file
+    bad.write_bytes(WAV)
+
+    with pytest.raises(ValueError):
+        ml.create_from_intake("Robot Owl", {"front": front}, bad)
+    assert ml.list_mascots() == []
+
+
+def test_intake_takes_the_front_view_alone(tmp_path):
+    front = tmp_path / "front.png"
+    front.write_bytes(PNG)
+    mid = ml.create_from_intake("Robot Owl", {"front": front}, None)
+    got = ml.describe(mid)
+    assert got["ready"] and got["voice"] is None
+
+
+def test_voice_warning_is_advice_not_a_veto(monkeypatch, tmp_path):
+    """A short clip still clones — thinly. Warn, never refuse: the owner is the
+    one listening to the result."""
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(WAV)
+
+    monkeypatch.setattr(ml, "audio_duration", lambda p: 2.0)
+    assert "under" in ml.voice_warning(clip)
+
+    monkeypatch.setattr(ml, "audio_duration", lambda p: 90.0)
+    assert "past" in ml.voice_warning(clip)
+
+    monkeypatch.setattr(ml, "audio_duration", lambda p: 10.0)
+    assert ml.voice_warning(clip) is None
+
+    # ffprobe missing / unreadable file: unknown is not "bad".
+    monkeypatch.setattr(ml, "audio_duration", lambda p: None)
+    assert ml.voice_warning(clip) is None
+
+    # And a warned-about clip is still installed.
+    monkeypatch.setattr(ml, "audio_duration", lambda p: 2.0)
+    front = tmp_path / "front.png"
+    front.write_bytes(PNG)
+    mid = ml.create_from_intake("Robot Owl", {"front": front}, clip)
+    assert ml.describe(mid)["voice"] is not None
+
+
 # --- voice ------------------------------------------------------------------
 
 def test_each_mascot_speaks_in_its_own_voice():

@@ -32,10 +32,14 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("claw_bot.mascot_library")
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+FFPROBE_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffprobe.exe"
 
 # The primary reference, in priority order — the first that exists wins.
 PRIMARY_NAMES = ("mascot.png", "mascot.jpg", "mascot.jpeg", "mascot.webp")
@@ -64,6 +68,21 @@ ROLE_FILES = {
     "back": "mascot_back.png",
     "voice": "voice.wav",
 }
+
+# What a NEW mascot is asked for. The front view is the one the renderer actually
+# conditions on (mascot_refs() hands over ONE reference by default — three of them
+# made Qwen copy a reference's stance instead of acting out the scene). The other
+# three are stored for the paths that ask for more, and they cost nothing.
+INTAKE_VIEWS = ("front", "threequarter", "side", "back")
+REQUIRED_VIEWS = ("front",)
+
+# The voice is CLONED, not trained: Chatterbox reads this clip and speaks in its
+# timbre — there is no training run and no model to fit. What it needs is a clean
+# 10-second-ish sample: one speaker, no music, no room echo. Under ~5s it has too
+# little to copy; past ~30s it is just a bigger file (and a slower load).
+VOICE_IDEAL_SEC = 10.0
+VOICE_MIN_SEC = 5.0
+VOICE_MAX_SEC = 30.0
 
 DEFAULT_ID = "default"
 
@@ -247,18 +266,90 @@ def create(name: str, image: Optional[Path] = None,
     (d / "meta.json").write_text(
         json.dumps({"name": (name or mid).strip()}), encoding="utf-8")
     if image or image_bytes:
-        put_file(mid, "main", image=image, data=image_bytes, filename=filename)
+        put_file(mid, "main", src=image, data=image_bytes, filename=filename)
     log.info(f"mascot created: {mid} ({name})")
     return mid
 
 
-def put_file(mid: str, role: str, image: Optional[Path] = None,
+def audio_duration(path) -> Optional[float]:
+    """Length of a clip in seconds, or None when ffprobe can't say.
+
+    None means "unknown", never "bad" — a missing ffprobe must not block someone
+    from adding a mascot.
+    """
+    try:
+        out = subprocess.run(
+            [str(FFPROBE_EXE), "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True, timeout=60)
+        return float(out.stdout.strip())
+    except Exception as e:
+        log.warning(f"could not probe {Path(path).name}: {e}")
+        return None
+
+
+def voice_warning(path) -> Optional[str]:
+    """Why this clip will clone badly, or None if it's fine.
+
+    A warning, not a veto: a 4-second clip still produces a voice, just a thinner
+    one, and the owner is the one listening to it.
+    """
+    secs = audio_duration(path)
+    if secs is None:
+        return None
+    if secs < VOICE_MIN_SEC:
+        return (f"that clip is {secs:.0f}s — under {VOICE_MIN_SEC:.0f}s the clone "
+                f"has little to copy. Aim for ~{VOICE_IDEAL_SEC:.0f}s.")
+    if secs > VOICE_MAX_SEC:
+        return (f"that clip is {secs:.0f}s — anything past {VOICE_MAX_SEC:.0f}s just "
+                f"loads slower. ~{VOICE_IDEAL_SEC:.0f}s is plenty.")
+    return None
+
+
+def create_from_intake(name: str, views: dict, voice: Optional[Path] = None) -> str:
+    """Create a mascot from the full intake: its views + its own voice clip.
+
+    `views` maps a view name (INTAKE_VIEWS) to a file on disk. The FRONT view is
+    required and is also installed as the primary reference — `mascot_path()` needs
+    one, and a mascot whose primary is a side view renders a character seen from
+    the side in every thumbnail.
+
+    Nothing is half-created: if any file is rejected the folder is removed again,
+    so a failed intake cannot leave a nameless, artless mascot on the shelf.
+    """
+    missing = [v for v in REQUIRED_VIEWS if not views.get(v)]
+    if missing:
+        raise ValueError(f"missing required view(s): {', '.join(missing)}")
+
+    mid = create(name)
+    try:
+        put_file(mid, "main", src=Path(views["front"]))
+        for view in INTAKE_VIEWS:
+            src = views.get(view)
+            if src:
+                put_file(mid, view, src=Path(src))
+        if voice:
+            put_file(mid, "voice", src=Path(voice))
+    except Exception:
+        try:
+            shutil.rmtree(mascots_dir() / mid)
+        except Exception as e:
+            log.warning(f"could not clean up half-built mascot {mid}: {e}")
+        raise
+    log.info(f"mascot {mid}: intake complete "
+             f"({len([v for v in INTAKE_VIEWS if views.get(v)])} views, "
+             f"voice={'yes' if voice else 'no'})")
+    return mid
+
+
+def put_file(mid: str, role: str, src: Optional[Path] = None,
              data: Optional[bytes] = None, filename: str = "") -> Path:
     """Install one file into a mascot's folder under the given role.
 
-    `role` is one of ROLE_FILES. The extension follows the SOURCE file (a jpg
-    stays a jpg), except for the angle slots, which are png-named by convention
-    and are converted by nothing — so pass pngs for those, or accept the name.
+    `role` is one of ROLE_FILES — the image slots and `voice`. The extension
+    follows the SOURCE file (a jpg stays a jpg), except for the angle slots, which
+    are png-named by convention and are converted by nothing — so pass pngs for
+    those, or accept the name.
     """
     role = (role or "main").strip().lower()
     if role not in ROLE_FILES:
@@ -267,7 +358,7 @@ def put_file(mid: str, role: str, image: Optional[Path] = None,
     if not d.is_dir():
         raise ValueError(f"no mascot named {mid!r}")
 
-    src_ext = Path(filename or (image.name if image else "")).suffix.lower()
+    src_ext = Path(filename or (src.name if src else "")).suffix.lower()
     wanted = ROLE_FILES[role]
     if role == "voice":
         if src_ext not in AUDIO_EXTS:
@@ -289,10 +380,10 @@ def put_file(mid: str, role: str, image: Optional[Path] = None,
 
     if data is not None:
         dest.write_bytes(data)
-    elif image is not None:
-        shutil.copyfile(image, dest)
+    elif src is not None:
+        shutil.copyfile(src, dest)
     else:
-        raise ValueError("nothing to write: pass image= or data=")
+        raise ValueError("nothing to write: pass src= or data=")
     log.info(f"mascot {mid}: {role} <- {dest.name} ({dest.stat().st_size} bytes)")
     return dest
 

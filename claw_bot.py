@@ -5,6 +5,7 @@ Adds: pause/resume feedback so you can revisit revisions later.
 
 import functools
 import os
+import shutil
 import sys
 import asyncio
 import logging
@@ -5352,21 +5353,60 @@ async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
 
     if sub == "new":
         if not arg:
-            await ctx.send("Usage: `!mascot new <name>` (attach the image).")
+            await ctx.send(
+                "Usage: `!mascot new <name>` — attach up to 4 images (front, "
+                "three-quarter, side, back, **in that order**) and a ~10s voice "
+                "clip. Only the FRONT image is required; the voice clip is what "
+                "the mascot's cloned voice is read from.")
             return
         ml.migrate()
-        att = next((a for a in ctx.message.attachments
-                    if (a.content_type or "").startswith("image")), None)
-        mid = ml.create(arg)
-        if att:
-            tmp = ml.mascots_dir() / mid / f"upload{Path(att.filename).suffix or '.png'}"
-            await att.save(tmp)
-            ml.put_file(mid, "main", image=tmp, filename=tmp.name)
-            tmp.unlink(missing_ok=True)
-        ml.set_active_id(mid)
-        await ctx.send(f"✅ Mascot **{arg}** added as `{mid}` and made active."
-                       + ("" if att else "\n⚠️ No image attached — add one with "
-                                         "`!mascot` + an attachment."))
+        images = [a for a in ctx.message.attachments
+                  if (a.content_type or "").startswith("image")]
+        audio = next((a for a in ctx.message.attachments
+                      if (a.content_type or "").startswith("audio")
+                      or a.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a"))),
+                     None)
+        if not images:
+            await ctx.send("⚠️ Attach at least the FRONT image.")
+            return
+
+        # Stage everything first: create_from_intake cleans up after itself, so a
+        # bad file can never leave a half-built mascot on the shelf.
+        stage = ml.mascots_dir() / "_staging"
+        shutil.rmtree(stage, ignore_errors=True)
+        stage.mkdir(parents=True, exist_ok=True)
+        try:
+            views = {}
+            for view, att in zip(ml.INTAKE_VIEWS, images):
+                dest = stage / f"{view}{Path(att.filename).suffix.lower() or '.png'}"
+                await att.save(dest)
+                views[view] = dest
+            voice = None
+            if audio:
+                raw = stage / f"voice_raw{Path(audio.filename).suffix.lower()}"
+                await audio.save(raw)
+                voice = stage / "voice.wav"
+                if raw.suffix == ".wav":
+                    voice = raw
+                else:
+                    _to_wav_mono16k(raw, voice)   # chatterbox wants a plain wav
+                warn = ml.voice_warning(voice)
+                if warn:
+                    await ctx.send(f"⚠️ {warn}")
+            mid = ml.create_from_intake(arg, views, voice)
+            ml.set_active_id(mid)
+        except Exception as e:
+            await ctx.send(f"❌ Could not create that mascot: `{e}`")
+            return
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+
+        got = ml.describe(mid)
+        await ctx.send(
+            f"✅ Mascot **{arg}** added as `{mid}` and made active — "
+            f"{len(got['angles'])} view(s), "
+            f"{'its own voice' if got['voice'] else 'the shared voice clip'}.\n"
+            f"Preview: `!mascot_test bees`")
         return
 
     if sub in ("rm", "remove", "delete"):
@@ -5395,7 +5435,7 @@ async def cmd_mascot(ctx, switch: str = None, *, rest: str = ""):
         if mdir:
             tmp = mdir / f"upload{Path(att.filename).suffix or '.png'}"
             await att.save(tmp)
-            ml.put_file(ml.get_active_id(), "main", image=tmp, filename=tmp.name)
+            ml.put_file(ml.get_active_id(), "main", src=tmp, filename=tmp.name)
             tmp.unlink(missing_ok=True)
             await ctx.send(f"✅ Art replaced for **{ml.active()['name']}**.\n"
                            f"Preview: `!mascot_test bees`")

@@ -98,6 +98,16 @@ There can be more than one mascot, and the reel stars whichever is **active**.
     meta.json               {"name": "Jaguar Cub"}
 ```
 
+**Adding one** (dashboard Mascots tab → *New mascot*, or `!mascot new <name>` with the
+files attached): a name, **four views** (front / three-quarter / side / back) and a
+**~10s voice clip**. Only the FRONT view is required — it is the reference the renderer
+conditions on, and it is installed as the primary too (`mascot_refs()` still hands over
+ONE reference by default; three of them made Qwen copy a reference's stance instead of
+acting out the scene). The clip is **cloned, not trained** — Chatterbox reads it and
+speaks in its timbre, so a noisy clip is a noisy mascot. 5–30s is accepted, ~10s is the
+mark; outside that you get a warning, never a refusal. Files are staged and only become
+a mascot on **Create**, so a failed intake leaves nothing behind.
+
 - `modules/mascot_library.py` owns the shelf; `rs.active_mascot` holds the id.
   `mascot.mascot_path()` / `mascot_refs()` resolve through it, so switching mascot
   switches every presenter still, every thumbnail and (when it carries a `voice.wav`)
