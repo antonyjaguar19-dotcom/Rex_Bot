@@ -441,6 +441,65 @@ def _fit_to_budget(wavs: list, _p) -> list:
     return wavs
 
 
+# --- did the voice actually SAY the line? -----------------------------------
+# Chatterbox sometimes collapses: handed "Get ready to be amazed by these game
+# secrets." it returned 0.12 SECONDS of audio, and the reel shipped with a hook
+# that was a blip and an outro that was cut in half. The fact beats in the same
+# batch were fine, so nothing downstream noticed — the pipeline happily cut a
+# video shot to a 0.12s "line".
+#
+# It is always the SHORT lines (the hook and the outro), and it is stochastic:
+# the same clip and the same lines worked on five earlier reels.
+#
+# The test is PHYSICAL, not stylistic: nobody says N words in less than N/4
+# seconds. 4 words/sec is auctioneer pace and this voice actually reads at
+# 1.7-1.9, so a take under that floor did not contain its line — while a merely
+# brisk take is never touched.
+#
+# Anchoring the threshold to the MEASURED pace instead was tempting and wrong: a
+# mascot whose clone happens to read faster would have had every line re-rolled
+# and then lost its voice to a preset. The check must catch broken audio, not a
+# different delivery.
+#
+# It runs on the RAW take, before the pace pass speeds it up.
+MAX_WORDS_PER_SEC = 4.0
+SHORT_TAKE_FLOOR = 0.6      # seconds; below this it is a blip whatever the text
+
+
+def _min_speech_sec(text: str) -> float:
+    """The shortest time in which this line could physically be spoken."""
+    words = len((text or "").split())
+    return max(SHORT_TAKE_FLOOR, words / MAX_WORDS_PER_SEC) if words else 0.0
+
+
+def _short_takes(texts: list, wavs: list) -> list:
+    """Indices whose audio is too short to contain their line. Empty = all good."""
+    bad = []
+    for i, (text, wav) in enumerate(zip(texts, wavs)):
+        floor = _min_speech_sec(text)
+        if floor <= 0:
+            continue
+        wav = Path(wav)
+        if not wav.exists() or wav.stat().st_size == 0:
+            log.warning(f"beat {i}: no audio file at all ({wav.name})")
+            bad.append(i)
+            continue
+        got = _probe_dur(wav)
+        # UNKNOWN IS NOT BROKEN. _probe_dur returns 0.0 when it cannot measure —
+        # a missing ffprobe, an odd container. Judging that as a zero-second take
+        # would send every line back for a re-roll and then drop the mascot's voice
+        # for a preset, on every reel, because of a broken probe.
+        if got <= 0:
+            log.warning(f"beat {i}: could not measure {wav.name}; assuming it is fine")
+            continue
+        if got < floor:
+            log.warning(f"beat {i}: {got:.2f}s of audio for {len(text.split())} words "
+                        f"— nobody says that in under {floor:.1f}s; the line was "
+                        f"not spoken")
+            bad.append(i)
+    return bad
+
+
 def _voice_beats_clone(narrations: list, out_dir: Path, _p,
                        spoken: Optional[list] = None) -> Optional[list]:
     """One WAV per fact, CLONED from a reference clip (Chatterbox).
@@ -480,6 +539,36 @@ def _voice_beats_clone(narrations: list, out_dir: Path, _p,
         texts, out_dir / "voice", ref_wav=ref,
         exaggeration=rs.get_mascot_voice_exaggeration(),
     )
+
+    # Chatterbox collapses on a line now and then — 0.12s of audio for a
+    # nine-word hook — and it is nearly always the SHORT lines (hook, outro).
+    # Re-roll only the ones that failed; a re-roll is a fresh sample, and the
+    # same line usually lands on the second try.
+    for attempt in (1, 2):
+        bad = _short_takes(texts, segs)
+        if not bad:
+            break
+        _p(f"⚠️ the voice clipped {len(bad)} line(s) "
+           f"({', '.join(str(i) for i in bad)}) — re-recording them")
+        try:
+            redo = tts_chatterbox.synthesize_each(
+                [texts[i] for i in bad], out_dir / f"voice_retry{attempt}",
+                ref_wav=ref, exaggeration=rs.get_mascot_voice_exaggeration(),
+            )
+        except Exception as e:
+            _p(f"⚠️ re-recording failed ({e})")
+            break
+        for i, seg in zip(bad, redo):
+            segs[i] = seg
+
+    # Still short after two re-rolls: the mascot's own voice cannot say these
+    # lines today. Ship NOTHING on this path rather than a reel whose hook is a
+    # 0.1s blip — the caller falls back to a preset voice, whole and consistent.
+    bad = _short_takes(texts, segs)
+    if bad:
+        _p(f"⚠️ the clone kept clipping line(s) {bad} after 2 retries; "
+           f"using a preset voice for the whole reel instead.")
+        return None
 
     # Pace IS adjusted here; timbre is NOT. The clone reads at ~1.75 words/sec
     # against a presenter's 2.5-3 — sluggish however short the script is, so a word

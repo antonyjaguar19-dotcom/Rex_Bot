@@ -113,6 +113,15 @@ Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice,
 - **Poster frame replaceable** — `prepend_still(replace=True)` rebuilds from a pristine copy in `final/_posterless/`; a re-rolled thumbnail now reaches the VIDEO (it used to rewrite only the .jpg, leaving the reel opening on the poster you just rejected). `publish_kit._refresh_poster_frame` does it for every aspect.
 - **Kokoro removed from all facts UI** (survives as a silent in-pipeline fallback). Reel **description** now shows in the dashboard (it looked for `facts_<id>_description.txt`; publish_kit writes `<video-stem>_description.txt`, so mascot reels showed none).
 
+## 3V. VOICE: A TAKE MUST CONTAIN ITS LINE (2026-07-13)
+Chatterbox **collapses on short lines**: handed the 9-word hook it returned **0.12s** of audio (outro 0.60s), while the 6 fact beats in the same batch were fine. Nothing downstream noticed — the reel shipped with a blip for a hook and the video was cut to that length. Stochastic: the same lines/voice worked on 5 earlier reels.
+- **`facts_pipeline._short_takes()`** — a take under `words / 4.0 w/s` (auctioneer pace; this voice reads 1.7-1.9) did not contain its line. PHYSICAL floor on purpose: anchoring it to the measured pace would make a faster-reading clone re-roll everything and lose its voice to a preset. Runs on the RAW take, before the pace pass.
+- **`_probe_dur()` returns 0.0 when it CANNOT measure** — unknown is NOT broken. Judging 0.0 as a zero-second take would drop every mascot to a preset voice on a broken ffprobe. Missing/empty FILE is still bad.
+- Clipped lines are re-recorded (only the failures) up to 2x; still clipped → `_voice_beats_clone` returns None → whole reel falls back to a preset voice, whole and consistent.
+- **Voice clips are normalised to mono 16k WAV on ingest** (`mascot_library._to_wav_mono16k`). Discord always did; the dashboard stored the upload raw, so a mascot cloned from a **48 kHz mp3** while every clip that ever worked was a mono 16k wav.
+- **`put_file()` STAGES the incoming file before deleting the old one.** The "one voice per mascot" cleanup unlinked `voice.mp3` and then tried to read it as the source — it destroyed the user's clip. Stage first, delete after; pinned by a test.
+- Wan at 720p is ~8-9 min/clip (previous reels peaked at 482s). 8 clips ≈ an hour. Not a hang.
+
 ## 3P. FACTS LIBRARY + FACT MEMORY (2026-07-13)
 Two features on the Facts tab. Spec: `FACTS_MODE.md` § The reel library + the fact memory.
 - **`modules/facts_library.py`** — outliner of every FINISHED reel (newest first) with video, the facts it told, upload kit, and **delete**. Delete takes the whole footprint (story JSON + `storyboards/facts_{id}/` + `final/facts_{id}_*` incl. kit + `_posterless/`); a reel lives in 5 places and deleting by hand meant remembering all 5 (that's why `final/` held 212 facts files). Id is validated `^\d{8}_\d{6}$` BEFORE it goes into a delete glob (`*` would take the lot). Discord: `!facts_list`, `!facts_delete <id> [forget]`.

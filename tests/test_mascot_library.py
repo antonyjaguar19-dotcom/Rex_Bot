@@ -197,6 +197,46 @@ def test_file_for_reports_what_is_actually_in_each_slot():
     assert ml.file_for("nobody", "main") is None
 
 
+def test_replacing_a_slot_from_its_own_file_does_not_destroy_it(monkeypatch):
+    """The cleanup that keeps ONE voice per mascot deleted the mascot's current
+    clip — and the current clip can be the SOURCE (re-importing voice.mp3 to
+    convert it). It was deleted before it was read, and the copy that was meant to
+    replace it then failed on a missing file. The clip was gone.
+    """
+    # No ffmpeg in the test: the fallback keeps the bytes, which is what we check.
+    monkeypatch.setattr(ml, "FFMPEG_EXE", Path("no_such_ffmpeg.exe"))
+
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    mp3 = ml.mascots_dir() / mid / "voice.mp3"
+    mp3.write_bytes(WAV)
+
+    got = ml.put_file(mid, "voice", src=mp3, filename="voice.mp3")
+
+    assert got.name == "voice.wav"
+    assert got.read_bytes() == WAV          # the audio survived the round trip
+    assert not mp3.exists()                 # and only ONE voice is left
+    assert ml.file_for(mid, "voice") == got
+
+
+def test_a_voice_clip_is_normalised_to_the_format_the_clone_wants(tmp_path, monkeypatch):
+    """Mono 16k wav. It is the one thing the voice is conditioned on, and the only
+    clips that ever cloned cleanly here were mono 16k wavs — a 48 kHz mp3 got in
+    through the dashboard (Discord had always converted) and the reel came back
+    with a 0.12s hook."""
+    calls = []
+    monkeypatch.setattr(ml, "_to_wav_mono16k",
+                        lambda s, dst: calls.append((Path(s).suffix, dst.name))
+                        or dst.write_bytes(WAV) or dst)
+
+    mid = ml.create("Robot Owl", image_bytes=PNG)
+    src = tmp_path / "recording.mp3"
+    src.write_bytes(WAV)
+    got = ml.put_file(mid, "voice", src=src, filename="recording.mp3")
+
+    assert calls == [(".mp3", "voice.wav")]
+    assert got.name == "voice.wav"
+
+
 def test_bad_file_types_are_refused():
     mid = ml.create("Robot Owl", image_bytes=PNG)
     with pytest.raises(ValueError):

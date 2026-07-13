@@ -39,6 +39,7 @@ log = logging.getLogger("claw_bot.mascot_library")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 FFPROBE_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffprobe.exe"
+FFMPEG_EXE = PROJECT_ROOT / "00_Tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
 
 # The primary reference, in priority order — the first that exists wins.
 PRIMARY_NAMES = ("mascot.png", "mascot.jpg", "mascot.jpeg", "mascot.webp")
@@ -383,32 +384,75 @@ def put_file(mid: str, role: str, src: Optional[Path] = None,
         raise ValueError(f"no mascot named {mid!r}")
 
     src_ext = Path(filename or (src.name if src else "")).suffix.lower()
-    wanted = ROLE_FILES[role]
     if role == "voice":
         if src_ext not in AUDIO_EXTS:
             raise ValueError(f"voice clip must be one of {AUDIO_EXTS}")
-        dest = d / f"voice{src_ext}"
-        for other in VOICE_NAMES:            # only one voice per mascot
-            if (d / other) != dest:
-                (d / other).unlink(missing_ok=True)
+        # ALWAYS mono 16 kHz WAV — see _to_wav_mono16k. Discord's !mascot_voice has
+        # always normalised its uploads; the dashboard stored whatever you dropped
+        # in, so one mascot ended up cloning from a 48 kHz mp3 while every clip
+        # that ever cloned cleanly was a mono 16k wav.
+        dest = d / "voice.wav"
+        stale = [d / n for n in VOICE_NAMES]          # one voice per mascot
+    elif role == "main":
+        if src_ext and src_ext not in IMAGE_EXTS:
+            raise ValueError(f"image must be one of {IMAGE_EXTS}")
+        dest = d / f"mascot{src_ext or '.png'}"
+        stale = [d / n for n in PRIMARY_NAMES]        # a new main replaces the old
     else:
         if src_ext and src_ext not in IMAGE_EXTS:
             raise ValueError(f"image must be one of {IMAGE_EXTS}")
-        if role == "main":
-            dest = d / f"mascot{src_ext or '.png'}"
-            for other in PRIMARY_NAMES:      # a new main replaces the old one
-                if (d / other) != dest:
-                    (d / other).unlink(missing_ok=True)
-        else:
-            dest = d / wanted                # angles keep their fixed names
+        dest = d / ROLE_FILES[role]                   # angles keep their fixed names
+        stale = []
 
-    if data is not None:
-        dest.write_bytes(data)
-    elif src is not None:
-        shutil.copyfile(src, dest)
-    else:
+    if data is None and src is None:
         raise ValueError("nothing to write: pass src= or data=")
+
+    # STAGE FIRST, then delete. The cleanup below removes the mascot's current
+    # file in this slot — and that file can BE the source (re-importing the
+    # mascot's own voice.mp3 to convert it). Deleting before reading destroyed
+    # the clip and then failed on the copy that was supposed to replace it.
+    staged = d / f"_incoming{src_ext or '.bin'}"
+    try:
+        if data is not None:
+            staged.write_bytes(data)
+        else:
+            shutil.copyfile(src, staged)
+
+        for old in stale:
+            if old != staged:
+                old.unlink(missing_ok=True)
+
+        if role == "voice":
+            _to_wav_mono16k(staged, dest)
+        else:
+            shutil.copyfile(staged, dest)
+    finally:
+        staged.unlink(missing_ok=True)
+
     log.info(f"mascot {mid}: {role} <- {dest.name} ({dest.stat().st_size} bytes)")
+    return dest
+
+
+def _to_wav_mono16k(src: Path, dest: Path) -> Path:
+    """The format Chatterbox clones from: mono, 16 kHz, PCM.
+
+    Not cosmetic. The clip is the ONE thing the voice is conditioned on, and the
+    only clips that have ever cloned cleanly here were mono 16k wavs. When ffmpeg
+    cannot be reached we keep the file as-is rather than lose it — a raw clip
+    still clones, it is just the variable nobody wanted.
+    """
+    try:
+        r = subprocess.run(
+            [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(src),
+             "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
+            capture_output=True, text=True, timeout=120)
+        if dest.exists() and dest.stat().st_size > 0 and r.returncode == 0:
+            return dest
+        log.warning(f"could not convert {src.name} to mono 16k wav "
+                    f"({(r.stderr or '').strip()[:120]}); keeping it as uploaded")
+    except Exception as e:
+        log.warning(f"ffmpeg unavailable ({e}); keeping the clip as uploaded")
+    shutil.copyfile(src, dest)      # dest is voice.wav either way
     return dest
 
 
