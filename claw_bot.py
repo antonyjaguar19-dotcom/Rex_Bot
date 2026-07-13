@@ -275,6 +275,37 @@ def _recovery_mode(label: str) -> str:
     return "story"
 
 
+class _FeedTap(logging.Handler):
+    """Publish a running Discord job's log lines to the dashboard.
+
+    The alternative was threading a progress callback through every !command and
+    every pipeline — the pipelines already SAY what they are doing, to the log.
+    So the log is what gets tapped, for the duration of the job only.
+    """
+    _SKIP = ("claw_bot.job_feed", "claw_bot.sync_bridge", "discord")
+    _EVERY_SEC = 1.5
+
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self._last = 0.0
+
+    def emit(self, record):
+        try:
+            if any(record.name.startswith(s) for s in self._SKIP):
+                return
+            msg = record.getMessage()
+            now = time.time()
+            loud = (record.levelno >= logging.WARNING
+                    or msg.lstrip()[:1] in ("✅", "❌", "⚠️", "🎵", "🎬", "🖼️", "🎙️"))
+            if not loud and now - self._last < self._EVERY_SEC:
+                return
+            self._last = now
+            from modules import job_feed as jf
+            jf.push(msg[:300])
+        except Exception:
+            pass            # a broken feed must never break a render
+
+
 def _gpu_job(label: str):
     """Queue a pipeline entrypoint on the shared GPU job queue.
 
@@ -324,7 +355,24 @@ def _gpu_job(label: str):
                     job_id = job_recovery.begin(_recovery_mode(label), label)
                 except Exception as e:
                     log.warning(f"recovery register failed: {e}")
-                return await fn(first, *args, **kwargs)
+
+                # Publish this job to the dashboard. Without it a render started
+                # from Discord left the browser blank for half an hour — the bot
+                # was plainly working and the web UI had no way to know.
+                from modules import job_feed as jf
+                ok = True
+                jf.begin(job_id or f"discord{int(time.time())}",
+                         _recovery_mode(label), label)
+                tap = _FeedTap()
+                logging.getLogger("claw_bot").addHandler(tap)
+                try:
+                    return await fn(first, *args, **kwargs)
+                except Exception:
+                    ok = False
+                    raise
+                finally:
+                    logging.getLogger("claw_bot").removeHandler(tap)
+                    jf.end(ok=ok, note=("✅ done" if ok else "❌ failed"))
             finally:
                 # A job that merely RAISED is not interrupted — deregister it.
                 if job_id:

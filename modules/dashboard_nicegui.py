@@ -441,6 +441,48 @@ def _mirror(event: str, **data) -> None:
         log.debug(f"mirror {event} failed: {e}")
 
 
+_REMOTE_CACHE = {"at": 0.0, "job": {}}
+_REMOTE_EVERY_SEC = 1.0
+
+# The Discord pipelines don't publish a stage name — they publish what they are
+# doing, in words. Same trick the Discord milestone poster already uses.
+_REMOTE_FACTS_STAGE = (
+    ("done",     ("facts reel complete", "reel ready", "✅ done")),
+    ("assemble", ("assembling", "ken burns", "animating", "muxing", "music bed", "bed verified")),
+    ("images",   ("backdrop", "mascot base", "still_", "building")),
+    ("voice",    ("voicing", "narration", "tts")),
+    ("write",    ("writing", "facts written")),
+)
+
+
+def _remote_facts_stage(job: dict) -> str:
+    """Which stepper light a Discord facts render is on, read from its own words."""
+    text = " ".join(job.get("lines", [])[-6:]).lower()
+    for stage, keys in _REMOTE_FACTS_STAGE:
+        if any(k in text for k in keys):
+            return stage
+    return "write"
+
+
+def _remote_job() -> dict:
+    """The Discord-started job, if one is running. {} otherwise.
+
+    Read straight off disk (the bot writes it), but cached for a second: the page
+    refreshes every 1.5s and several renderers ask for it each pass.
+    """
+    now = time.time()
+    if now - _REMOTE_CACHE["at"] < _REMOTE_EVERY_SEC:
+        return _REMOTE_CACHE["job"]
+    try:
+        from modules import job_feed as jf
+        _REMOTE_CACHE["job"] = jf.read()
+    except Exception as e:
+        log.debug(f"job feed read failed: {e}")
+        _REMOTE_CACHE["job"] = {}
+    _REMOTE_CACHE["at"] = now
+    return _REMOTE_CACHE["job"]
+
+
 def _mirror_files(event: str, out, mode: str, **data) -> None:
     """Mirror a finished render. `out` is a {aspect: path} dict or a path list."""
     if isinstance(out, dict):
@@ -1838,11 +1880,21 @@ def main_page():
     def _refresh_status():
         waiting = job_lock.queue_depth()
         queued = f"  ·  🧾 {waiting} queued" if waiting else ""
+        remote = _remote_job()
         if S.busy:
             status_spinner.set_visibility(True)
             status_label.text = (f"⏳ Running: {S.current_action}…  "
                                  f"(watch the log below){queued}")
             status_label.style("color:#ffcf5c;")
+        elif remote:
+            # A render started from Discord. It holds the GPU and this page is not
+            # busy, so without this the strip cheerfully reported "Idle — ready"
+            # while the bot was 20 minutes into a reel.
+            mins = (time.time() - float(remote.get("started", 0))) / 60
+            status_spinner.set_visibility(True)
+            status_label.text = (f"⏳ Discord: {remote.get('label', 'job')} — "
+                                 f"running {mins:.0f} min (log below){queued}")
+            status_label.style("color:#8ab4ff;")
         elif waiting:
             # Another front-end (Discord / scheduler) holds the GPU.
             status_spinner.set_visibility(True)
@@ -3560,11 +3612,19 @@ def main_page():
                                 .props("flat color=red dense")
 
     def render_log():
-        text = "\n".join(S.log_lines[-30:]) or "(idle)"
+        remote = _remote_job()
+        if remote and not S.busy:
+            # Show the Discord render's own progress — this page has none of its
+            # own to show, and "(idle)" was a lie.
+            head = (f"— {remote.get('mode', '')} · {remote.get('label', 'job')} "
+                    f"(started in Discord) —")
+            text = "\n".join([head] + list(remote.get("lines", []))[-29:])
+        else:
+            text = "\n".join(S.log_lines[-30:]) or "(idle)"
         # escape angle brackets
         safe = text.replace("<", "&lt;").replace(">", "&gt;")
         cls = "rex-log"
-        if S.busy:
+        if S.busy or (remote and not remote.get("done")):
             cls += " rex-pulse"
         log_box.content = f"<pre class='{cls}'>{safe}</pre>"
 
@@ -3585,7 +3645,12 @@ def main_page():
             gpu_label.text = gpu_summary()
             _refresh_status()
             refresh_stepper()
-            _fa = _FACTS_KEYS.index(S.facts_stage) if S.facts_stage in _FACTS_KEYS else -1
+            # A Discord-started facts reel drives the Facts stepper too, so the
+            # wizard tracks the render instead of sitting at "idle" through it.
+            _rf = _remote_job()
+            _fstage = (_remote_facts_stage(_rf)
+                       if _rf.get("mode") == "facts" and not S.busy else S.facts_stage)
+            _fa = _FACTS_KEYS.index(_fstage) if _fstage in _FACTS_KEYS else -1
             _paint_stepper(facts_steps[0], facts_steps[1], _fa)
             _ma = _MUSIC_KEYS.index(S.music_stage) if S.music_stage in _MUSIC_KEYS else -1
             _paint_stepper(music_steps[0], music_steps[1], _ma)
