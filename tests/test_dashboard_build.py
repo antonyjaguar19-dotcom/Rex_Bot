@@ -51,3 +51,21 @@ def test_facts_mode_can_choose_its_mascot(page):
     selects = [e for e in page.elements.values()
                if e._props.get("label") == "Mascot"]
     assert selects, "no mascot picker on the Facts card"
+
+
+def test_the_facts_card_offers_nothing_but_the_mascot():
+    """A facts reel is frozen (FACTS_MODE.md): animated, mascot-presented, with a
+    music bed, a thumbnail and a 40s ceiling. Every one of those was a toggle once,
+    and every toggle was a way to ship the wrong film by accident — a stale value
+    with no widget on screen to explain it. WHO presents is the only choice left.
+    """
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "modules" / "dashboard_nicegui.py") \
+        .read_text(encoding="utf-8")
+    facts_ui = src.split("FACTS SHORTS (own tab)")[1].split("STAGE 2")[0]
+
+    widgets = [ln.strip() for ln in facts_ui.splitlines()
+               if ("ui.switch(" in ln or "ui.number(" in ln or "ui.select(" in ln)
+               and not ln.lstrip().startswith("#")]
+    assert len(widgets) == 1 and "ui.select(" in widgets[0], \
+        f"the Facts card should offer only the mascot picker, found: {widgets}"

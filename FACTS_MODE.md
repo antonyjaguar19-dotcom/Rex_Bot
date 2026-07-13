@@ -26,16 +26,24 @@ front-end shows the other's progress.
 Live values in `05_Config/runtime_settings.json`; mirrored in `config_snapshot/`
 (that folder is the rebuild reference — `05_Config` is outside git).
 
+**The dashboard's Facts card has exactly ONE control: which mascot presents.** Everything
+below is frozen, and three of them are no longer settings at all — `get_facts_video_mode()`,
+`get_facts_mascot_mode()` and `get_mascot_tts_engine()` return constants and ignore the
+file. A toggle that is gone from the UI but still read from disk is a silent downgrade
+waiting to happen: a stale `kenburns` would have shipped a slideshow, a stale
+`facts_mascot_mode: false` would have shipped backdrops, and nothing on screen would
+have said why.
+
 | Setting | Value | Why this value |
 |---|---|---|
-| `facts_mascot_mode` | `true` | The mascot presents. Backdrops are the fallback path, not the product. |
-| `active_mascot` | `default` | **Which** mascot presents (a folder under `02_Agent/assets/mascots/`). See "The mascot shelf" below. |
-| `mascot_tts_engine` | `chatterbox` | Voice **clone**. No local TTS has a child voice; every preset was an adult timbre pitch-shifted, and every one sounded wrong. |
+| `facts_mascot_mode` | **constant `true`** | The mascot presents. Backdrops are the OOM/rescue path, not a product. Not read from disk. |
+| `active_mascot` | `default` | **Which** mascot presents (a folder under `02_Agent/assets/mascots/`). The one remaining choice. See "The mascot shelf" below. |
+| `mascot_tts_engine` | **constant `chatterbox`** | Every mascot speaks in its OWN cloned voice (the clip in its folder). Picking a preset meant picking the wrong voice for the character on screen. Qwen3-TTS → Kokoro survive as the fallback cascade when there is no clip to clone. Not read from disk. |
 | `mascot_voice_ref` | `02_Agent/assets/mascot_voice.wav` | The SHARED clone clip, used by any mascot that carries none of its own. **Gitignored — a real recording of the owner's voice. Never commit it.** |
 | `mascot_voice_exaggeration` | `0.35` | Calm and even. Higher gets theatrical; every earlier voice failed by being too excited. |
 | `mascot_voice_speed` | `1.20` | Pitch-preserving (`atempo`). The clone reads slow on its own. **Never pitch-shift a cloned voice** — it stops being the voice. |
 | `facts_mascot_lipsync` | `false` | Wan S2V moves the mouth but distorts hands and props. Voice-over wins. |
-| `facts_video_mode` | `wan` | Wan 2.2 14B I2V per shot. Ken Burns stills are the fast fallback. |
+| `facts_video_mode` | **constant `wan`** | Wan 2.2 14B I2V per shot — a facts reel is ANIMATED. Ken Burns survives inside the pipeline as the OOM rescue (`render_facts(animate=False)` still forces it for a harness). Not read from disk. |
 | video resolution | *(unset → 720p)* | Wan honours `rs.VIDEO_RES_PRESETS`. A stale `480p` override once silently dragged every reel down. |
 | `facts_max_seconds` | `40.0` | Hard ceiling, enforced by **measuring** the voiced beats and trimming the pace to fit (max 1.45x). Not a hope. |
 | `facts_thumbnail` | `true` | Qwen draws the headline INTO the art (baked, not overlaid). |

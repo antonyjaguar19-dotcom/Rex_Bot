@@ -59,11 +59,11 @@ CHECKPOINT_EVERY_SEC = 10.0
 # Voice ids come from ONE place now (modules/voices.py). Hardcoding them here is
 # how "Af_bella" got saved and then crashed the page build with "Invalid value".
 VOICE_CHOICES = list(voices.KOKORO_VOICES)
-FACTS_VOICE_CHOICES = list(voices.FACTS_VOICES)
 
-# Option maps reused for both the widget and its _sel() clamp.
-_FACTS_PACE = {0.92: "calm", 1.06: "lively", 1.20: "excited"}
-_FACTS_VIDEO = {"kenburns": "Ken Burns (fast)", "wan": "Animate (slow)"}
+# The facts pace / video / voice option maps are gone with their widgets: a facts
+# reel is animated, presented by the active mascot, in that mascot's own cloned
+# voice. See FACTS_MODE.md — those were settings once, and each was a way to ship
+# the wrong film by accident.
 try:
     from modules.music_generator import VALID_MOODS as MUSIC_MOODS
     MUSIC_MOODS = list(MUSIC_MOODS)
@@ -2199,37 +2199,18 @@ def main_page():
                                    placeholder="e.g. the deep ocean, black holes, the human brain") \
                 .classes("flex-1").props("outlined dark dense")
 
+        # ONE control: who presents. Everything else about a facts reel is frozen
+        # (see FACTS_MODE.md) — it is animated, the mascot presents, it carries a
+        # music bed and a thumbnail, and it comes in under 40s. Those were settings
+        # once; every one of them was a way to ship the wrong film by accident.
         with ui.row().classes("gap-2 items-center").style("margin-top: 4px;"):
             ui.button("💡 Generate Facts Reel",
-                      on_click=lambda: generate_facts_action(facts_topic.value, full_refresh)) \
+                      on_click=lambda: generate_facts_action(facts_topic.value,
+                                                             full_refresh)) \
                 .classes("rex-btn-primary")
-            facts_video_sel = ui.select(
-                _FACTS_VIDEO,
-                value=_sel(rs.get_facts_video_mode(), _FACTS_VIDEO, "kenburns"),
-                label="Video") \
-                .props("outlined dark dense").style("min-width: 150px")
-            facts_video_sel.on("update:model-value",
-                               lambda e: rs.set_facts_video_mode(facts_video_sel.value))
 
-            facts_thumb_sw = ui.switch(
-                "Thumbnail", value=rs.get_facts_thumbnail_enabled()) \
-                .props("dense color=accent") \
-                .tooltip("Generate a cover image for the reel (adds a Qwen render). "
-                         "Off = title + description only.")
-            facts_thumb_sw.on("update:model-value",
-                              lambda e: rs.set_facts_thumbnail_enabled(facts_thumb_sw.value))
-
-            facts_mascot_sw = ui.switch(
-                "Mascot", value=rs.get_facts_mascot_mode()) \
-                .props("dense color=accent") \
-                .tooltip("The mascot presents every fact in costume (Qwen still → "
-                         "Wan I2V, narration as voice-over). Branded but slow "
-                         "(~45 min). Off = abstract backdrops.")
-            facts_mascot_sw.on("update:model-value",
-                               lambda e: rs.set_facts_mascot_mode(facts_mascot_sw.value))
-
-            # WHICH mascot presents. The options are refreshed by render_mascots()
-            # so a character added in the Mascots tab shows up here without a reload.
+            # The options are refreshed by render_mascots() so a character added in
+            # the Mascots tab shows up here without a reload.
             try:
                 ml.migrate()
                 _shelf = {m["id"]: m["name"] for m in ml.list_mascots()}
@@ -2238,9 +2219,9 @@ def main_page():
                 _shelf, _active = {}, None
             facts_mascot_sel = ui.select(
                 _shelf, value=_active, label="Mascot") \
-                .props("outlined dark dense").style("min-width: 150px") \
-                .tooltip("Which character presents the facts. Manage the shelf in "
-                         "the Mascots tab.")
+                .props("outlined dark dense").style("min-width: 180px") \
+                .tooltip("Which character presents the facts — in its own cloned "
+                         "voice. Add or remove mascots in the Mascots tab.")
 
             def _set_active_mascot(_=None):
                 if not facts_mascot_sel.value:
@@ -2250,91 +2231,6 @@ def main_page():
                 except ValueError as e:
                     ui.notify(f"❌ {e}", type="negative")
             facts_mascot_sel.on("update:model-value", _set_active_mascot)
-
-            # "clone" is the real answer here: no local TTS has a child voice, so the
-            # presets are adult timbres pitch-shifted. The clone reads the reference
-            # clip in assets/mascot_voice.wav.
-            # The active mascot's own clip when it carries one, else the shared one.
-            _ref = ml.voice_ref()
-            _mvoices = (["clone"] if _ref else []) + list(rs.VALID_QWEN_SPEAKERS)
-            # kokoro is no longer offered (it stays in the pipeline only as a
-            # silent fallback). A config still holding it would make this select
-            # lie about what will be spoken, so migrate it on sight.
-            if rs.get_mascot_tts_engine() == "kokoro":
-                rs.set_mascot_tts_engine("chatterbox" if _ref else "qwen")
-            _cur = ("clone" if rs.get_mascot_tts_engine() == "chatterbox"
-                    else rs.get_mascot_voice())
-            mascot_voice_sel = ui.select(
-                _mvoices, value=_sel(_cur, _mvoices, _mvoices[0]),
-                label="Voice") \
-                .props("outlined dark dense").style("min-width: 130px") \
-                .tooltip(f"clone = the mascot's own voice, cloned from "
-                         f"{_ref.name if _ref else '(no reference clip yet)'}. "
-                         f"The named voices are Qwen3-TTS presets.")
-
-            def _set_mascot_voice(_=None):
-                v = mascot_voice_sel.value
-                if v == "clone":
-                    rs.set_mascot_tts_engine("chatterbox")
-                else:
-                    rs.set_mascot_tts_engine("qwen")
-                    rs.set_mascot_voice(v)
-            mascot_voice_sel.on("update:model-value", _set_mascot_voice)
-
-            exag_in = ui.number("Emotion", value=rs.get_mascot_voice_exaggeration(),
-                                min=0.0, max=1.5, step=0.05, format="%.2f") \
-                .props("outlined dark dense").style("width: 96px") \
-                .tooltip("Chatterbox emotion knob. 0.35 = calm and even (the pick); "
-                         "higher gets theatrical, and every earlier voice failed by "
-                         "being too excited.")
-            exag_in.on("blur", lambda e: rs.set_mascot_voice_exaggeration(exag_in.value))
-
-            speed_in = ui.number("Pace", value=rs.get_mascot_voice_speed(),
-                                 min=0.5, max=2.0, step=0.05, format="%.2f") \
-                .props("outlined dark dense").style("width: 90px") \
-                .tooltip("Playback speed, pitch preserved (so a cloned voice stays "
-                         "itself). The clone reads slow on its own — 1.20 is the pick.")
-            speed_in.on("blur", lambda e: rs.set_mascot_voice_speed(speed_in.value))
-
-            lipsync_sw = ui.switch("Lip-sync",
-                                   value=rs.get_facts_mascot_lipsync())                 .props("dense color=accent")                 .tooltip("Wan S2V moves the mascot's mouth to the narration. Slow, "
-                         "and it can distort hands and props. Off = I2V motion with "
-                         "the narration as a voice-over.")
-            lipsync_sw.on("update:model-value",
-                          lambda e: rs.set_facts_mascot_lipsync(lipsync_sw.value))
-
-            from modules.music_generator import VALID_MOODS as _MOODS
-            music_sw = ui.switch("Music", value=rs.get_facts_music_enabled()) \
-                .props("dense color=accent") \
-                .tooltip("A bed under the narration, composed by ACE-Step to the "
-                         "reel's length so it ENDS on an outro instead of being cut "
-                         "off. Mixed ~13 dB under the voice.")
-            music_sw.on("update:model-value",
-                        lambda e: rs.set_facts_music_enabled(music_sw.value))
-            mood_sel = ui.select(list(_MOODS),
-                                 value=_sel(rs.get_facts_music_mood(), list(_MOODS),
-                                            "cheerful"),
-                                 label="Mood") \
-                .props("outlined dark dense").style("min-width: 120px")
-            mood_sel.on("update:model-value",
-                        lambda e: rs.set_facts_music_mood(mood_sel.value))
-
-            len_in = ui.number("Max sec", value=rs.get_facts_max_seconds(),
-                               min=10, max=180, step=5, format="%.0f") \
-                .props("outlined dark dense").style("width: 96px") \
-                .tooltip("Hard ceiling on the reel. The beats are voiced, the real "
-                         "total is measured, and the pace is trimmed to fit — it is "
-                         "not a hope.")
-            len_in.on("blur", lambda e: rs.set_facts_max_seconds(len_in.value))
-
-            hold_in = ui.number("Thumb hold", value=rs.get_facts_thumb_hold_sec(),
-                                min=0.0, max=3.0, step=0.1, format="%.1f") \
-                .props("outlined dark dense").style("width: 110px") \
-                .tooltip("Seconds the thumbnail is held on the FRONT of the reel. "
-                         "Shorts custom thumbnails are not offered in every region — "
-                         "where they are not, the platform grabs the first frame, so "
-                         "the thumbnail has to BE the first frame. 0 = off.")
-            hold_in.on("blur", lambda e: rs.set_facts_thumb_hold_sec(hold_in.value))
 
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")

@@ -520,26 +520,18 @@ def set_facts_voice_speed(speed: float) -> None:
 
 
 def get_facts_video_mode() -> str:
-    """'wan' = animate each cut with Wan I2V (cinematic, ~2-4 min per clip).
-    'kenburns' = pan/zoom stills (fast, stable).
+    """Always 'wan'. Facts reels are ANIMATED — that is not an option any more.
 
-    Default 'wan': the animated cut is what makes a facts reel look made rather
-    than assembled, and gpu_memory now keeps Wan from sharing the card with
-    Ollama or the thumbnail model. The pipeline still falls back to Ken Burns on
-    an OOM, so the reel always lands.
+    The animated cut is what makes a facts reel look made rather than assembled,
+    and a setting that could quietly turn it off was a silent-downgrade waiting to
+    happen: with the toggle gone from the UI, a stale `kenburns` in the settings
+    file would have shipped a slideshow with nothing on screen to say why.
+
+    Ken Burns survives INSIDE the pipeline as the OOM fallback (see
+    `facts_pipeline`), so a reel still lands when Wan cannot — but that is a
+    rescue, not a choice.
     """
-    v = _load().get("facts_video_mode")
-    return v if v in ("kenburns", "wan") else "wan"
-
-
-def set_facts_video_mode(mode: str) -> None:
-    mode = (mode or "").strip().lower()
-    if mode not in ("kenburns", "wan"):
-        raise ValueError(f"Invalid facts_video_mode: {mode!r} (kenburns|wan).")
-    data = _load()
-    data["facts_video_mode"] = mode
-    _save(data)
-    log.info(f"Facts video mode: {mode}")
+    return "wan"
 
 
 # --- Mascot voice (facts mascot-presenter mode) ---------------------------
@@ -562,16 +554,15 @@ DEFAULT_MASCOT_INSTRUCT = ("happy young boy about ten years old, bright youthful
 
 
 def get_mascot_tts_engine() -> str:
-    v = _load().get("mascot_tts_engine")
-    return v if v in VALID_MASCOT_TTS else "qwen"
+    """Always 'chatterbox' — every mascot speaks with its OWN cloned voice.
 
-
-def set_mascot_tts_engine(engine: str) -> None:
-    engine = (engine or "").strip().lower()
-    if engine not in VALID_MASCOT_TTS:
-        raise ValueError(f"engine must be one of {VALID_MASCOT_TTS}")
-    data = _load(); data["mascot_tts_engine"] = engine; _save(data)
-    log.info(f"Mascot TTS engine: {engine}")
+    A mascot now carries its voice clip in its own folder (see mascot_library), so
+    picking a TTS preset is picking the wrong voice for the character on screen.
+    Qwen3-TTS and Kokoro survive as the fallback cascade inside
+    `facts_pipeline._voice_beats_mascot` — used when there is no clip to clone or
+    the bridge is down, never chosen.
+    """
+    return "chatterbox"
 
 
 def get_mascot_voice() -> str:
@@ -802,21 +793,15 @@ def set_facts_mascot_lipsync(enabled: bool) -> None:
 
 
 def get_facts_mascot_mode() -> bool:
-    """Whether facts reels star the mascot in every shot (costumed, explaining
-    each fact, lip-synced via S2V) instead of abstract backdrops.
+    """Always True. The mascot IS facts mode — it presents every fact, costumed.
 
-    Off by default: it is the slow, heavy path (per-shot Qwen still + S2V clip).
-    When on, the pipeline ignores the abstract-backdrop backend and the I2V/Ken
-    Burns animate stage. [[baked-thumbnail-headline]] shares the mascot ref.
+    Abstract backdrops were the old alternative and are no longer a product: they
+    are what a broken renderer used to fall back to, which cost a 40-minute render
+    of the wrong film. `facts_pipeline.preflight()` now RAISES instead. With no
+    toggle in the UI, a stale `false` in the settings file would have brought the
+    backdrops back with nothing on screen to explain it — so it isn't read.
     """
-    return bool(_load().get("facts_mascot_mode", False))
-
-
-def set_facts_mascot_mode(enabled: bool) -> None:
-    data = _load()
-    data["facts_mascot_mode"] = bool(enabled)
-    _save(data)
-    log.info(f"Facts mascot mode: {'ON' if enabled else 'OFF'}")
+    return True
 
 
 def get_facts_thumbnail_enabled() -> bool:

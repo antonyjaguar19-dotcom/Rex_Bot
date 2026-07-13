@@ -25,7 +25,16 @@ def _no_gpu_mascot(monkeypatch, tmp_path_factory):
     """
     try:
         import modules.mascot as mas
+        import modules.runtime_settings as rs
     except Exception:
         return
     empty = tmp_path_factory.mktemp("no_assets")
     monkeypatch.setattr(mas, "ASSETS_DIR", empty, raising=False)
+    # ...and the same for the VOICE. The mascot's engine is the clone now, so a
+    # test that voices a beat reaches for the reference clip — and the default
+    # points at the owner's real recording in 02_Agent/assets. That drags the live
+    # Chatterbox bridge (and the GPU) into a unit test, and puts a person's voice
+    # sample in the loop. Point it at nothing: with no clip to clone, the pipeline
+    # falls back exactly as it does on a machine that has none.
+    monkeypatch.setattr(rs, "DEFAULT_MASCOT_VOICE_REF", empty / "mascot_voice.wav",
+                        raising=False)

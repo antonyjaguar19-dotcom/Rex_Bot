@@ -15,11 +15,19 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "SETTINGS_PATH", tmp_path / "runtime_settings.json")
 
 
-def test_defaults_to_qwen_boy_voice():
-    """No local TTS has a child voice: Eric (adult male) lifted +2 semitones is
-    the jaguar cub. The instruct also demands an EVEN delivery — punctuation-led
-    excitement made single beats shout while the next stayed calm."""
-    assert rs.get_mascot_tts_engine() == "qwen"
+def test_the_engine_is_always_the_clone():
+    """Every mascot speaks in its OWN cloned voice, read from the clip in its
+    folder. Picking a TTS preset meant picking the wrong voice for the character
+    on screen, so there is nothing left to pick — Qwen and Kokoro survive only as
+    the fallback cascade in facts_pipeline."""
+    assert rs.get_mascot_tts_engine() == "chatterbox"
+    assert not hasattr(rs, "set_mascot_tts_engine")
+
+
+def test_the_qwen_fallback_keeps_its_boy_voice():
+    """Not chosen any more, but still the voice when there is no clip to clone:
+    Eric (adult male) lifted +2 semitones. The instruct demands an EVEN delivery —
+    punctuation-led excitement made single beats shout while the next stayed calm."""
     assert rs.get_mascot_voice() == "Eric"
     assert rs.get_mascot_voice_pitch() == 2.0
     assert rs.get_mascot_voice_speed() == 1.2
@@ -32,11 +40,9 @@ def test_voice_round_trips_case_insensitively():
     assert rs.get_mascot_voice() == "Dylan"
 
 
-def test_bad_voice_and_engine_rejected():
+def test_bad_fallback_voice_rejected():
     with pytest.raises(ValueError):
         rs.set_mascot_voice("Gandalf")
-    with pytest.raises(ValueError):
-        rs.set_mascot_tts_engine("elevenlabs")
 
 
 def test_unknown_stored_voice_self_heals(tmp_path):
@@ -227,9 +233,8 @@ def test_explainer_falls_back_to_prose_when_json_is_missing(monkeypatch):
 
 # ---------------------------------------------------------------- voice clone
 
-def test_clone_engine_is_selectable():
+def test_clone_engine_is_not_selectable_because_it_is_the_only_one():
     assert "chatterbox" in rs.VALID_MASCOT_TTS
-    rs.set_mascot_tts_engine("chatterbox")
     assert rs.get_mascot_tts_engine() == "chatterbox"
 
 

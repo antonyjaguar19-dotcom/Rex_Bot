@@ -5084,15 +5084,13 @@ async def _post_publish_kit(channel, video: Path):
 
 
 def _facts_voice_label() -> str:
-    """What will actually speak this reel — the mascot's clone/preset when
-    mascot mode is on, the plain narrator otherwise. The old label said
-    'kokoro' either way, which was a lie in mascot mode."""
-    if rs.get_facts_mascot_mode():
-        if rs.get_mascot_tts_engine() == "chatterbox":
-            return f"clone @ {rs.get_mascot_voice_speed():.2f}x"
-        if rs.get_mascot_tts_engine() == "qwen":
-            return f"{rs.get_mascot_voice()} @ {rs.get_mascot_voice_speed():.2f}x"
-    return f"{rs.get_facts_voice()} @ {rs.get_facts_voice_speed()}x"
+    """Who will actually speak this reel: the ACTIVE mascot, in its own cloned
+    voice. The old label said 'kokoro' either way, which was a lie."""
+    from modules import mascot_library as ml
+    got = ml.active()
+    who = got["name"] if got else "mascot"
+    own = " (own clip)" if got and got["voice"] else ""
+    return f"{who} clone{own} @ {rs.get_mascot_voice_speed():.2f}x"
 
 
 @bot.command(name="facts", aliases=["make_facts", "fact"])
@@ -5937,23 +5935,6 @@ async def cmd_manual_help(ctx):
     )
 
 
-@bot.command(name="set_facts_video", aliases=["facts_video"])
-async def cmd_set_facts_video(ctx, mode: str = None):
-    """Facts visuals: `kenburns` (pan/zoom stills, fast ~4 min) or `wan`
-    (animate each cut, vertical Wan I2V, ~15-20 min)."""
-    if not mode:
-        await ctx.send(f"🎞️ Facts video: `{rs.get_facts_video_mode()}` (kenburns|wan)")
-        return
-    try:
-        rs.set_facts_video_mode(mode)
-    except ValueError as e:
-        await ctx.send(f"⚠️ {e}"); return
-    m = rs.get_facts_video_mode()
-    note = (" — animated per cut (slower, ~15-20 min)" if m == "wan"
-            else " — Ken Burns stills (fast, ~4 min)")
-    await ctx.send(f"✅ Facts video → `{m}`{note}.")
-
-
 @bot.command(name="facts_lipsync", aliases=["mascot_lipsync"])
 async def cmd_facts_lipsync(ctx, switch: str = None):
     """Mascot lip-sync (Wan S2V): `!facts_lipsync on|off`.
@@ -6063,69 +6044,53 @@ async def cmd_mascot_tone(ctx, emotion: float = None, pace: float = None):
 
 
 @bot.command(name="mascot_voice", aliases=["set_mascot_voice"])
-async def cmd_mascot_voice(ctx, voice: str = None):
-    """The mascot's voice: `!mascot_voice clone|Vivian|Serena|Dylan|Eric|Uncle_Fu`.
+async def cmd_mascot_voice(ctx):
+    """The ACTIVE mascot's voice. Attach a ~10s clip to replace it.
 
-    `clone` reads the reference clip (chatterbox); the named voices are Qwen3-TTS
-    presets. Kokoro is no longer offered — it stays in the pipeline only as a
-    silent fallback if the chosen engine dies mid-render."""
+    There is nothing to choose: every mascot speaks in its own cloned voice, read
+    from the clip in its folder. The TTS presets are gone — picking one meant
+    picking the wrong voice for the character on screen. (Qwen3-TTS and Kokoro
+    survive inside the pipeline as the fallback when there is no clip to clone.)"""
     from modules import mascot_library as ml
-    if not voice:
-        ref = ml.voice_ref()
+    ml.migrate()
+
+    att = next((a for a in ctx.message.attachments
+                if a.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a"))),
+               None)
+    if att:
+        # The clip belongs to the ACTIVE mascot when there is one — each character
+        # keeps its own voice. Without a library it stays the single global clip.
+        mdir = ml.mascot_dir()
+        dest = (mdir / "voice.wav" if mdir
+                else _MASCOT_VOICE_REF_DIR / "mascot_voice.wav")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        raw = dest.with_suffix(Path(att.filename).suffix or ".wav")
+        await att.save(raw)
+        try:
+            if raw != dest:
+                _to_wav_mono16k(raw, dest)   # chatterbox wants a mono 16k wav
+                raw.unlink(missing_ok=True)
+            if not mdir:
+                rs.set_mascot_voice_ref(dest)
+        except Exception as e:
+            await ctx.send(f"⚠️ could not use that clip: {e}")
+            return
+        warn = ml.voice_warning(dest)
+        if warn:
+            await ctx.send(f"⚠️ {warn}")
+
+    got = ml.active()
+    ref = ml.voice_ref()
+    who = f"**{got['name']}**" if got else "the mascot"
+    if not ref:
         await ctx.send(
-            f"🎙️ Mascot voice: `{rs.get_mascot_voice()}` "
-            f"(engine `{rs.get_mascot_tts_engine()}`)\n"
-            f"Clone reference: `{ref.name if ref else 'none'}`\n"
-            f"Options: `clone` (voice-clone a reference clip — attach a 5-15s "
-            f"WAV/MP3 to set it), or a preset: "
-            f"`{'`, `'.join(rs.VALID_QWEN_SPEAKERS)}`.")
+            f"🎙️ {who} has no voice clip — it will fall back to a TTS preset.\n"
+            f"Attach a clean ~10s recording (one speaker, no music) to "
+            f"`!mascot_voice`.")
         return
-    v = voice.strip().lower()
-
-    if v in ("clone", "chatterbox"):
-        # An attachment sets the reference; bare `!mascot_voice clone` just switches
-        # the engine back on if a reference is already on disk.
-        att = next((a for a in ctx.message.attachments
-                    if a.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a"))),
-                   None)
-        if att:
-            # The clip belongs to the ACTIVE mascot when there is one — each
-            # character keeps its own voice. Without a library it stays the
-            # single global reference, as before.
-            mdir = ml.mascot_dir()
-            dest = (mdir / "voice.wav" if mdir
-                    else _MASCOT_VOICE_REF_DIR / "mascot_voice.wav")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            raw = dest.with_suffix(Path(att.filename).suffix or ".wav")
-            await att.save(raw)
-            try:
-                if raw != dest:
-                    _to_wav_mono16k(raw, dest)
-                    raw.unlink(missing_ok=True)
-                if not mdir:
-                    rs.set_mascot_voice_ref(dest)
-            except Exception as e:
-                await ctx.send(f"⚠️ could not use that clip: {e}"); return
-        ref = ml.voice_ref()
-        if not ref:
-            await ctx.send("⚠️ No reference clip. Attach a clean 5-15s recording "
-                           "(one speaker, no music) to `!mascot_voice clone`.")
-            return
-        rs.set_mascot_tts_engine("chatterbox")
-        await ctx.send(f"✅ Mascot voice → clone of `{ref.name}` (chatterbox).")
-        return
-
-    try:
-        if v == "qwen":
-            rs.set_mascot_tts_engine(v)
-            await ctx.send(f"✅ Mascot TTS engine → `{v}` "
-                           f"(voice `{rs.get_mascot_voice()}`).")
-            return
-        rs.set_mascot_tts_engine("qwen")
-        rs.set_mascot_voice(voice.strip())
-    except ValueError as e:
-        await ctx.send(f"⚠️ {e}"); return
-    await ctx.send(f"✅ Mascot voice → `{rs.get_mascot_voice()}` (qwen3-tts).")
+    own = bool(got and got["voice"])
+    await ctx.send(f"🎙️ {who} speaks as a clone of `{ref.name}` "
+                   f"({'its own clip' if own else 'the shared clip'}).")
 
 
 @bot.command(name="facts_prompt", aliases=["fprompt"])
@@ -6168,23 +6133,6 @@ async def cmd_set_lipsync(ctx, switch: str = None):
     note = (" — character shots lip-sync via Wan S2V (slow)" if want
             else " — silent I2V for all shots (fast)")
     await ctx.send(f"✅ Lip-sync → `{'on' if want else 'off'}`{note}.")
-
-
-@bot.command(name="set_facts_mascot", aliases=["facts_mascot", "mascot_facts"])
-async def cmd_set_facts_mascot(ctx, switch: str = None):
-    """Toggle mascot-facts mode: `!facts_mascot on|off`.
-
-    On = the mascot presents every fact in costume, lip-synced (Qwen still →
-    Wan S2V). Slow but branded. Off = abstract backdrops (fast)."""
-    if switch is None:
-        state = "on" if rs.get_facts_mascot_mode() else "off"
-        await ctx.send(f"🎭 Facts mascot mode: `{state}` — `!facts_mascot on|off`")
-        return
-    want = switch.strip().lower() in ("on", "true", "1", "yes", "enable")
-    rs.set_facts_mascot_mode(want)
-    note = (" — mascot presents every fact, lip-synced (slow, ~20-30 min)" if want
-            else " — abstract backdrops (fast)")
-    await ctx.send(f"✅ Facts mascot mode → `{'on' if want else 'off'}`{note}.")
 
 
 @bot.command(name="set_facts_thumbnail", aliases=["facts_thumbnail", "facts_thumb"])
