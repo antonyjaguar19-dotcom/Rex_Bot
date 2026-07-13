@@ -5,8 +5,7 @@
   "reference_mode": true,
   "transition_mode": "cut",
   "music_mood": "calm",
-  "video_resolution": "480p",
-  "pipeline_mode": "music_video",
+  "pipeline_mode": "facts",
   "horror_ambient": true,
   "horror_voice_engine": "kokoro",
   "horror_cb_exaggeration": 0.6,
@@ -18,5 +17,15 @@
   "facts_video_mode": "wan",
   "tempo_bpm": 160,
   "vocal_type": "male",
-  "music_image_backend": "zturbo"
+  "music_image_backend": "zturbo",
+  "facts_thumbnail": true,
+  "facts_mascot_mode": true,
+  "mascot_voice_instruct": "happy young boy about ten years old, bright youthful child voice, warm and friendly, relaxed and natural, gently upbeat, EVEN steady delivery throughout, calm and conversational, never excited, never shouting, no dramatic emphasis",
+  "mascot_voice_speed": 1.2,
+  "mascot_voice": "Eric",
+  "mascot_voice_pitch": 2.0,
+  "upscale_enabled": true,
+  "mascot_voice_ref": "E:\\Rexjaw_VFX\\02_Agent\\assets\\mascot_voice.wav",
+  "mascot_tts_engine": "chatterbox",
+  "mascot_voice_exaggeration": 0.35
 }

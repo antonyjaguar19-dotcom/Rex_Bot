@@ -68,7 +68,8 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `model_registry.py` — reads models.json; switch backends.
 - `music_generator.py` — MusicGen BG music.
 - `pending_feedback.py` — JSON paused-revisions queue.
-- `sync_bridge.py` — Web→Discord on-disk event queue (emit + cursor files); drained by claw_bot poller.
+- `sync_bridge.py` — Web→Discord on-disk event queue (emit + cursor files); drained by claw_bot poller. Carries job start/progress/end, finished media, and the approval views.
+- `job_feed.py` — Discord→Web live job snapshot (`05_Config/bot_job.json`; bot writes, dashboard reads). Fed by `_gpu_job` tapping the log stream.
 - `progress_bar.py` — Unicode bar + rolling-window ETA.
 - `prompt_approval.py` — batch image+motion prompt gen → per-shot embed Edit/Reseed/Approve + master Approve-All + JSON state.
 - `prompt_assembler.py` — Qwen builds final Z-Image prompts + Wan motion prompts (beat-aware char scrub).
@@ -101,6 +102,19 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 - `comfyui_wan22_14B.py` — **ACTIVE** Wan 2.2 14B I2V dual-UNet fp8; optional lightx2v 4-step LoRA (default OFF).
 
 ---
+
+## 3F. FACTS MODE — **FROZEN 2026-07-13**. Spec: `02_Agent/FACTS_MODE.md`. Don't tune it without being asked.
+Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice, Wan 720p shots, read-along captions, music bed, thumbnail held as the first frame, under 40s. Frozen settings + reasons live in **`FACTS_MODE.md`**; `config_snapshot/` mirrors `05_Config` (which is outside git). 577 tests green. Commits: 6623667, 5e6d99c, 30582d6, ad1c8bf, d4d9fd0, c787651.
+- **Music bed (3 shipped bugs, all silent).** ACE-Step under-fills — asked 49s it wrote 29s of music + 10s of digital silence + 8s of junk. Fixes: ask **2x** and *measure the composed body*, re-ask longer if short (`_MUSIC_ASK_HEADROOM=2.0`, `_MUSIC_TRIES=2`); cut the bed at its **music body** (`_music_body_end`, first gap ≥1.5s under −45dB after ≥8s of music) not its tail — trimming the tail left the hole mid-track and `_align_music_tail` (which fits a long track by cutting from the FRONT to keep the outro) then kept the dead air; **never loop** a short bed (replaying its opening = the same 8 bars twice, heard instantly) — it starts late instead.
+- **`fasm.audit_music_bed()`** — subtracts the narration back out of the **finished file**; what remains IS the bed. Logs `bed verified … no dropouts` or `THE MUSIC DROPS OUT`, to dashboard + Discord. Every music bug looked right at every intermediate step and was wrong in the file.
+- **No silent downgrade** — `facts_pipeline.preflight()` proves the backend answers BEFORE the story is written; mascot mode ON now RAISES instead of quietly rendering abstract backdrops (a dead ComfyUI used to cost a 40-min render of the wrong film).
+- **Poster frame replaceable** — `prepend_still(replace=True)` rebuilds from a pristine copy in `final/_posterless/`; a re-rolled thumbnail now reaches the VIDEO (it used to rewrite only the .jpg, leaving the reel opening on the poster you just rejected). `publish_kit._refresh_poster_frame` does it for every aspect.
+- **Kokoro removed from all facts UI** (survives as a silent in-pipeline fallback). Reel **description** now shows in the dashboard (it looked for `facts_<id>_description.txt`; publish_kit writes `<video-stem>_description.txt`, so mascot reels showed none).
+
+## 3S. Sync — BOTH directions now (2026-07-13)
+Discord ↔ Web are interchangeable mid-job.
+- **Web → Discord** (`sync_bridge`, extended): `_bg_gpu` emits `job_start`/`job_end`, `State.push` emits throttled `job_progress`; the bot keeps ONE live embed per job (progress coalesced — newest line per job per poll), uploads the finished media, and re-posts the **same approval view** for script/storyboard/video stages, so approving from either side drives the pipeline.
+- **Discord → Web** (`modules/job_feed.py`, NEW): `05_Config/bot_job.json` holds the running Discord job — **bot writes, dashboard reads** (mirror image of `sync_events.json`; one writer per file, no cross-process locking). `_gpu_job` publishes the job and **taps the `claw_bot` log stream** for its duration, so it covers every mode without per-command wiring. Dashboard shows it in the status strip (it used to say "✓ Idle — ready" while the GPU was pinned), the live log, and the Facts stepper.
 
 ## 3c. Repo cleanup (2026-07-10)
 Swept `E:\Rexjaw_VFX` for dead files. **Nothing hard-deleted except pure caches** — everything else moved to `_quarantine_20260710/` (137 files, 19.8 MB). Delete that folder when you're happy; restore from it if something breaks.
@@ -192,6 +206,7 @@ Deep QA of the kids LLM chain (story → image+motion prompts → storyboard sti
 ---
 
 ## 4. In Progress / Half-Done
+- **RESTARTED + VERIFIED 2026-07-13 16:39** — one bot (launcher → venv stub → interpreter; the stub means ONE bot shows as TWO pids — do not "kill the duplicate"), dashboard 7860, ComfyUI 8188, Ollama 11434. Facts mode frozen and live. Known cosmetic: `Could not pin panel: 403 Forbidden` — the bot lacks Manage Messages in #claw-bot (panel posts, won't pin).
 - **USO wired (2026-07-02) + 2 TODOs for 2026-07-03.** USO single-image char-consistency backend built (`modules/image_backends/comfyui_uso.py`), registered in models.json, and wired into KIDS (`storyboard_generator._kids_backend()` prefers USO) + MUSIC (`musicvideo_pipeline` scene-0 anchor cascade). Toggle `rs.get/set_uso_mode_enabled()` (default True). `image_backend.get_named_backend(id)` added. models.json `image_backend.active` now = `comfyui_uso` (global default). 201 tests pass; real story→USO storyboard verified (cartoon_saloon, 2-char, ref×2 multi-char held). **Bot restart needed** to load .py edits. TODO tomorrow: (1) wire USO into photoreal HORROR mode (`horrorstory_pipeline.py`); (2) add narration-edit UI to web dashboard for ALL modes (kids has it; add music+horror in `dashboard_nicegui.py`; backend `script_generator.update_shot_narration`/`rewrite_narration` exists).
 - **RESTARTED 2026-06-10 23:08** — hardening pass + watchdog LIVE. Verified: 1 bot instance, dashboard answers HTTP 307 (login gate active), status embed posted, sync poller up, no stale lock. Still unverified by hand: Discord busy-notice when dashboard renders, login lockout, mobile ☰.
 - **Launcher restart-loop gotcha (fixed)** — first version of crash-restart loop in `00_Tools/launch_clawbot.ps1` caused launcher windows to ping-pong: new launcher kills old launcher's bot → old loop sees non-zero exit → respawns → 2-3 simultaneous bots. Loop now exits if another claw_bot.py already running. Launcher is OUTSIDE the repo — back up manually if edited.
