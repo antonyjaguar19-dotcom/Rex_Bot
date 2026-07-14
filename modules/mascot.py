@@ -215,7 +215,12 @@ NEGATIVE_PRESENTER = (
     "anthropomorphic object, cartoon eyes on an inanimate object, "
     # A "playful frown" came back as a small girl SCOWLING with real anger. The teacher
     # in a lesson for six-year-olds is never cross with them.
-    "angry, scowling, furious, glaring, mean expression, upset, crying, "
+    "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
+    # Identity, lost to a COSTUME rather than to a species swap. A "toy repairman's
+    # outfit" (dungarees + a cap over the hair) came back as a completely different
+    # child — the face and the hair are all the artist has to recognise her by.
+    "different character, different child, different face, changed hairstyle, "
+    "hair hidden under a hat, head covered, hood up, helmet, "
     # A thought bubble is an overlay by another name: Qwen fills it with a garbled
     # picture-within-a-picture, and it reads as a rendering artefact, not a device.
     "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture, "
@@ -963,8 +968,14 @@ _TEACHING_SYS = (
     "sun, no happy cloud, no cartoon eyes on a ball or a rock or a toy. Half of these "
     "lessons are about what is alive and what is not, and a grinning rock teaches a "
     "child the wrong answer.\n"
-    "- Ordinary clothes unless a costume actually TEACHES something. A chef's hat does "
-    "not explain that living things grow.\n"
+    "- ORDINARY CLOTHES. Her own everyday clothes, in nearly every shot. A costume only "
+    "when the costume itself TEACHES the line — a chef's hat does not explain that "
+    "living things grow, and a toy repairman's outfit does not explain that toys are "
+    "not alive.\n"
+    "- NEVER a head-to-toe costume, and NEVER a cap, helmet, hood or anything else over "
+    "her hair. Her FACE and her HAIR are the only two things the artist has to "
+    "recognise her by. A 'toy repairman's costume' — dungarees and a cap — came back as "
+    "a COMPLETELY DIFFERENT CHILD, and the lesson's last shot starred a stranger.\n"
     "- ONE MOMENT, one action. Never write 'then', 'finally' or 'after that' — a still "
     "picture cannot show a sequence.\n"
     "- The mascot NEVER becomes something else. She may WEAR things and HOLD things, "

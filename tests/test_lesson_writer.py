@@ -357,3 +357,22 @@ def test_the_teacher_is_never_angry_and_there_are_no_bubbles():
     assert "no thought bubbles" in sysp
     for banned in ("angry", "scowling", "thought bubble", "speech bubble"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_a_costume_may_not_cost_the_mascot_her_identity():
+    # The lesson's LAST shot starred a stranger. The scene said "dressed in a toy
+    # repairman's costume" and Qwen returned a different child entirely — a boy in
+    # dungarees and a cap, no bindi, no butterfly hair clips, another face.
+    #
+    # This is identity lost to a COSTUME, not to a species swap, and the guards for the
+    # latter do not see it. A head-to-toe outfit replaces the clothes AND a cap hides
+    # the hair: face and hair are the only two things the artist recognises her by.
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS.lower()
+    assert "ordinary clothes" in sysp
+    assert "never a head-to-toe costume" in sysp
+    assert "over her hair" in sysp
+    assert "completely different child" in sysp, "the rule must keep its reason"
+    for banned in ("different character", "different child", "changed hairstyle",
+                   "hair hidden under a hat"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned

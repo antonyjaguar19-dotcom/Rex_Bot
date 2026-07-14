@@ -90,10 +90,31 @@ def list_lessons(book_id: str = "") -> list:
     return out
 
 
+# A lesson does NOT live in one tree, however much we would like it to. The Wan stage
+# is `horror_video`, shared with horror mode, and it writes its raw clips and segments
+# to ITS OWN scratch dirs — named after the lesson, but outside the lesson's folder:
+#
+#   04_Outputs/videos/hwan_<id>_NNNN.mp4        the raw Wan output
+#   04_Outputs/clips/_mv_temp/hseg_<id>_NNNN.mp4  the retimed segment
+#
+# rmtree on the lesson folder leaves both behind. That is how facts mode ended up with
+# 212 orphaned files in final/ — a mode whose delete misses a directory quietly hoards
+# gigabytes there, and nobody finds out until the disk does.
+def _strays(lesson_id: str) -> list:
+    """Wan intermediates this lesson owns that live outside its folder."""
+    out = PROJECT_ROOT / "04_Outputs"
+    # lesson_id is already validated by _dir()'s caller — never glob an unchecked id.
+    return sorted(
+        [f for f in (out / "videos").glob(f"hwan_{lesson_id}_*.mp4") if f.is_file()]
+        + [f for f in (out / "clips" / "_mv_temp").glob(f"hseg_{lesson_id}_*.mp4")
+           if f.is_file()])
+
+
 def footprint(lesson_id: str) -> tuple:
-    """(files, MB) a delete would remove."""
+    """(files, MB) a delete would remove — the lesson AND its strays."""
     d = _dir(lesson_id)
     files = [f for f in d.rglob("*") if f.is_file()] if d.is_dir() else []
+    files += _strays(lesson_id)
     return len(files), round(sum(f.stat().st_size for f in files) / 1e6, 1)
 
 
@@ -103,10 +124,17 @@ def delete_lesson(lesson_id: str) -> dict:
     The book it was written from is untouched — you will want to teach that topic
     again, and re-reading a 64-page scan costs ten minutes.
     """
-    d = _dir(lesson_id)
+    d = _dir(lesson_id)                      # validates the id BEFORE any path is built
     if not d.is_dir():
         raise ValueError(f"no lesson {lesson_id!r}")
     n, mb = footprint(lesson_id)
+    strays = _strays(lesson_id)
     shutil.rmtree(d)
-    log.info(f"lesson {lesson_id} deleted ({n} files, {mb} MB)")
-    return {"id": lesson_id, "files": n, "size_mb": mb}
+    for f in strays:
+        try:
+            f.unlink()
+        except OSError as e:
+            log.warning(f"could not remove stray {f.name}: {e}")
+    log.info(f"lesson {lesson_id} deleted ({n} files, {mb} MB, "
+             f"{len(strays)} outside its folder)")
+    return {"id": lesson_id, "files": n, "size_mb": mb, "strays": len(strays)}

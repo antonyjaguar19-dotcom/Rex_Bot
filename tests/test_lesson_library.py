@@ -124,3 +124,55 @@ def test_a_failed_kit_is_said_out_loud():
     feed, not the log."""
     src = inspect.getsource(lp.render_lesson)
     assert "upload kit failed" in src
+
+
+# --- A lesson does not live in one tree -----------------------------------------
+# The Wan stage is `horror_video`, shared with horror mode, and it writes its raw clips
+# to its OWN scratch dirs, named after the lesson but outside the lesson's folder:
+#   04_Outputs/videos/hwan_<id>_NNNN.mp4
+#   04_Outputs/clips/_mv_temp/hseg_<id>_NNNN.mp4
+# rmtree on the lesson folder leaves both. That is exactly how facts mode accumulated
+# 212 orphaned files in final/ — a delete that misses a directory hoards gigabytes and
+# nobody finds out until the disk does.
+
+def test_delete_takes_the_wan_files_that_live_outside_the_lesson(tmp_path, monkeypatch):
+    from modules import lesson_library as llib
+
+    monkeypatch.setattr(llib, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(llib, "LESSONS_DIR", tmp_path / "04_Outputs" / "lessons")
+
+    lid = "20260714_113840"
+    d = llib.LESSONS_DIR / lid
+    (d / "stills").mkdir(parents=True)
+    (d / "stills" / "still_00.png").write_bytes(b"x" * 10)
+    (d / "lesson.json").write_text("{}")
+
+    vids = tmp_path / "04_Outputs" / "videos"
+    segs = tmp_path / "04_Outputs" / "clips" / "_mv_temp"
+    vids.mkdir(parents=True)
+    segs.mkdir(parents=True)
+    stray_a = vids / f"hwan_{lid}_0000.mp4"
+    stray_b = segs / f"hseg_{lid}_0001.mp4"
+    stray_a.write_bytes(b"y" * 100)
+    stray_b.write_bytes(b"z" * 100)
+    # another lesson's files must survive
+    other = vids / "hwan_20260101_000000_0000.mp4"
+    other.write_bytes(b"keep")
+
+    assert llib._strays(lid) == sorted([stray_a, stray_b])
+    n, mb = llib.footprint(lid)
+    assert n == 4                       # 2 in the tree + 2 strays
+
+    res = llib.delete_lesson(lid)
+    assert res["strays"] == 2
+    assert not d.exists()
+    assert not stray_a.exists() and not stray_b.exists()
+    assert other.exists(), "another lesson's Wan clip was deleted"
+
+
+def test_a_bad_id_never_reaches_a_glob(tmp_path, monkeypatch):
+    # "*" in a glob would take every lesson's Wan clips with it.
+    from modules import lesson_library as llib
+    for bad in ("*", "../..", "", "20260714", "; rm -rf /"):
+        with pytest.raises(ValueError):
+            llib.delete_lesson(bad)
