@@ -66,6 +66,50 @@ _SYS = (
 )
 
 
+# A book for six-year-olds is not a smaller version of a Class-10 chapter: every page
+# is a picture with a handful of words. `_SYS` above tells the model to return NOTHING
+# for "a picture spread" — pointed at a Class-1 book it would find no topics at all and
+# the book would look unusable.
+#
+# Which prompt to use is decided by MEASURING the book, not by a flag someone has to
+# remember to set.
+_SYS_PICTURE = (
+    "You are a primary-school teacher reading a textbook for SIX-YEAR-OLDS. Most of "
+    "each page is a PICTURE with only a handful of words. You identify the TOPICS it "
+    "teaches — the everyday things a small child is taught as one lesson.\n"
+    "Output ONLY valid JSON: {\"topics\": [{\"title\": \"...\", \"first_page\": 1, "
+    "\"last_page\": 3, \"summary\": \"...\"}]}\n"
+    "Rules:\n"
+    "- A line starting with `[picture]` is a DESCRIPTION OF THE ILLUSTRATION, written "
+    "by a machine that looked at the page. It is not the book's own words — but on a "
+    "page for six-year-olds the picture IS most of the lesson, so use it.\n"
+    "- A topic here is a small everyday unit taught across 2-4 pages: 'Brushing your "
+    "teeth', 'My family', 'Animals and their babies', 'Sounds around us'.\n"
+    "- Do NOT make one topic per page, and do NOT collapse the whole book into one.\n"
+    "- Use the book's own words for the title wherever it has one.\n"
+    "- summary: ONE sentence on what a child learns from it.\n"
+    "- Skip the cover, the contents page and the answer key ONLY. Everything else in "
+    "a book like this teaches something, even when it is mostly a drawing.\n"
+    "- first_page/last_page must be page numbers from the text you were given."
+)
+
+# Below this many characters a page is a picture with a caption, not prose.
+PICTURE_BOOK_CHARS = 400
+
+
+def _sys_for(pages: list) -> str:
+    """The right prompt for THIS book, chosen by measuring it."""
+    readable = [p for p in pages if p["chars"] >= lb.MIN_PAGE_CHARS]
+    if not readable:
+        return _SYS
+    mean = sum(p["chars"] for p in readable) / len(readable)
+    if mean < PICTURE_BOOK_CHARS:
+        log.info(f"picture book detected ({mean:.0f} chars/page) — using the "
+                 f"Class-1 topic prompt")
+        return _SYS_PICTURE
+    return _SYS
+
+
 def _tokens(title: str) -> set:
     words = re.findall(r"[a-z0-9]+", (title or "").lower())
     return {w for w in words if w not in _STOP and len(w) > 2}
@@ -248,6 +292,7 @@ def propose(book_id: str, progress_cb: Optional[Callable[[str], None]] = None) -
     if not windows:
         raise lb.BookUnreadable("no readable pages — nothing to split into topics")
 
+    sys_prompt = _sys_for(pages)
     _p(f"📖 reading '{book['title']}' — {len(pages)} pages in {len(windows)} pass(es)")
 
     found: list = []
@@ -258,7 +303,7 @@ def propose(book_id: str, progress_cb: Optional[Callable[[str], None]] = None) -
                   f"These are pages {lo} to {hi}.\n\n{body}\n\n"
                   f"List the topics taught in these pages.")
         try:
-            raw = _call_llm(prompt, _SYS, role="structurer")
+            raw = _call_llm(prompt, sys_prompt, role="structurer")
             got = _clean((_extract_json(raw) or {}).get("topics") or [], lo, hi)
         except Exception as e:
             _p(f"⚠️ pages {lo}-{hi}: could not be read ({e}); skipping")

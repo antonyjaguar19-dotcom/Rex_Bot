@@ -7,7 +7,8 @@
       "creative": "ollama_qwen25_14b",
       "prompt": "ollama_qwen25_14b",
       "structurer": "ollama_qwen25_14b",
-      "default": "ollama_qwen25_14b"
+      "default": "ollama_qwen25_14b",
+      "vision": "ollama_qwen25_vl_7b"
     },
     "available": {
       "ollama_llama31_8b": {
@@ -27,6 +28,13 @@
         "model_id": "qwen2.5:14b-instruct-q6_K",
         "description": "Qwen 2.5 14B Instruct Q6_K — pure instruction model, reliable JSON, ~12GB VRAM",
         "server_url": "http://127.0.0.1:11434"
+      },
+      "ollama_qwen25_vl_7b": {
+        "type": "ollama",
+        "model_id": "qwen2.5vl:7b",
+        "description": "Qwen2.5-VL 7B — VISION. Reads a scanned textbook page: the words AND what the picture shows. ~6GB VRAM. Used by lesson_book when a PDF page has no extractable text.",
+        "server_url": "http://127.0.0.1:11434",
+        "vision": true
       }
     }
   },

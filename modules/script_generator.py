@@ -258,14 +258,30 @@ Output ONLY the JSON object. Start with {{ end with }}. Nothing else."""
 # OLLAMA CALL
 # ==============================================================================
 
-def _call_llm(prompt: str, system_prompt: str, role: str = "structurer") -> str:
+def _call_llm(prompt: str, system_prompt: str, role: str = "structurer", *,
+              images: Optional[list] = None,
+              options: Optional[dict] = None,
+              cfg: Optional[dict] = None) -> str:
     """Call Ollama's generate endpoint and return raw text response.
 
     role: pipeline role for per-stage model routing (see model_registry.
     get_for_role). Defaults to 'structurer' (reliable JSON model) — the
     structurer + expand passes need schema discipline, not creativity.
+
+    The extras are keyword-only, so every existing positional call site (and the
+    test stubs that mimic this signature) is untouched:
+
+    images:  base64 pictures for a VISION model. A text model does NOT error on
+             these — it ignores them and answers from the prompt alone — so pass
+             `cfg` too and be certain of what you are talking to.
+    options: overrides the sampler. Transcription wants temperature ~0; the default
+             0.75 is a licence to guess a word that is not on the page.
+    cfg:     an explicit backend config, bypassing role routing. Vision uses this
+             because get_for_role() falls back to the active TEXT model on a missing
+             role, which would quietly send page images to a blind model.
     """
-    cfg = model_registry.get_for_role(role) or model_registry.get_active("llm_backend")
+    cfg = (cfg or model_registry.get_for_role(role)
+           or model_registry.get_active("llm_backend"))
     model_name = cfg.get("model_id") or cfg.get("model_name") or cfg.get("model") or "llama3.1:8b-instruct-q8_0"
     url = cfg.get("server_url", "http://127.0.0.1:11434") + "/api/generate"
 
@@ -282,10 +298,21 @@ def _call_llm(prompt: str, system_prompt: str, role: str = "structurer") -> str:
             "top_p": 0.95,
             "num_ctx": 8192,
             "num_predict": 8192,
+            **(options or {}),
         },
     }
 
-    log.info(f"Calling LLM ({model_name}) with theme prompt: {prompt[:80]}...")
+    if images:
+        payload["images"] = list(images)
+        # Image tokens live in the PROMPT. Ollama truncates an over-long prompt from
+        # the FRONT, so too small a context window drops the picture and leaves a
+        # fluent model answering from the words alone — an invented page, no error.
+        if payload["options"].get("num_ctx", 0) < 4096:
+            raise ValueError("a vision call needs num_ctx >= 4096, or the image is "
+                             "silently truncated out of the prompt")
+
+    log.info(f"Calling LLM ({model_name}) with theme prompt: {prompt[:80]}..."
+             + (f" [+{len(images)} image(s)]" if images else ""))
     log.info(f"System prompt starts with: {system_prompt[:50]}")
     r = requests.post(url, json=payload, timeout=600)
     r.raise_for_status()

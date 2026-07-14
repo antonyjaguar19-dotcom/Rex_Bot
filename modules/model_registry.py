@@ -56,11 +56,42 @@ def get_active(backend_type: str) -> dict:
     return cfg
 
 
+def get_vision() -> dict:
+    """The VISION model, or None. Never falls back — that is the whole point.
+
+    `get_for_role("vision")` cannot be used here. Its fallback chain is
+    `role -> default -> active`, which is right for text roles and lethal for this
+    one: with no `vision` role configured it hands back the ordinary text model,
+    and a text model sent a page IMAGE does not error — it ignores the picture and
+    writes a fluent, entirely invented textbook page from the prompt alone. Sixty
+    four of those look exactly like a book that was read.
+
+    So: an entry must exist AND declare `"vision": true`, or there is no vision
+    model and the caller must refuse.
+    """
+    reg = _load()
+    section = reg.get("llm_backend") or {}
+    backend_id = (section.get("roles") or {}).get("vision")
+    if not backend_id:
+        return None
+    cfg = (section.get("available") or {}).get(backend_id)
+    if not cfg or not cfg.get("vision"):
+        log.warning(f"vision role -> '{backend_id}' is missing or is not flagged "
+                    f"\"vision\": true; refusing to route images at it.")
+        return None
+    cfg = dict(cfg)
+    cfg["_id"] = backend_id
+    return cfg
+
+
 def get_for_role(role: str) -> dict:
     """
     Return the LLM config for a named pipeline role (e.g. 'creative',
     'structurer'), resolved via llm_backend.roles. Falls back to the active
     LLM backend when the role map is missing or the role isn't listed.
+
+    NOT for the vision model — see get_vision(). This fallback would send page
+    images to a blind text model.
 
     Lets different pipeline stages use different models (creative prose vs.
     reliable JSON) without each call site hardcoding a model id.

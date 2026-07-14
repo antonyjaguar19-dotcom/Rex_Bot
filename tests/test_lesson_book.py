@@ -69,6 +69,9 @@ PROSE = ("Photosynthesis is how a green plant makes its own food.\n"
 def books(tmp_path, monkeypatch):
     d = tmp_path / "books"
     monkeypatch.setattr(lb, "BOOKS_DIR", d)
+    # No vision model in these tests — they are about what the PDF itself yields.
+    # Left live, the result would depend on whether Ollama happened to be running.
+    monkeypatch.setattr(lb, "vision_available", lambda: (False, "not installed (test)"))
     return d
 
 

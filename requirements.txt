@@ -53,5 +53,11 @@ gradio==6.15.2             # legacy fallback dashboard
 # installed OUTSIDE E:\Rexjaw_VFX, which the containment rule forbids.
 pypdf==6.14.2
 
+# Renders a PDF page to an image, for the vision model to READ (a scanned textbook
+# has no text in it at all). Bundles PDFium in the wheel — pdf2image would need
+# poppler and pytesseract would need tesseract.exe, both installed OUTSIDE
+# E:\Rexjaw_VFX, which the containment rule forbids. Apache-2.0/BSD, not AGPL.
+pypdfium2==5.11.0
+
 # --- Tests ---------------------------------------------------
 pytest==9.0.3

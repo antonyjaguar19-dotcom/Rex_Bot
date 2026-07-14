@@ -923,33 +923,71 @@ def generate_facts_action(topic: str, refresh_cb):
 
 
 def add_book_action(pdf: Path, title: str, refresh_cb):
-    """Ingest a textbook PDF. CPU only (pypdf) — no GPU lock needed.
+    """Ingest a textbook PDF.
 
-    A scan raises `BookUnreadable` and NOTHING lands on disk: a book with no text
-    would let the splitter invent topics out of empty strings, and the first anyone
-    would know is a rendered lesson that has no relation to the book.
+    A born-digital PDF is read by pypdf in a second. A SCAN is read page by page by
+    the vision model — 64 pages is 10-15 minutes on the GPU — so this runs as a
+    background job under the lock, never on the UI thread, and the PDF is copied out
+    of the upload staging dir first (the handler deletes that the moment it returns).
     """
     from modules import lesson_book as lb
+
+    keep = PROJECT_ROOT / "04_Outputs" / "lessons" / "_incoming"
+    keep.mkdir(parents=True, exist_ok=True)
+    mine = keep / f"{int(time.time())}_{Path(pdf).name}"
+    shutil.copyfile(pdf, mine)
+
+    scan = False
     try:
-        book = lb.add_book(pdf, title=title)
-    except lb.BookUnreadable as e:
-        ui.notify(f"❌ {e}", type="negative", timeout=15000, multiline=True)
-        S.push(f"Book refused: {e}")
-        refresh_cb()
-        return
+        # Cheap triage on the UI thread (~2s) so we can TELL the user what they are
+        # committing to before the GPU disappears for a quarter of an hour.
+        pages = lb.extract_pages(mine)
+        blank = lb.scanned_pages(pages)
+        scan = len(blank) >= max(1, int(len(pages) * lb.SCAN_RATIO))
+        if scan:
+            ok, why = lb.vision_available()
+            if not ok:
+                mine.unlink(missing_ok=True)
+                ui.notify(f"❌ This PDF is a SCAN ({len(blank)} of {len(pages)} pages "
+                          f"are pictures of paper) and {why}",
+                          type="negative", timeout=20000, multiline=True)
+                return
+            mins = len(blank) * 15 / 60
+            S.push(f"📖 '{title or mine.stem}' is a SCAN — {len(blank)} pages will be "
+                   f"read by {why} (~{mins:.0f} min, the GPU is busy for that time)")
     except Exception as e:
-        ui.notify(f"❌ could not read that PDF: {e}", type="negative")
+        mine.unlink(missing_ok=True)
+        ui.notify(f"❌ could not open that PDF: {e}", type="negative")
         return
 
-    S.book_id = book["book_id"]
-    msg = f"📖 '{book['title']}' — {book['n_pages']} pages"
-    if book["scanned_pages"]:
-        # Loud, not silent: those pages will not reach any lesson.
-        where = lb.page_ranges(book["scanned_pages"])
-        msg += f" · ⚠️ no text on page(s) {where} (scanned?) — they cannot be taught"
-    S.push(msg)
-    ui.notify(msg, type="positive", timeout=10000, multiline=True)
+    if not _try_begin("lesson book read"):
+        mine.unlink(missing_ok=True)
+        return
+    S.lesson_stage = "book"
     refresh_cb()
+
+    def worker():
+        try:
+            book = lb.add_book(mine, title=title,
+                               progress_cb=lambda m: S.push(f"· {m}"))
+        except lb.BookUnreadable as e:
+            S.push(f"❌ book refused: {e}")
+        except Exception as e:
+            S.push(f"❌ could not read that PDF: {e}")
+        else:
+            S.book_id = book["book_id"]
+            msg = f"📖 '{book['title']}' — {book['n_pages']} pages"
+            if book.get("vision_pages"):
+                msg += f" · {len(book['vision_pages'])} read by the vision model"
+            if book.get("scanned_pages"):
+                msg += (f" · ⚠️ still blank: p"
+                        f"{lb.page_ranges(book['scanned_pages'])}")
+            S.push(msg + " — press Find topics")
+        finally:
+            mine.unlink(missing_ok=True)
+            _end()
+            refresh_cb()
+    _bg_gpu("lesson book read", worker)
 
 
 def propose_topics_action(book_id: str, refresh_cb):
@@ -2246,6 +2284,10 @@ def main_page():
                   on_click=lambda: render_horror_action(full_refresh)) \
             .classes("rex-btn-primary").style("margin-top: 12px;")
 
+    # Every mascot picker on this page. They all drive rs.active_mascot, so they must
+    # all be refreshed together when the shelf changes (see render_mascots).
+    _MASCOT_SELECTS: list = []
+
     # ============== FACTS SHORTS (own tab) ==============
     with ui.card().classes("rex-card w-full") as card_facts:
         with ui.row().classes("items-center"):
@@ -2294,6 +2336,7 @@ def main_page():
                 except ValueError as e:
                     ui.notify(f"❌ {e}", type="negative")
             facts_mascot_sel.on("update:model-value", _set_active_mascot)
+            _MASCOT_SELECTS.append(facts_mascot_sel)
 
         ui.label("Latest reel:").classes("text-xs opacity-70").style("margin-top: 10px;")
         facts_container = ui.column().classes("w-full")
@@ -2658,6 +2701,31 @@ def main_page():
                 .style("width: 260px;") \
                 .tooltip("A text PDF. A SCAN (photographs of pages) has no text in it "
                          "and will be refused — OCR is not built yet.")
+
+        with ui.row().classes("gap-2 items-center").style("margin-top: 4px;"):
+            # The same picker as the Facts tab. `rs.active_mascot` is ONE global, so
+            # these two selects are two views of the same value — render_mascots()
+            # keeps every registered select in step (see _MASCOT_SELECTS).
+            try:
+                ml.migrate()
+                _shelf = {m["id"]: m["name"] for m in ml.list_mascots()}
+                _active = ml.get_active_id()
+            except Exception:
+                _shelf, _active = {}, None
+            lesson_mascot_sel = ui.select(_shelf, value=_active, label="Mascot") \
+                .props("outlined dark dense").style("min-width: 180px") \
+                .tooltip("Which character teaches the lesson — in its own cloned "
+                         "voice. The same shelf the Facts tab uses.")
+
+            def _set_lesson_mascot(_=None):
+                if not lesson_mascot_sel.value:
+                    return
+                try:
+                    ml.set_active_id(lesson_mascot_sel.value)
+                except ValueError as e:
+                    ui.notify(f"❌ {e}", type="negative")
+            lesson_mascot_sel.on_value_change(_set_lesson_mascot)
+            _MASCOT_SELECTS.append(lesson_mascot_sel)
 
         lesson_books_row = ui.row().classes("w-full gap-2 items-center") \
             .style("margin-top: 4px;")
@@ -3744,16 +3812,19 @@ def main_page():
             log.warning(f"mascot shelf unreadable: {e}")
             shelf, active_id = [], None
 
-        # The Facts dropdown lives on another card but lists the same shelf —
-        # keep it in step, or a mascot added here stays invisible until reload.
-        try:
-            opts = {m["id"]: m["name"] for m in shelf}
-            if facts_mascot_sel.options != opts:
-                facts_mascot_sel.set_options(opts, value=active_id)
-            elif facts_mascot_sel.value != active_id:
-                facts_mascot_sel.set_value(active_id)
-        except Exception as e:
-            log.debug(f"facts mascot select not updated: {e}")
+        # The mascot pickers on the Facts and Lessons cards list the same shelf and
+        # drive the same global (rs.active_mascot) — they are two views of one value.
+        # Sync EVERY registered select, or a mascot added here shows up in one
+        # dropdown and not the other, and the two disagree about who is active.
+        opts = {m["id"]: m["name"] for m in shelf}
+        for sel in _MASCOT_SELECTS:
+            try:
+                if sel.options != opts:
+                    sel.set_options(opts, value=active_id)
+                elif sel.value != active_id:
+                    sel.set_value(active_id)
+            except Exception as e:
+                log.debug(f"mascot select not updated: {e}")
 
         # Every slot's mtime, not just "has a voice / has N angles": REPLACING a
         # clip or a view leaves those counts identical, and the card would never
