@@ -223,6 +223,7 @@ class State:
         self.music_stage: str = "idle"         # music stepper: lyrics|song|visuals|assemble|done
         self.book_id: str = ""                 # lesson pipeline: the textbook in hand
         self.lesson_stage: str = "idle"        # lesson stepper: book|topics|script|...
+        self.lesson_id: str = ""               # the lesson script in hand
         # Set by _bg_gpu while a job runs: {"id", "mode", "checkpointed"}.
         self.active_job: Optional[dict] = None
 
@@ -569,8 +570,8 @@ def _job_context_for(mode: str, state) -> dict:
         return {"song_id": state.song.get("_id") or state.song.get("song_id")}
     if mode == "horror" and state.horror:
         return {"horror_id": state.horror.get("_id") or state.horror.get("horror_id")}
-    if mode == "lesson" and state.book_id:
-        return {"book_id": state.book_id}
+    if mode == "lesson" and (state.book_id or state.lesson_id):
+        return {"book_id": state.book_id, "lesson_id": state.lesson_id}
     if mode == "manual":
         pid = mm.current_project_id()
         return {"project_id": pid} if pid else {}
@@ -1011,6 +1012,38 @@ def propose_topics_action(book_id: str, refresh_cb):
             _end()
             refresh_cb()
     _bg_gpu("lesson topics", worker)
+
+
+def write_lesson_action(book_id: str, topic_id: str, seconds: float, refresh_cb):
+    """Write the lesson script for one topic (Ollama → the GPU → the job lock).
+
+    Nothing is rendered here. The script comes back for you to read and correct
+    BEFORE any GPU is spent on voice or pictures.
+    """
+    if not (book_id and topic_id):
+        ui.notify("Pick a topic first.", type="warning")
+        return
+    if not _try_begin("lesson script"):
+        return
+    S.lesson_stage = "script"
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import lesson_writer as lw
+            lesson = lw.write_lesson(book_id, topic_id, target_seconds=seconds,
+                                     progress_cb=lambda m: S.push(f"· {m}"))
+            S.lesson_id = lesson["lesson_id"]
+            S.push(f"✅ '{lesson['title']}' — {len(lesson['beats'])} beats, "
+                   f"about {lesson['estimated_seconds']:.0f}s. Read it before rendering.")
+        except Exception as e:
+            # TopicTooThin lands here too: the book says too little to teach this
+            # honestly, and the message says to merge it with a neighbour.
+            S.push(f"❌ {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("lesson script", worker)
 
 
 def approve_script_gen_prompts(refresh_cb):
@@ -2732,6 +2765,12 @@ def main_page():
         lesson_topics_container = ui.column().classes("w-full gap-1") \
             .style("margin-top: 8px;")
 
+        ui.separator().style("margin-top: 12px;")
+        with ui.row().classes("items-center gap-2").style("margin-top: 6px;"):
+            ui.label("📝 The lesson").classes("text-sm font-bold")
+            lesson_meta = ui.label("").classes("text-xs opacity-60")
+        lesson_script_container = ui.column().classes("w-full gap-1")
+
     # ============== MASCOTS (own tab) ==============
     # A mascot is a folder under 02_Agent/assets/mascots/ (see mascot_library).
     # Whichever one is ACTIVE is the character facts mode stars — in every
@@ -4101,6 +4140,18 @@ def main_page():
                         ui.label(f"p{t['first_page']}-{t['last_page']}") \
                             .classes("text-xs opacity-70")
 
+                        secs = ui.select({60: "60s", 90: "90s", 120: "120s"}, value=90) \
+                            .props("outlined dark dense").style("width: 92px") \
+                            .tooltip("How long the lesson should be. A Class-1 topic "
+                                     "has a few hundred words behind it — past two "
+                                     "minutes the lesson stops being the book's.")
+
+                        def _write(_t=t, _s=secs):
+                            write_lesson_action(S.book_id, _t["id"],
+                                                float(_s.value), full_refresh)
+                        ui.button("✍️ Write lesson", on_click=_write) \
+                            .props("flat dense color=accent")
+
                         def _rm(_t=t):
                             lt.remove(S.book_id, _t["id"])
                             ui.notify(f"🗑️ {_t['title']} removed", type="warning")
@@ -4150,6 +4201,64 @@ def main_page():
                             ui.button("Add", on_click=_save).props("flat color=accent")
                     dlg.open()
                 ui.button("➕ Add topic", on_click=_add).props("flat dense")
+
+    def render_lesson_script():
+        """The written lesson, line by line. Every line is EDITABLE — this is the gate
+        before a single frame is rendered, and the render reads these words back off
+        disk rather than trusting whatever the browser last showed."""
+        from modules import lesson_writer as lw
+
+        lesson = None
+        try:
+            if S.lesson_id:
+                lesson = lw.load_lesson(S.lesson_id)
+            elif S.book_id:
+                got = lw.lessons_for_book(S.book_id)
+                lesson = got[0] if got else None
+        except Exception as e:
+            log.warning(f"lesson script unreadable: {e}")
+
+        sig = ((lesson or {}).get("lesson_id"),
+               tuple((b["narration"], b["on_screen"])
+                     for b in (lesson or {}).get("beats", [])))
+        if not _changed("lesson_script", sig):
+            return
+
+        lesson_script_container.clear()
+        if not lesson:
+            lesson_meta.set_text("")
+            with lesson_script_container:
+                ui.label("_(no lesson written yet — pick a topic above and press "
+                         "Write lesson)_").classes("opacity-60")
+            return
+
+        S.lesson_id = lesson["lesson_id"]
+        lesson_meta.set_text(
+            f"“{lesson['title']}” · from {lesson['topic']} (pages "
+            f"{lesson['pages'][0]}-{lesson['pages'][1]}) · {len(lesson['beats'])} lines "
+            f"· {lesson['word_count']} words · about "
+            f"{lesson['estimated_seconds']:.0f}s")
+
+        with lesson_script_container:
+            for i, b in enumerate(lesson["beats"]):
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.label(f"{i+1:>2}").classes("text-xs opacity-50") \
+                        .style("width: 22px;")
+                    ui.element("span").classes("rex-badge rex-badge-mint") \
+                        ._props["innerHTML"] = b["kind"]
+
+                    line = ui.input(value=b["narration"]) \
+                        .props("outlined dark dense").classes("flex-1") \
+                        .tooltip("What the mascot says. Change it and the lesson's "
+                                 "length changes with it.")
+
+                    def _save_line(_=None, _i=i, _f=line):
+                        lw.set_beat_field(S.lesson_id, _i, "narration", _f.value)
+                        full_refresh()
+                    line.on("blur", _save_line)
+
+                    ui.label(b["on_screen"]).classes("text-xs opacity-60") \
+                        .style("width: 130px;")
 
     def render_queue():
         try:
@@ -4444,6 +4553,7 @@ def main_page():
             render_recovery()
             render_mascots()
             render_lessons()
+            render_lesson_script()
             render_queue()
             render_log()
         except RuntimeError as e:
