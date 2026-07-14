@@ -299,19 +299,21 @@ def test_one_lesson_gets_one_backdrop():
     # a NEW colour on every shot: the first real lesson came out blue, purple, beige,
     # grey and dark grey — thirteen pictures that watch like clips cut together from four
     # different videos. A facts reel is one shot and does not care. A lesson is a film.
+    #
+    # The fix used to be one flat COLOUR per lesson. It is now one PLACE per lesson —
+    # a garden, a classroom, a farmyard — because a flat card left the child floating in
+    # a void. Same invariant either way: ONE, for the whole lesson.
     import inspect
     from modules import lesson_pipeline as lp
     from modules import mascot as mas
 
     src = inspect.getsource(lp.prepare_lesson)
-    assert "backdrop = BACKDROPS[" in src
+    assert "setting_for(" in src
     assert "background=backdrop" in src
 
-    # stable for a given lesson (a redo must not change the film's colour) and it really
-    # does replace the phrase the style would otherwise leave to the model
-    a = lp.BACKDROPS[sum(ord(c) for c in "20260714_113840") % len(lp.BACKDROPS)]
-    b = lp.BACKDROPS[sum(ord(c) for c in "20260714_113840") % len(lp.BACKDROPS)]
-    assert a == b
+    a = lp.setting_for("Living and Non-living Things")
+    b = lp.setting_for("Living and Non-living Things")
+    assert a == b, "the film must not move house halfway through"
     assert "bold vivid solid color background" in mas.STYLE_PRESENTER
     assert "background" in inspect.signature(mas.render_scene).parameters
 
@@ -321,3 +323,39 @@ def test_a_facts_reel_still_picks_its_own_colour():
     import inspect
     from modules import facts_pipeline as fp
     assert "background=" not in inspect.getsource(fp._render_facts_mascot)
+
+
+def test_a_lesson_happens_in_a_place_not_a_void():
+    # The backdrop used to be a flat colour card and every shot looked like a child
+    # floating in a void. A lesson about living things belongs in a garden; one about the
+    # body in a classroom. But it stays ONE place: thirteen locations watch like thirteen
+    # different films, which is the same mistake the flat colours made.
+    from modules import lesson_pipeline as lp
+    from modules import mascot as mas
+
+    assert "garden" in lp.setting_for("Living and Non-living Things")
+    assert "classroom" in lp.setting_for("My Wonderful Body")
+    assert "farmyard" in lp.setting_for("Animals Around Us")
+    assert lp.setting_for("Quantum Widgets") == lp.DEFAULT_SETTING   # never empty
+
+    # stable across a redo — the film does not move house halfway through
+    assert lp.setting_for("Living Things") == lp.setting_for("Living Things")
+
+    # and the child must stay readable against it, captions included
+    assert "soft and gently out of focus behind her" in mas.STYLE_TEACHING
+    assert "the character is sharp and fully separated from the background" in mas.STYLE_TEACHING
+
+    import inspect
+    assert "setting_for(" in inspect.getsource(lp.prepare_lesson)
+
+
+def test_the_tail_the_chimera_and_the_wonky_eye_are_banned():
+    # A dog's tail grew out of the GIRL'S HIP; a doll and a puppy FUSED into one creature
+    # (a puppy's head on a cloth body with button eyes); and one eye came back larger than
+    # the other. Two similar objects held close together merge, and an animal's parts
+    # wander onto the nearest body.
+    from modules import mascot as mas
+    for banned in ("tail growing from a person", "tail on a child",
+                   "merged creature", "doll fused with an animal", "chimera",
+                   "asymmetric eyes", "lazy eye", "one eye larger than the other"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned

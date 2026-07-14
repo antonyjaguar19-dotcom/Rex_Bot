@@ -59,17 +59,45 @@ STILL_SEC_PER_CLIP = 3.0
 # nobody means to start that from one click.
 MAX_WAN_CLIPS = 20
 
-# One lesson, one backdrop — picked from the lesson's id, so it is stable across a redo
-# but different from the last lesson's. Deliberately plain and bright: the mascot and
-# the prop are the teaching, and the caption has to stay readable over it.
-BACKDROPS = (
-    "bold solid cornflower blue background",
-    "bold solid warm sunshine yellow background",
-    "bold solid mint green background",
-    "bold solid soft coral background",
-    "bold solid lavender background",
-    "bold solid sky teal background",
-)
+# ONE LESSON, ONE PLACE.
+#
+# This used to be a flat colour card, and every shot looked like a child floating in a
+# void. A real place is better television and better teaching: a lesson about living
+# things belongs in a garden, one about the body in a bright classroom.
+#
+# It stays ONE place for the whole lesson, though. Thirteen different locations watch
+# like thirteen different films — the same mistake the flat colours made when Qwen was
+# left to pick one per shot (blue, purple, beige, grey).
+#
+# The setting is deliberately soft and behind her: the child and the prop are the
+# teaching, and the burned-in caption has to stay readable across the bottom.
+SETTINGS = {
+    "living": "a sunny home garden with a low wooden fence, potted plants and grass",
+    "body": "a bright cheerful classroom with a soft rug and low shelves",
+    "plant": "a sunny home garden with flower beds and a small watering can",
+    "flower": "a sunny home garden with flower beds and a small watering can",
+    "vegetable": "a bright kitchen with a low table and a basket of vegetables",
+    "fruit": "a bright kitchen with a low table and a bowl of fruit",
+    "animal": "a green farmyard with a wooden fence and a red barn far behind",
+    "food": "a bright kitchen with a low table and a fruit bowl",
+    "water": "a sunny garden beside a small pond with reeds",
+    "air": "a breezy hilltop park with kites in the far distance",
+    "sky": "a breezy hilltop park under a wide blue sky",
+    "home": "a warm tidy living room with a sofa and a toy box",
+    "school": "a bright cheerful classroom with a soft rug and low shelves",
+    "play": "a sunny playground with a swing set and slide behind her",
+}
+DEFAULT_SETTING = "a sunny home garden with a low wooden fence, grass and potted plants"
+
+
+def setting_for(topic: str) -> str:
+    """The one place this lesson happens. Keyword-matched, not LLM-guessed — a wrong
+    setting is cheap to live with and an LLM round-trip per lesson is not."""
+    t = (topic or "").lower()
+    for key, place in SETTINGS.items():
+        if key in t:
+            return place
+    return DEFAULT_SETTING
 
 
 class LessonRenderError(RuntimeError):
@@ -246,8 +274,8 @@ def prepare_lesson(lesson: dict,
     # cut together from four different videos. A facts reel is one shot and does not
     # care. A lesson is a film, and a child should not be told, five times, that the
     # scene has changed when it has not.
-    backdrop = BACKDROPS[sum(ord(c) for c in lesson_id) % len(BACKDROPS)]
-    _p(f"🎨 backdrop for this lesson: {backdrop}")
+    backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
+    _p(f"🎬 this lesson is set in {backdrop}")
 
     gpu_memory.acquire(gpu_memory.QWEN_EDIT)
     stills = []

@@ -231,6 +231,12 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     # A lesson's prop is a child's toy: it fits in her hand. A facts reel's need not.
     ", the props are toys a child can hold — roughly the size of her head, "
     "clearly held in her hands, never bigger than her body and never doll-house tiny"
+    # The flat colour card made every shot look like a void. A real place is better
+    # television AND better teaching — but the child and the prop are the lesson, so the
+    # setting stays soft and behind her, and the captions have to stay readable over it.
+    ", the character is sharp and fully separated from the background, the setting is "
+    "soft and gently out of focus behind her, uncluttered, nothing growing out of her "
+    "head, bright cheerful daylight"
 )
 
 NEGATIVE_PRESENTER = (
@@ -249,6 +255,16 @@ NEGATIVE_PRESENTER = (
     # animal gets the animal twice.
     "two puppies, two dogs, duplicate animal, two identical animals, the same animal "
     "twice, cloned pet, extra animals, more than one puppy, "
+    # A TAIL growing out of the GIRL'S HIP, and a doll and a puppy FUSED into one
+    # creature (a puppy's head on a cloth body with button eyes). Two similar objects
+    # held close together merge; an animal's parts wander onto the nearest body.
+    "tail growing from a person, tail on a girl, tail on a child, animal tail on a human, "
+    "merged creature, doll fused with an animal, chimera, two objects melted together, "
+    "toy merged with a pet, "
+    # ASYMMETRIC EYES — one pupil bigger, one eye lower, a lazy eye. The face is the
+    # identity and it must be clean.
+    "asymmetric eyes, lazy eye, misaligned pupils, uneven eyes, wonky eye, "
+    "one eye larger than the other, cross-eyed, "
     # THE LIVING DOLL. A doll is human-SHAPED, so it is the likeliest thing in any scene
     # to capture the reference — "holding up a doll" returned a LIVING CHILD with the
     # mascot's own face, dangling by the wrist, in a lesson about how toys are NOT alive.
