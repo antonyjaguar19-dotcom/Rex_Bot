@@ -33,6 +33,7 @@ import time as _t
 from pathlib import Path
 from typing import Callable, Optional
 
+from modules import cast
 from modules import facts_assembly as fasm
 from modules import facts_pipeline as fp
 from modules import gpu_memory, gpu_utils
@@ -286,10 +287,33 @@ def prepare_lesson(lesson: dict,
             # Lightning path (~27s). A lesson's prop IS the teaching — a plate of
             # vegetables has to look like vegetables, not candy — so a lesson pays
             # the extra minute a shot. A facts reel does not, and stays fast.
-            got = mascot.render_scene(b["mascot_scene"], sp, aspect=ASPECT,
+            # A SECOND PERSON GETS A SECOND REFERENCE.
+            #
+            # "You feel happy when mummy hugs you" needs a mummy in the picture, and for
+            # a long time we could not draw one: handed a single reference (the mascot),
+            # Qwen painted that identity onto every human in the frame and the mother
+            # came back as the child's TWIN. I concluded the model could only draw one
+            # person. That was wrong — TextEncodeQwenImageEditPlus takes image1..image3
+            # and we were only ever passing one. Give it a drawing of the mother and it
+            # draws a mother. See modules/cast.py.
+            #
+            # Only when the scene actually names someone: a spare reference is another
+            # thing for Qwen to copy into a picture that did not ask for it.
+            refs, scene_text = None, b["mascot_scene"]
+            second = cast.ref_for(scene_text)
+            if second:
+                refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
+                # Two references and no explanation is an invitation to blend them. Say
+                # which is which — that is what the proving render did, and it came back
+                # with two correct, separate people first try.
+                scene_text = cast.name_the_refs(scene_text, cast.role_in(scene_text))
+                _p(f"👥 line {i+1} has a second person — {second.stem} joins the shot")
+
+            got = mascot.render_scene(scene_text, sp, aspect=ASPECT,
                                       seed=4000 + i + 1000 * int(
                                           lesson.get("still_take", 0)),
                                       presenter=True, full_quality=True,
+                                      reference_images=refs,
                                       background=backdrop, teaching=True)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a

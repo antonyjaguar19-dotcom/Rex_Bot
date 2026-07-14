@@ -1307,9 +1307,23 @@ def other_people_are_other_people(scene: str) -> str:
     m = _OTHER_PERSON.search(scene or "")
     if not m:
         return scene
+
+    # If we have a REFERENCE for them, they stay. Qwen-Edit takes image1..image3, and
+    # handed an actual drawing of the mother it draws an actual mother — measured, first
+    # try. See modules/cast.py: this whole guard was built on a conclusion ("one
+    # reference draws one person") that was a limit of how we CALLED the model, not of
+    # the model. Jeffy is the one who spotted it.
+    try:
+        from modules import cast
+        if cast.role_in(scene):
+            return scene
+    except Exception as e:          # pragma: no cover - cast is optional
+        log.debug(f"cast unavailable ({e}); falling back to keeping the mascot alone")
+
     who = m.group(1).lower()
-    log.warning(f"scene put a {who} in the frame — there is only ONE identity reference, "
-                f"so a second person comes back as a TWIN. Keeping the mascot alone.")
+    log.warning(f"scene put a {who} in the frame and we have no reference for them — "
+                f"one reference draws one person, so a second would come back as a TWIN. "
+                f"Keeping the mascot alone.")
     out = re.sub(r",?\s*[^,]*\b" + re.escape(who) + r"\b[^,]*", "", scene, count=1,
                  flags=re.I)
     # A plural pronoun is left pointing at nobody once the second person is gone:
