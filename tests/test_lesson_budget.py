@@ -21,27 +21,51 @@ from modules import lesson_writer as lw
 MODULES = Path(__file__).parent.parent / "modules"
 
 
-def _lesson_sources() -> dict:
-    return {p.name: p.read_text(encoding="utf-8")
-            for p in MODULES.glob("lesson_*.py")}
+def _called_names() -> dict:
+    """{module: every function name it CALLS}.
+
+    Parsed, not grepped. The lesson modules carry long comments explaining this exact
+    trap — and a substring scan cannot tell a warning about a landmine from stepping
+    on one. It failed on its own documentation.
+    """
+    import ast
+
+    out = {}
+    for p in MODULES.glob("lesson_*.py"):
+        names = set()
+        for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                f = node.func
+                if isinstance(f, ast.Attribute):
+                    names.add(f.attr)
+                elif isinstance(f, ast.Name):
+                    names.add(f.id)
+        out[p.name] = names
+    return out
 
 
 def test_the_facts_40s_ceiling_is_never_read_by_lesson_code():
-    for name, src in _lesson_sources().items():
-        assert "get_facts_max_seconds" not in src, (
+    for name, called in _called_names().items():
+        assert "get_facts_max_seconds" not in called, (
             f"{name} reads the FACTS reel ceiling (40s). A lesson is minutes long — "
             f"this would trim the teacher's pace to fit a Short.")
-        assert "_fit_to_budget" not in src, (
+        assert "_fit_to_budget" not in called, (
             f"{name} calls _fit_to_budget, which speeds the narration up to hit the "
             f"facts ceiling. A lesson's length is set in words by the writer.")
 
 
 def test_the_budgeted_voice_path_is_never_used_by_lesson_code():
     """_voice_beats_mascot is the trap; _voice_beats_clone is the door next to it."""
-    for name, src in _lesson_sources().items():
-        assert "_voice_beats_mascot" not in src, (
+    for name, called in _called_names().items():
+        assert "_voice_beats_mascot" not in called, (
             f"{name} uses the facts voicing wrapper, which applies the 40s budget. "
             f"Use facts_pipeline._voice_beats_clone (no budget, same short-take guard).")
+
+
+def test_the_lesson_pipeline_voices_through_the_unbudgeted_path():
+    """Not just 'does not call the bad one' — proves it calls the RIGHT one."""
+    called = _called_names()["lesson_pipeline.py"]
+    assert "_voice_beats_clone" in called
 
 
 def test_the_trap_is_real_and_still_there():

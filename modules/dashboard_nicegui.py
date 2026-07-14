@@ -1046,6 +1046,70 @@ def write_lesson_action(book_id: str, topic_id: str, seconds: float, refresh_cb)
     _bg_gpu("lesson script", worker)
 
 
+def prepare_lesson_action(lesson_id: str, refresh_cb):
+    """Voice the lesson and draw a picture for every line. Renders no video.
+
+    Ends at the GATE: you look at the pictures and tick the ones worth animating.
+    """
+    if not lesson_id:
+        ui.notify("Write a lesson first.", type="warning")
+        return
+    if not _try_begin("lesson pictures"):
+        return
+    S.lesson_stage = "stills"
+    refresh_cb()
+
+    def worker():
+        try:
+            from modules import lesson_pipeline as lp
+            from modules import lesson_writer as lw
+            lesson = lw.load_lesson(lesson_id)
+            lp.prepare_lesson(lesson, progress_cb=lambda m: S.push(f"· {m}"))
+        except Exception as e:
+            S.push(f"❌ {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("lesson pictures", worker)
+
+
+def render_lesson_action(lesson_id: str, refresh_cb):
+    """Animate the ticked lines, pan the rest, and assemble the lesson."""
+    from modules import lesson_pipeline as lp
+    from modules import lesson_writer as lw
+
+    lesson = lw.load_lesson(lesson_id)
+    if not lesson:
+        ui.notify("No lesson to render.", type="warning")
+        return
+    try:
+        lp.approve(lesson_id)          # the gate: refuses over the cap, or unprepared
+    except Exception as e:
+        ui.notify(f"❌ {e}", type="negative", timeout=15000, multiline=True)
+        return
+
+    est = lp.estimate(lesson["beats"])
+    if not _try_begin("lesson render"):
+        return
+    S.lesson_stage = "render"
+    S.push(f"🎬 rendering — {est['animated']} animated, {est['still']} still "
+           f"(about {est['minutes']} min)")
+    refresh_cb()
+
+    def worker():
+        try:
+            out = lp.render_lesson(lesson_id, progress_cb=lambda m: S.push(f"· {m}"))
+            S.push(f"✅ lesson ready: {Path(out['16x9']).name}")
+            _mirror_files("lesson_ready", {"16x9": out["16x9"]}, mode="lesson",
+                          title=lesson["title"])
+        except Exception as e:
+            S.push(f"❌ {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu("lesson render", worker)
+
+
 def approve_script_gen_prompts(refresh_cb):
     if not S.script:
         ui.notify("❌ No script loaded.", type="negative")
@@ -4218,8 +4282,10 @@ def main_page():
         except Exception as e:
             log.warning(f"lesson script unreadable: {e}")
 
-        sig = ((lesson or {}).get("lesson_id"),
-               tuple((b["narration"], b["on_screen"])
+        sig = ((lesson or {}).get("lesson_id"), (lesson or {}).get("stage"),
+               (lesson or {}).get("video", ""),
+               tuple((b["narration"], b["on_screen"], b.get("animate"),
+                      b.get("still", ""))
                      for b in (lesson or {}).get("beats", [])))
         if not _changed("lesson_script", sig):
             return
@@ -4239,11 +4305,31 @@ def main_page():
             f"· {lesson['word_count']} words · about "
             f"{lesson['estimated_seconds']:.0f}s")
 
+        from modules import lesson_pipeline as lp
+        prepared = lesson.get("stage") in ("stills", "approved", "rendered")
+
         with lesson_script_container:
+            # Before the pictures exist: the words, editable. Afterwards: THE GATE —
+            # every picture with a tickbox, and the cost of ticking it.
+            est_label = ui.label("").classes("text-xs").style("color:#7cf;")
+
+            def _repaint_estimate():
+                got = lw.load_lesson(S.lesson_id)
+                e = lp.estimate(got["beats"])
+                est_label.set_text(
+                    f"{e['animated']} animated + {e['still']} still shots ≈ "
+                    f"{e['minutes']} min of rendering"
+                    + ("  ⚠️ over the cap — untick some" if e["over_cap"] else ""))
+
             for i, b in enumerate(lesson["beats"]):
                 with ui.row().classes("w-full items-center gap-2"):
                     ui.label(f"{i+1:>2}").classes("text-xs opacity-50") \
                         .style("width: 22px;")
+
+                    if prepared and b.get("still") and Path(b["still"]).exists():
+                        ui.image(_media_url(Path(b["still"]))) \
+                            .style("width: 104px; border-radius: 6px;")
+
                     ui.element("span").classes("rex-badge rex-badge-mint") \
                         ._props["innerHTML"] = b["kind"]
 
@@ -4257,8 +4343,46 @@ def main_page():
                         full_refresh()
                     line.on("blur", _save_line)
 
-                    ui.label(b["on_screen"]).classes("text-xs opacity-60") \
-                        .style("width: 130px;")
+                    if prepared:
+                        # THE TICKBOX. Each one is ~8.5 minutes of Wan; unticked, the
+                        # still gets a slow pan and costs nothing. The choice is saved
+                        # to disk — the render reads it back, not the browser.
+                        tick = ui.checkbox(value=bool(b.get("animate"))) \
+                            .props(f"dense color=accent name=lesson_tick_{i}") \
+                            .tooltip("Animate this shot with Wan (~8 min of GPU). "
+                                     "Unticked = the picture with a slow pan, free.")
+
+                        def _tick(_=None, _i=i, _c=tick):
+                            lw.set_beat_animate(S.lesson_id, _i, bool(_c.value))
+                            _repaint_estimate()
+                        tick.on_value_change(_tick)
+                    else:
+                        ui.label(b["on_screen"]).classes("text-xs opacity-60") \
+                            .style("width: 130px;")
+
+            with ui.row().classes("gap-2 items-center").style("margin-top: 8px;"):
+                if not prepared:
+                    ui.button("🎨 Voice it & draw the pictures",
+                              on_click=lambda: prepare_lesson_action(S.lesson_id,
+                                                                     full_refresh)) \
+                        .classes("rex-btn-primary") \
+                        .tooltip("Records the lesson in the mascot's voice and draws "
+                                 "one picture per line. No video yet — you choose what "
+                                 "gets animated afterwards.")
+                else:
+                    _repaint_estimate()
+                    ui.button("🎬 Render the lesson",
+                              on_click=lambda: render_lesson_action(S.lesson_id,
+                                                                    full_refresh)) \
+                        .classes("rex-btn-primary")
+                    ui.button("🔁 Redo the pictures",
+                              on_click=lambda: prepare_lesson_action(S.lesson_id,
+                                                                     full_refresh)) \
+                        .props("flat dense")
+
+            if lesson.get("video") and Path(lesson["video"]).exists():
+                ui.video(_media_url(Path(lesson["video"]))) \
+                    .style("max-width: 520px; border-radius: 8px; margin-top: 8px;")
 
     def render_queue():
         try:
