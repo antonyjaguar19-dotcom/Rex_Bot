@@ -243,6 +243,12 @@ NEGATIVE_PRESENTER = (
     # the frame: "hugged by her mother" came back as two identical mascots.
     "twins, clone, duplicate character, two identical characters, the same character "
     "twice, mirrored character, second identical child, "
+    # And the ANIMALS duplicate too, entirely on their own. A scene naming ONE puppy
+    # came back with a puppy in each hand. Qwen fills a spare hand by copying whatever it
+    # already drew, so a scene that gives her two things to hold and names only one
+    # animal gets the animal twice.
+    "two puppies, two dogs, duplicate animal, two identical animals, the same animal "
+    "twice, cloned pet, extra animals, more than one puppy, "
     # THE LIVING DOLL. A doll is human-SHAPED, so it is the likeliest thing in any scene
     # to capture the reference — "holding up a doll" returned a LIVING CHILD with the
     # mascot's own face, dangling by the wrist, in a lesson about how toys are NOT alive.

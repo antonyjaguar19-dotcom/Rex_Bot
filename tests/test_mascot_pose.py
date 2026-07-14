@@ -710,3 +710,13 @@ def test_the_marks_are_made_in_place_not_appended():
         assert ".sub(" in src, f"{fn.__name__} must rewrite in place"
     # the appended-note shape is what caused two puppies
     assert 'f"{out.rstrip' not in inspect.getsource(mas.alive_looks_alive)
+
+
+def test_the_animals_duplicate_too():
+    # A scene naming ONE puppy came back with a puppy in EACH HAND. Qwen fills a spare
+    # hand by copying whatever it already drew, so a scene that gives her two things to
+    # hold and names only one animal gets the animal twice. The mascot-twin ban does not
+    # cover this: the duplicate is not the mascot.
+    for banned in ("two puppies", "duplicate animal", "the same animal twice",
+                   "more than one puppy"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
