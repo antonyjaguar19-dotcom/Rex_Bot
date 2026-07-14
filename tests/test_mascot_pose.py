@@ -95,3 +95,65 @@ def test_the_lightning_path_really_is_cfg_1():
     from modules.image_backends import comfyui_qwen_edit as qe
     assert qe.DEFAULT_CFG_LIGHTNING == 1.0
     assert qe.DEFAULT_CFG_FULL > 1.0
+
+
+# --- The mascot's body belongs to the reference image, not the prompt ---------
+# still_01 of the first real lesson came back with a HUMAN CHILD WEARING MOUSE EARS.
+# The scene said "mid-balance on one paw" and the style suffix claimed the character was
+# "a short chunky cub" with "both paws" on the prop. Told the subject has paws, the model
+# reasons backwards to the creature paws belong to and grows the ears to match. Nakshu is
+# a little girl. Nothing in a prompt may state what the mascot's body IS.
+
+def test_the_presenter_style_names_no_species_and_no_animal_parts():
+    style = mas.STYLE_PRESENTER.lower()
+    for word in ("cub", "paw", "paws", "fur", "snout", "tail", "muzzle", "whiskers"):
+        assert word not in style.split(), f"presenter style calls the mascot's body a {word!r}"
+    # and it must actively pin the body to the reference
+    assert "same species" in style
+
+
+def test_the_negative_bans_the_parts_the_old_prompt_invited():
+    neg = mas.NEGATIVE_PRESENTER.lower()
+    assert "mouse ears" in neg
+    assert "changed species" in neg
+
+
+def test_animal_anatomy_is_stripped_out_of_a_scene():
+    scene = ("the mascot character dressed in a chef coat, mid-balance on one paw "
+             "holding a carrot, tail wagging")
+    assert mas.animal_parts(scene) == ["paw", "tail"]
+    fixed = mas.keep_the_body(scene)
+    assert "paw" not in fixed and "tail" not in fixed
+    assert "one hand holding a carrot" in fixed
+    assert "chef coat" in fixed          # the costume is untouched
+
+
+def test_a_real_animal_in_the_scene_keeps_its_own_tail():
+    # A lesson about living things puts a real puppy on screen, and the puppy is ALLOWED
+    # a tail. Only anatomy in a clause that names no animal can be the mascot's. Blunt
+    # substitution turned "puppy wagging its tail" into "puppy wagging its back".
+    scene = ("the mascot character kneeling beside a playful puppy, "
+             "scratching its belly with both hands, puppy wagging its tail")
+    assert mas.animal_parts(scene) == []
+    assert mas.keep_the_body(scene) == scene
+
+
+def test_the_mascots_paw_is_taken_even_when_an_animal_shares_the_frame():
+    scene = ("the mascot character balancing on one paw, "
+             "pointing at a puppy wagging its tail")
+    assert mas.animal_parts(scene) == ["paw"]
+    fixed = mas.keep_the_body(scene)
+    assert "on one hand" in fixed          # hers is rewritten
+    assert "wagging its tail" in fixed     # his is not
+
+
+def test_a_human_scene_passes_through_unchanged():
+    scene = "the mascot character holding up a plant with one hand, smiling"
+    assert mas.animal_parts(scene) == []
+    assert mas.keep_the_body(scene) == scene
+
+
+def test_the_scene_writer_is_told_not_to_hand_out_body_parts():
+    sys_prompt = mas._EXPLAINER_SYS.lower()
+    assert "'paw'" in sys_prompt or "paw" in sys_prompt
+    assert "mouse ears" in sys_prompt     # the rule states WHY, or it gets deleted later

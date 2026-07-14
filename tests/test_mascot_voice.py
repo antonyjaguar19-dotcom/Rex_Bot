@@ -140,15 +140,24 @@ def test_falls_back_to_kokoro_when_qwen_is_down(tmp_path, monkeypatch):
 def test_presenter_style_locks_proportions_and_frees_the_pose():
     """The feet were once nailed to the floor — but that rule only ever existed to
     stop Wan-S2V mangling legs it could not animate, and the video stage no longer
-    uses S2V. What must STAY is the proportion lock (Qwen quietly slims the cub
+    uses S2V. What must STAY is the proportion lock (Qwen quietly slims the character
     into a lanky humanoid whenever the costume changes) and the anti-intersection
-    negative (a paw went straight through a hat brim)."""
+    negative (a hand went straight through a hat brim).
+
+    The lock used to be spelled "a short chunky cub" — back when the mascot WAS a
+    jaguar cub. Once the shelf let anyone be the mascot, that sentence became a lie
+    told to the artist: it handed Nakshu, a human girl, a cub's body, and the model
+    obediently drew her with MOUSE EARS. The build is now pinned to the reference
+    image instead of described, so it fits whoever is on the shelf."""
     from modules import mascot as mas
     assert "full body visible" in mas.STYLE_PRESENTER
     assert "dynamic playful action pose" in mas.STYLE_PRESENTER
     assert "feet planted" not in mas.STYLE_PRESENTER, "the pose is free again"
-    for kept in ("short chunky cub", "chibi proportions"):
+    for kept in ("the same body proportions", "the same species",
+                 "only the clothes and the props", "chibi proportions"):
         assert kept in mas.STYLE_PRESENTER, kept
+    for named in ("cub", "paw", "paws"):
+        assert named not in mas.STYLE_PRESENTER.split(),             f"the style tells the artist the mascot has a {named}"
     for banned in ("thin legs", "lanky", "human proportions",
                    "hand passing through object", "limbs intersecting props"):
         assert banned in mas.NEGATIVE_PRESENTER, banned

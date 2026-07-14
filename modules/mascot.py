@@ -166,32 +166,46 @@ STYLE_SUFFIX = (
 # gone and the poses are free to be fun again. What stays is the PROPORTION lock
 # (Qwen quietly slims the cub into a lanky humanoid when a costume changes) and
 # the anti-intersection negative (a paw went straight through a hat brim).
+# THE STYLE MUST NOT SAY WHAT THE MASCOT IS.
+#
+# This block is appended to EVERY presenter still, and it used to describe the old
+# mascot: "a short chunky CUB", "both PAWS clearly interacting with the prop". That was
+# written when the mascot was a jaguar cub, and it was true then. It is now a lie told
+# to the model on every single frame — and the model believed it: a lesson still came
+# back with a human child wearing MOUSE EARS, because the prompt kept insisting she had
+# paws and a cub's build.
+#
+# The reference image already says what the character is. The style must only say what
+# it is DOING. Anything here that names a species, a build or an anatomy is a claim
+# about a mascot we may not have.
 STYLE_PRESENTER = (
-    # PROPORTIONS FIRST. Qwen will happily slim the cub into a lanky humanoid if
-    # you only describe the costume — the legs came back thin and long. Restate
-    # the build every time; only the OUTFIT is allowed to change.
-    "exactly the same body proportions as the reference character: a short "
-    "chunky cub with a big head, round stocky torso and short thick legs, "
-    "small and stubby, chibi proportions, "
-    # The feet used to be nailed to the floor. That rule only ever existed to
-    # stop Wan-S2V mangling legs it could not animate; the video stage no longer
-    # uses S2V, so the mascot is free to be fun again.
+    # PROPORTIONS FIRST — but by REFERENCE, not by description. Qwen will slim the
+    # character into a lanky humanoid if you only describe the costume (the legs came
+    # back thin and long), so the build is restated every time; only the OUTFIT changes.
+    "exactly the same character as the reference image: the same face, the same body "
+    "proportions, the same build, the same species — only the clothes and the props "
+    "change, chibi proportions, big head, small body, "
     "full body visible, dynamic playful action pose, exaggerated cartoon body "
     "language, mid-motion, big readable facial expression, mouth open "
-    "mid-sentence, both paws clearly interacting with the prop, "
+    "mid-sentence, both hands clearly interacting with the prop, "
     "props held cleanly in front of the body, nothing intersecting, "
     "bold vivid solid color background, crisp studio lighting, high contrast, "
     "3d character key art"
 )
 
 NEGATIVE_PRESENTER = (
-    # Proportion drift: the cub kept coming back with long thin legs and a slim
+    # Species drift: told the character had "paws" and a "cub" build, Qwen gave a human
+    # child MOUSE EARS. The style prompt no longer claims a species — and the negative
+    # now bans the parts it used to invite.
+    "animal ears on a human, mouse ears, cat ears, whiskers, snout, muzzle, tail, "
+    "fur on a human face, paws instead of hands, changed species, different creature, "
+    # Proportion drift: the character kept coming back with long thin legs and a slim
     # body. The build is fixed; only the costume changes.
     "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
     "tall slim body, adult body, human proportions, changed body shape, "
     "different character, stretched torso, "
     # Geometry intersection: a paw went straight THROUGH the hat brim.
-    "hand passing through object, paw clipping through hat, limbs intersecting "
+    "hand passing through object, hand clipping through hat, limbs intersecting "
     "props, merged geometry, object embedded in body, overlapping shapes, "
     "hand inside prop, "
     "deformed legs, broken limbs, twisted body, extra legs, bent backwards, "
@@ -471,7 +485,7 @@ _SCENE_BANNED = (
     "heroin", "cigarette", "smoking", "alcohol", "beer", "vodka", "whiskey",
 )
 
-_NEUTRAL_SCENE = ("the mascot character shrugging with both paws up, "
+_NEUTRAL_SCENE = ("the mascot character shrugging with both hands up, "
                   "one eyebrow raised, puzzled curious expression")
 
 
@@ -643,7 +657,8 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
         )
         for attempt in (1, 2):
             raw = _call_llm(prompt, _SCENE_SYS, role="creative")
-            scene = keep_the_mascot(_clean_scene(_extract_json(raw).get("scene") or ""))
+            scene = keep_the_body(
+                keep_the_mascot(_clean_scene(_extract_json(raw).get("scene") or "")))
             if not scene:
                 continue
             bad = scene_violation(scene)
@@ -691,7 +706,11 @@ _EXPLAINER_SYS = (
     "- Use STRONG ACTION VERBS and put the whole body into it: showing, waving, "
     "scooping, pointing, lifting, hauling, launching, dodging, juggling.\n"
     "- Hold the prop CLEARLY, out in front of the body. It must never overlap or "
-    "pass through the mascot — a paw once went straight through a hat brim.\n"
+    "pass through the mascot — a hand once went straight through a hat brim.\n"
+    "- NEVER say what the mascot is made of or what body parts it has. Do not write "
+    "'paw', 'snout', 'tail', 'fur' or any other animal part: the mascot may be a child, "
+    "and telling the artist it has paws is how a child ends up with mouse ears. Say "
+    "'hand', 'holding', 'the character'.\n"
     "- FULL BODY in frame, FACING THE CAMERA, mouth visible, caught mid-sentence, "
     "talking to the viewer WHILE doing the action.\n"
     "- Only the COSTUME and the PROP change between shots. NEVER describe the "
@@ -711,7 +730,7 @@ _EXPLAINER_SYS = (
     'waist-up, lifting a dripping honeycomb and waving it, honey splashing, '
     'proud excited grin"}\n'
     '{"scene": "the mascot character dressed as a scuba diver facing the camera, '
-    'spinning to point both paws at a glowing jellyfish, eyes wide with wonder"}'
+    'spinning to point both hands at a glowing jellyfish, eyes wide with wonder"}'
 )
 
 
@@ -745,6 +764,64 @@ def species_swap(scene: str) -> Optional[str]:
     """The creature this scene would turn the mascot INTO, or None."""
     m = _AS_A_CREATURE.search(scene or "")
     return m.group(1).lower() if m else None
+
+
+# Animal ANATOMY, handed to the artist as fact. "Mid-balance on one paw" produced a
+# human child with mouse ears — the model reasons backwards from the body part to the
+# creature it belongs to. The mascot's species lives in the reference image, and nothing
+# in a prompt is allowed to contradict it.
+_ANIMAL_PARTS = {
+    "paw": "hand", "paws": "hands", "snout": "nose", "muzzle": "face",
+    "tail": "back", "fur": "clothes", "whiskers": "face", "hooves": "feet",
+    "hoof": "foot", "claws": "fingers", "beak": "mouth", "wings": "arms",
+}
+_PART_RE = re.compile(r"\b(" + "|".join(_ANIMAL_PARTS) + r")\b", re.I)
+
+
+_ANIMAL_NOUN = re.compile(r"\b(" + "|".join(_CREATURES) + r")s?\b", re.I)
+
+
+def _clauses(scene: str) -> list:
+    """Split on commas. A scene is a comma-separated list of beats, and each beat has
+    exactly one subject — which is what lets us tell whose paw is whose."""
+    out, i = [], 0
+    for part in (scene or "").split(","):
+        out.append((i, part))
+        i += len(part) + 1
+    return out
+
+
+def animal_parts(scene: str) -> list:
+    """Animal body parts the scene claims THE MASCOT has.
+
+    A lesson about living things legitimately puts a real puppy in the frame, and that
+    puppy is allowed its tail. Only a part in a clause that names no animal can belong
+    to the mascot — "mid-balance on one paw" is hers; "puppy wagging its tail" is his.
+    """
+    found = set()
+    for _, clause in _clauses(scene):
+        if _ANIMAL_NOUN.search(clause):
+            continue                      # this beat is about a real animal; its body is its own
+        found |= {m.group(1).lower() for m in _PART_RE.finditer(clause)}
+    return sorted(found)
+
+
+def keep_the_body(scene: str) -> str:
+    """Strip animal anatomy the scene handed the MASCOT. The reference image is the only
+    thing allowed to say what her body is — told she has paws, Qwen reasoned backwards to
+    the creature paws belong to and drew a human child with mouse ears."""
+    if not animal_parts(scene):
+        return scene
+    out, found = [], []
+    for _, clause in _clauses(scene):
+        if _ANIMAL_NOUN.search(clause):
+            out.append(clause)            # leave the puppy's tail on the puppy
+            continue
+        found += [m.group(1).lower() for m in _PART_RE.finditer(clause)]
+        out.append(_PART_RE.sub(lambda m: _ANIMAL_PARTS[m.group(1).lower()], clause))
+    log.warning(f"scene gave the mascot {', '.join(sorted(set(found)))} — the reference "
+                f"decides what body she has, not the scene")
+    return ",".join(out)
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -796,7 +873,7 @@ def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
             # costume — Qwen-Edit renders a puppy, keeps the clothes, and the
             # character is gone. Telling the model not to is not enough; this is the
             # check.
-            scene = keep_the_mascot(scene)
+            scene = keep_the_body(keep_the_mascot(scene))
             bad = scene_violation(scene)
             if not bad:
                 log.info(f"Mascot explainer scene: {scene}")
