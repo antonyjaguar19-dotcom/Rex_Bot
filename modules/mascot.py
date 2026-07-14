@@ -1004,11 +1004,39 @@ def _tidy(scene: str) -> str:
     return out
 
 
+# Toys and animals look the same to a diffusion model unless you insist otherwise. Asked
+# for "a doll in one hand and a puppy in the other", Qwen drew TWO PLUSH TOY DOGS — and
+# the line was "why doesn't your doll need to eat like Jimmy does?", whose entire point
+# is that one of them is alive and the other is not. A lesson that cannot show the
+# difference cannot teach it.
+_TOY_WORDS = re.compile(r"\b(?:doll|toy|teddy|stuffed|plush|puppet|figurine)\b", re.I)
+_LIVE_ANIMAL = re.compile(
+    r"\b(?:real |live |living )?(" + "|".join(_CREATURES) + r")s?\b", re.I)
+
+
+def alive_looks_alive(scene: str) -> str:
+    """If a scene puts a real animal next to a toy, insist the animal looks alive."""
+    s = scene or ""
+    if not (_TOY_WORDS.search(s) and _LIVE_ANIMAL.search(s)):
+        return scene
+    if re.search(r"\breal (?:live )?\w+|\blive \w+|wagging|blinking|breathing", s, re.I):
+        return scene                       # the scene already says so
+    def _mark(m):
+        word = m.group(0)
+        if re.match(r"(?:real|live|living)\b", word, re.I):
+            return word                    # already said
+        return f"real live {m.group(1)}"   # the article, if any, is already in the text
+    out = _LIVE_ANIMAL.sub(_mark, s, count=1)
+    out = f"{out.rstrip(' ,')}, the {_LIVE_ANIMAL.search(s).group(1)} alive and moving"
+    log.info("scene put a real animal beside a toy — saying so, or both come back plush")
+    return _tidy(out)
+
+
 def clean_scene_for_the_mascot(scene: str) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway."""
-    return warm_face(one_focus(keep_it_dressed(
-        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))))
+    return alive_looks_alive(warm_face(one_focus(keep_it_dressed(
+        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene))))))))
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -1067,6 +1095,12 @@ _TEACHING_SYS = (
     "sun, no happy cloud, no cartoon eyes on a ball or a rock or a toy. Half of these "
     "lessons are about what is alive and what is not, and a grinning rock teaches a "
     "child the wrong answer.\n"
+    "- When the line CONTRASTS a living thing with a lifeless one, the two must be "
+    "UNMISTAKABLY different in the picture. Say 'a REAL LIVE puppy, wagging and "
+    "blinking' and 'a cloth rag doll, limp and still'. A scene that asked for 'a doll "
+    "in one hand and a puppy in the other' came back holding TWO PLUSH TOY DOGS — both "
+    "read as toys, and the one contrast the whole line is built on was gone. The living "
+    "thing is ALIVE and MOVING; the toy is obviously a toy.\n"
     "- ORDINARY CLOTHES. Her own everyday clothes, in nearly every shot. A costume only "
     "when the costume itself TEACHES the line — a chef's hat does not explain that "
     "living things grow, and a toy repairman's outfit does not explain that toys are "

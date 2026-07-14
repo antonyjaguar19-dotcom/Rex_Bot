@@ -316,3 +316,37 @@ def test_a_good_scene_survives_every_guard_intact():
     scene = ("the mascot character facing the camera holding up a doll in one hand, "
              "a toy car on the floor beside her, shaking her head with a warm knowing smile")
     assert mas.clean_scene_for_the_mascot(scene) == scene
+
+
+def test_a_real_animal_beside_a_toy_is_told_to_look_alive():
+    # Line 10 of the first lesson: "why doesn't your doll Ammu need to eat like Jimmy
+    # does?" — its ENTIRE point is that one of them is alive and the other is not. The
+    # scene asked for "a doll in one hand and a puppy in the other" and Qwen drew TWO
+    # PLUSH TOY DOGS. Both read as toys, and the contrast the line is built on was gone.
+    # A lesson that cannot show the difference cannot teach it.
+    scene = ("the mascot character facing the camera holding a doll named Ammu in one "
+             "hand and a puppy in the other, curious")
+    out = mas.alive_looks_alive(scene)
+    assert "real live puppy" in out
+    assert "alive and moving" in out
+    assert "doll named Ammu" in out       # the toy is untouched
+
+
+def test_an_animal_with_no_toy_beside_it_is_left_alone():
+    # Nothing to contrast with — no need to labour the point, and every word added to a
+    # scene is a word competing with the ones that matter.
+    scene = "the mascot character kneeling beside a happy puppy, stroking its back, laughing"
+    assert mas.alive_looks_alive(scene) == scene
+    assert mas.alive_looks_alive("the mascot character holding a toy car, smiling") == \
+        "the mascot character holding a toy car, smiling"
+
+
+def test_a_scene_that_already_says_it_is_not_said_twice():
+    scene = "the mascot character holding a doll and a real live puppy, wagging, smiling"
+    assert mas.alive_looks_alive(scene) == scene
+
+
+def test_alive_looks_alive_runs_in_the_full_guard():
+    out = mas.clean_scene_for_the_mascot(
+        "the mascot character holding a doll in one hand and a puppy in the other")
+    assert "real live puppy" in out
