@@ -1046,10 +1046,14 @@ def write_lesson_action(book_id: str, topic_id: str, seconds: float, refresh_cb)
     _bg_gpu("lesson script", worker)
 
 
-def prepare_lesson_action(lesson_id: str, refresh_cb):
+def prepare_lesson_action(lesson_id: str, refresh_cb, redo: bool = False):
     """Voice the lesson and draw a picture for every line. Renders no video.
 
     Ends at the GATE: you look at the pictures and tick the ones worth animating.
+
+    `redo` is "these pictures are wrong, give me different ones": the scenes are written
+    again and the seed moves. Without it the button redrew the SAME scene at the SAME
+    fixed seed and handed back byte-identical images after twenty minutes.
     """
     if not lesson_id:
         ui.notify("Write a lesson first.", type="warning")
@@ -1064,7 +1068,8 @@ def prepare_lesson_action(lesson_id: str, refresh_cb):
             from modules import lesson_pipeline as lp
             from modules import lesson_writer as lw
             lesson = lw.load_lesson(lesson_id)
-            lp.prepare_lesson(lesson, progress_cb=lambda m: S.push(f"· {m}"))
+            lp.prepare_lesson(lesson, progress_cb=lambda m: S.push(f"· {m}"),
+                              redo=redo)
         except Exception as e:
             S.push(f"❌ {e}")
         finally:
@@ -4333,8 +4338,21 @@ def main_page():
                         .style("width: 22px;")
 
                     if prepared and b.get("still") and Path(b["still"]).exists():
-                        ui.image(_media_url(Path(b["still"]))) \
-                            .style("width: 104px; border-radius: 6px;")
+                        # The gate asks you to LOOK at the picture, so it has to be
+                        # lookable. At 104px every defect we have found this week —
+                        # mouse ears, emoji eyes, a bare midriff, a different child
+                        # entirely — is a few pixels wide and invisible. Click it.
+                        _src = _media_url(Path(b["still"]))
+                        _big = ui.dialog()
+                        with _big, ui.card().classes("p-1"):
+                            ui.image(_src).style("width: min(90vw, 1100px);")
+                            ui.label(b.get("mascot_scene") or "") \
+                                .classes("text-xs opacity-70 p-2")
+                        ui.image(_src) \
+                            .style("width: 104px; border-radius: 6px; cursor: zoom-in;") \
+                            .on("click", lambda _=None, d=_big: d.open()) \
+                            .tooltip("Click to see it full size — this is the picture "
+                                     "the child will be looking at.")
 
                     ui.element("span").classes("rex-badge rex-badge-mint") \
                         ._props["innerHTML"] = b["kind"]
@@ -4382,9 +4400,11 @@ def main_page():
                                                                     full_refresh)) \
                         .classes("rex-btn-primary")
                     ui.button("🔁 Redo the pictures",
-                              on_click=lambda: prepare_lesson_action(S.lesson_id,
-                                                                     full_refresh)) \
-                        .props("flat dense")
+                              on_click=lambda: prepare_lesson_action(
+                                  S.lesson_id, full_refresh, redo=True)) \
+                        .props("flat dense") \
+                        .tooltip("Writes NEW scenes and draws them at a new seed. The "
+                                 "voice takes are kept — only the pictures change.")
 
             if lesson.get("video") and Path(lesson["video"]).exists():
                 ui.video(_media_url(Path(lesson["video"]))) \

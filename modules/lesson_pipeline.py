@@ -26,6 +26,7 @@ level down: same cloned mascot, same short-take guard, no budget. Pinned by
 tests/test_lesson_budget.py.
 """
 
+import json
 import logging
 import shutil
 import time as _t
@@ -108,16 +109,51 @@ def _voice_with_preset(narrations: list, out_dir: Path, _p) -> list:
     return wavs
 
 
+def _reusable_takes(narrations: list, audio_dir: Path) -> list:
+    """The voice takes on disk, IF they are still the takes these words need.
+
+    A take is stale the moment its line is edited, and only then. The words are written
+    beside the audio when it is recorded, so this is an exact check, not a guess — a
+    length or mtime heuristic would happily keep a take of the wrong sentence.
+    """
+    manifest = audio_dir / "spoken.json"
+    if not manifest.is_file():
+        return []
+    try:
+        said = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if said != narrations:
+        return []
+    wavs = [audio_dir / f"beat_{i:02d}.wav" for i in range(len(narrations))]
+    if not all(w.is_file() and w.stat().st_size for w in wavs):
+        return []
+    return wavs
+
+
+def _remember_takes(narrations: list, audio_dir: Path) -> None:
+    """Write down which words these takes are of."""
+    from modules.file_utils import atomic_write_json
+    atomic_write_json(audio_dir / "spoken.json", narrations)
+
+
 # ==============================================================================
 # PHASE 1 — scenes, voice, stills. Then STOP.
 # ==============================================================================
 
 def prepare_lesson(lesson: dict,
-                   progress_cb: Optional[Callable[[str], None]] = None) -> dict:
+                   progress_cb: Optional[Callable[[str], None]] = None,
+                   redo: bool = False) -> dict:
     """Voice the lesson and draw a still for every beat. Renders no video.
 
     Ends by handing the lesson back with `stage="stills"` — the gate is next, and the
     GPU is free while you look at the pictures.
+
+    `redo=True` means "these pictures are wrong, give me different ones". It throws the
+    scenes away so they are WRITTEN AGAIN, and moves the seed. Without both, "Redo the
+    pictures" was a twenty-minute no-op: the scene was kept (the code skips a beat that
+    already has one) and the seed is a fixed 4000+i, so Qwen redrew the identical image
+    and the button appeared to do nothing at all.
     """
     def _p(msg: str):
         log.info(msg)
@@ -142,6 +178,11 @@ def prepare_lesson(lesson: dict,
 
     # 1. The scenes — the mascot, in costume, doing what this line is about. Ollama is
     #    on the card for this and nothing else, and is unloaded before the pictures.
+    if redo:
+        for b in beats:
+            b["mascot_scene"] = ""
+        lesson["still_take"] = int(lesson.get("still_take", 0)) + 1
+
     _p(f"🎭 writing {len(beats)} scenes for {mascot.active_mascot_name()}…")
     with gpu_memory.llm():
         for i, b in enumerate(beats):
@@ -153,9 +194,19 @@ def prepare_lesson(lesson: dict,
 
     # 2. The voice. _voice_beats_clone, NOT _voice_beats_mascot — see the module note:
     #    the wrapper would trim this lesson's pace to fit a 40-second reel.
-    _p("🎙️ voicing the lesson in the mascot's own voice…")
     narrations = [b["narration"] for b in beats]
-    wavs = fp._voice_beats_clone(narrations, audio_dir, _p)
+
+    # Redoing the PICTURES must not re-record the VOICE. The takes are only stale if the
+    # words changed, and a clone re-read of 13 lines is minutes of GPU for an identical
+    # result — worse, it is minutes of a stochastic model that might collapse on a line
+    # this time (facts_pipeline._short_takes) and drop the whole lesson to a preset voice
+    # as the price of fixing one picture.
+    wavs = _reusable_takes(narrations, audio_dir)
+    if wavs:
+        _p(f"♻️ keeping {len(wavs)} voice takes — the words have not changed")
+    else:
+        _p("🎙️ voicing the lesson in the mascot's own voice…")
+        wavs = fp._voice_beats_clone(narrations, audio_dir, _p)
     if not wavs:
         # The clone collapses on a line now and then and returns None for the whole
         # lesson rather than shipping a blip (facts_pipeline._short_takes). Fall back
@@ -166,6 +217,7 @@ def prepare_lesson(lesson: dict,
     if not wavs:
         raise LessonRenderError(
             "the lesson could not be voiced. Nothing was rendered.")
+    _remember_takes(narrations, audio_dir)
 
     durations = [fp._probe_dur(Path(w)) for w in wavs]
     total = sum(durations)
@@ -186,8 +238,9 @@ def prepare_lesson(lesson: dict,
             # vegetables has to look like vegetables, not candy — so a lesson pays
             # the extra minute a shot. A facts reel does not, and stays fast.
             got = mascot.render_scene(b["mascot_scene"], sp, aspect=ASPECT,
-                                      seed=4000 + i, presenter=True,
-                                      full_quality=True)
+                                      seed=4000 + i + 1000 * int(
+                                          lesson.get("still_take", 0)),
+                                      presenter=True, full_quality=True)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a
                 # lesson with a hole in it, and it must not be discovered in the file.

@@ -243,3 +243,52 @@ def test_a_rendered_lesson_can_go_back_through_the_gate():
     src = inspect.getsource(lp.approve)
     assert '"rendered"' in src, "a rendered lesson must be re-approvable"
     assert '("stills", "approved", "rendered")' in src
+
+
+def test_redo_the_pictures_actually_redraws_them(tmp_path, monkeypatch):
+    # "🔁 Redo the pictures" was a twenty-minute NO-OP. prepare_lesson skips a beat that
+    # already has a scene (`if not b.get("mascot_scene")`) and the still's seed is a
+    # fixed 4000+i — so it rewrote nothing, redrew at the same seed, and handed back
+    # byte-identical images. The button appeared to do nothing, because it did nothing.
+    import inspect
+    from modules import lesson_pipeline as lp
+
+    src = inspect.getsource(lp.prepare_lesson)
+    assert 'b["mascot_scene"] = ""' in src, "redo must throw the old scenes away"
+    assert "still_take" in src, "redo must move the seed"
+    assert "redo: bool = False" in inspect.signature(lp.prepare_lesson).__str__() or \
+        "redo" in inspect.signature(lp.prepare_lesson).parameters
+
+
+def test_redoing_the_pictures_keeps_the_voice(tmp_path):
+    # Re-recording 13 lines to fix one picture is minutes of GPU for an identical
+    # result — and worse, the clone is stochastic: it might collapse on a line THIS
+    # time and drop the whole lesson to a preset voice as the price of a redraw.
+    from modules import lesson_pipeline as lp
+
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    lines = ["Hello little one!", "Living things grow."]
+    for i in range(2):
+        (audio / f"beat_{i:02d}.wav").write_bytes(b"RIFF")
+
+    assert lp._reusable_takes(lines, audio) == []      # no manifest yet
+    lp._remember_takes(lines, audio)
+    assert len(lp._reusable_takes(lines, audio)) == 2  # same words -> keep the takes
+
+    # edit a line and the take of the OLD sentence must not be kept
+    assert lp._reusable_takes(["Hello little one!", "Toys are not alive."], audio) == []
+    # a missing wav is not reusable either
+    (audio / "beat_01.wav").unlink()
+    assert lp._reusable_takes(lines, audio) == []
+
+
+def test_the_gate_shows_a_picture_you_can_actually_judge():
+    # At 104px, every defect found in this lesson — mouse ears, emoji eyes, a bare
+    # midriff, a different child entirely — is a few pixels across and invisible. The
+    # gate ASKS you to look; it has to be lookable.
+    import inspect
+    from modules import dashboard_nicegui as dash
+    src = inspect.getsource(dash)
+    assert "cursor: zoom-in" in src
+    assert "redo=True" in src, "the Redo button must ask for a real redo"
