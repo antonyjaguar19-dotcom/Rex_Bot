@@ -643,7 +643,7 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
         )
         for attempt in (1, 2):
             raw = _call_llm(prompt, _SCENE_SYS, role="creative")
-            scene = _clean_scene(_extract_json(raw).get("scene") or "")
+            scene = keep_the_mascot(_clean_scene(_extract_json(raw).get("scene") or ""))
             if not scene:
                 continue
             bad = scene_violation(scene)
@@ -675,6 +675,12 @@ _EXPLAINER_SYS = (
     "- Put the mascot in a COSTUME or ROLE that fits THIS fact, and make it "
     "ACTIVELY DEMONSTRATE the fact with one concrete prop — it must be DOING "
     "something, mid-motion, never just standing.\n"
+    "- THE MASCOT NEVER BECOMES SOMETHING ELSE. It is always the same character. It "
+    "may WEAR things and HOLD things — a chef's hat, a lab coat, a cape, a ladle — but "
+    "it is never 'dressed as' an animal, a creature or another being, and its body, "
+    "species and face never change. To show an animal, put the animal BESIDE it: "
+    "'the mascot character kneeling beside a puppy, holding out a bone' — never 'the "
+    "mascot character dressed as a puppy'.\n"
     "  Fact 'bees make honey' -> 'the mascot character in a beekeeper suit "
     "scooping dripping honey from a jar and holding up the dripping dipper'.\n"
     "  Fact 'a bee flaps 230 times a second' -> 'the mascot character dressed as "
@@ -709,6 +715,54 @@ _EXPLAINER_SYS = (
 )
 
 
+# The mascot may not be TURNED INTO something else — and the prompt saying so is not
+# enough. Measured on a real lesson: asked to illustrate "living things eat, grow and
+# move", the model wrote "the mascot character dressed as a playful puppy, mid-leap
+# with a chew toy in mouth", and Qwen-Edit did exactly that. It kept the child's
+# clothes and replaced the child with a dog. The character was simply gone.
+#
+# A costume is a hat, a coat, a cape. A creature is not a costume.
+_CREATURES = (
+    "puppy", "dog", "cat", "kitten", "bird", "duck", "chicken", "hen", "cow", "horse",
+    "pig", "sheep", "goat", "rabbit", "bunny", "mouse", "rat", "squirrel", "monkey",
+    "elephant", "lion", "tiger", "bear", "wolf", "fox", "deer", "frog", "toad",
+    "snake", "lizard", "turtle", "tortoise", "fish", "shark", "whale", "dolphin",
+    "octopus", "crab", "bee", "wasp", "ant", "spider", "butterfly", "caterpillar",
+    "worm", "snail", "penguin", "owl", "eagle", "parrot", "peacock", "dinosaur",
+    "dragon", "unicorn", "jaguar", "leopard", "cheetah", "giraffe", "zebra",
+    "kangaroo", "panda", "koala", "hippo", "rhino", "crocodile", "camel", "donkey",
+)
+
+# Up to two adjectives may sit between the article and the animal — the scene that
+# actually broke a render said "dressed as a PLAYFUL puppy", and a regex anchored
+# straight onto the noun sailed past it.
+_AS_A_CREATURE = re.compile(
+    r"\b(?:dressed|disguised|costumed)?\s*as\s+(?:a|an|the)\s+(?:\w+\s+){0,2}?(" +
+    "|".join(_CREATURES) + r")s?\b", re.I)
+
+
+def species_swap(scene: str) -> Optional[str]:
+    """The creature this scene would turn the mascot INTO, or None."""
+    m = _AS_A_CREATURE.search(scene or "")
+    return m.group(1).lower() if m else None
+
+
+def keep_the_mascot(scene: str) -> str:
+    """Rewrite a scene that would replace the mascot with an animal.
+
+    The animal is not dropped — it is moved OUT of the mascot and put beside it, which
+    is what the lesson wanted anyway: the mascot SHOWING you a puppy teaches the same
+    thing as the mascot BEING one, and it is still the mascot.
+    """
+    creature = species_swap(scene)
+    if not creature:
+        return scene
+    fixed = _AS_A_CREATURE.sub(f"standing beside a {creature}", scene, count=1)
+    log.warning(f"scene would have turned the mascot into a {creature}; "
+                f"put the {creature} beside it instead")
+    return fixed
+
+
 def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
     """A costumed, camera-facing mascot scene that ILLUSTRATES one fact.
 
@@ -738,6 +792,11 @@ def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
             scene = _clean_scene(got)
             if not scene:
                 continue
+            # The mascot must survive its own scene. "Dressed as a puppy" is not a
+            # costume — Qwen-Edit renders a puppy, keeps the clothes, and the
+            # character is gone. Telling the model not to is not enough; this is the
+            # check.
+            scene = keep_the_mascot(scene)
             bad = scene_violation(scene)
             if not bad:
                 log.info(f"Mascot explainer scene: {scene}")
@@ -759,7 +818,8 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  seed: Optional[int] = None,
                  reference_images: Optional[list] = None,
                  headline: str = "",
-                 presenter: bool = False) -> Optional[Path]:
+                 presenter: bool = False,
+                 full_quality: bool = False) -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -809,6 +869,29 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
                 seed=seed, negative_prompt=negative,
                 reference_images=[str(p) for p in refs],
+                # full_quality = 20 steps at cfg 2.5, instead of the 4-step Lightning
+                # LoRA at cfg 1.0. Two things change, and only one of them is what you
+                # would expect.
+                #
+                # The negative prompt starts working. Lightning is DISTILLED to run at
+                # cfg 1.0, and at cfg 1.0 there is no classifier-free guidance at all —
+                # the model never looks at the negative conditioning. So
+                # NEGATIVE_PRESENTER's ban on "t-pose, arms spread wide, stiff
+                # symmetrical standing pose" was inert. The ban was written; the sampler
+                # was not listening.
+                #
+                # But measured A/B (same scene, same seed, same reference), that does
+                # NOT reliably fix the pose: on one scene the fast path was the more
+                # dynamic of the two. The T-pose was coming from somewhere else — a
+                # scene that turned the mascot into an animal (see keep_the_mascot) and
+                # a reference image that is itself a T-pose.
+                #
+                # What full_quality DOES buy is the PROPS: a plate of sliced vegetables
+                # instead of candy-coloured blobs. That matters in a lesson, where the
+                # prop is the thing being taught, and not much on a facts reel, where
+                # the mascot is the joke. So lessons ask for it (~100s a still) and
+                # facts stay fast (~27s).
+                use_lightning=not full_quality,
             )
         else:
             # The USO Backend CLASS reads lora_strength from models.json and

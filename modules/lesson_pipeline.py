@@ -173,14 +173,21 @@ def prepare_lesson(lesson: dict,
 
     # 3. The stills — one per beat, the mascot presenting, 16x9. Qwen-Edit stays warm
     #    for the whole batch (a cold load is ~4 min, a warm render ~20s).
-    _p(f"🖼️ drawing {len(beats)} pictures…")
+    # ~100s each at full quality — say so, rather than let it look hung.
+    _p(f"🖼️ drawing {len(beats)} pictures (~{len(beats) * 100 / 60:.0f} min; a lesson "
+       f"draws at full quality so the props are real)…")
     gpu_memory.acquire(gpu_memory.QWEN_EDIT)
     stills = []
     try:
         for i, b in enumerate(beats):
             sp = stills_dir / f"still_{i:02d}.png"
+            # full_quality: 20 steps at cfg 2.5 (~100s) instead of the 4-step
+            # Lightning path (~27s). A lesson's prop IS the teaching — a plate of
+            # vegetables has to look like vegetables, not candy — so a lesson pays
+            # the extra minute a shot. A facts reel does not, and stays fast.
             got = mascot.render_scene(b["mascot_scene"], sp, aspect=ASPECT,
-                                      seed=4000 + i, presenter=True)
+                                      seed=4000 + i, presenter=True,
+                                      full_quality=True)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a
                 # lesson with a hole in it, and it must not be discovered in the file.
