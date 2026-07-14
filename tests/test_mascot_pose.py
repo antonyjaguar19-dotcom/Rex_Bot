@@ -366,8 +366,10 @@ def test_the_mascot_is_never_empty_handed():
     idle = ("the mascot character standing beside a plant, a puppy, and her friend, "
             "facing the camera, smiling")
     out = mas.never_empty_handed(idle)
-    assert "one arm raised high" in out
+    assert "waving one arm high" in out
     assert "the other hand resting at her side" in out   # ASYMMETRIC, so not a T-pose
+    # and the repair must satisfy the guard's own test, or it appends on every pass
+    assert mas.never_empty_handed(out) == out
 
     for busy in (
         "the mascot character kneeling beside a puppy, stroking its back, laughing",
@@ -382,7 +384,7 @@ def test_the_mascot_is_never_empty_handed():
 def test_never_empty_handed_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
         "the mascot character standing beside a plant and a puppy, facing the camera")
-    assert "one arm raised high" in out
+    assert "waving one arm high" in out
 
 
 def test_the_writer_is_told_the_rule_that_matters_most():
@@ -390,3 +392,31 @@ def test_the_writer_is_told_the_rule_that_matters_most():
     assert "HER HANDS ARE ALWAYS BUSY" in sysp
     assert "T-POSE" in sysp
     assert "Idle hands go home to the reference photo" in sysp
+
+
+def test_every_guard_is_idempotent():
+    # A scene is cleaned when it is written AND again when it is redrawn. If a guard's
+    # own repair does not satisfy the guard's own test, it appends every single time.
+    # _BUSY_DEFAULT said "a cheerful wave" (noun) while _HANDS_BUSY only knew "waving"
+    # (verb) — so the guard ran, wrote its fix, and STILL considered the scene idle.
+    for scene in (
+        "the mascot character facing the camera, smiling widely",
+        "the mascot character standing beside a plant and a puppy",
+        "the mascot character with arms outstretched to the sides, grinning",
+        "the mascot character holding up a doll in one hand, laughing",
+    ):
+        once = mas.clean_scene_for_the_mascot(scene)
+        twice = mas.clean_scene_for_the_mascot(once)
+        assert once == twice, f"guard is not idempotent:\n  1x: {once}\n  2x: {twice}"
+
+
+def test_outstretched_arms_are_a_t_pose_too():
+    # The real scene the model wrote: "arms outstretched to the sides". _ARMS_WIDE knew
+    # "arms stretched" and "arms out" but not the single word "outstretched", so the
+    # T-pose sailed past and never_empty_handed then bolted a raised arm onto it —
+    # leaving a scene that asked for BOTH arms wide AND one arm up.
+    for scene in ("the mascot character with arms outstretched to the sides, smiling",
+                  "the mascot character, outstretched arms, grinning at the camera"):
+        out = mas.clean_scene_for_the_mascot(scene)
+        assert "outstretched" not in out, out
+        assert "waving one arm high" in out

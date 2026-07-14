@@ -968,8 +968,9 @@ def warm_face(scene: str) -> str:
 # becomes a real, asymmetric gesture.
 _STANDING_BETWEEN = re.compile(r"\bstanding between\b", re.I)
 _ARMS_WIDE = re.compile(
-    r",?\s*\b(?:standing |with )?(?:her |both )?arms (?:spread|stretched|held|out|open|"
-    r"wide)(?: wide| out| open)?(?: to (?:the |both )?sides?)?\b"
+    r",?\s*\b(?:standing |with )?(?:her |both )?arms (?:spread|stretched|outstretched|"
+    r"held|out|open|wide)(?: wide| out| open)?(?: to (?:the |both )?sides?)?\b"
+    r"|,?\s*\b(?:both |her )?outstretched arms\b"
     r"|,?\s*\bboth arms (?:out|wide|raised|lifted|open)\b"
     r"|,?\s*\b(?:wide )?open arms\b", re.I)
 
@@ -1041,10 +1042,13 @@ def alive_looks_alive(scene: str) -> str:
 # So the rule is not about props or sides or counts. It is: her hands are always busy.
 _HANDS_BUSY = re.compile(
     r"\b(?:hold\w*|lift\w*|carry\w*|clutch\w*|grip\w*|hug\w*|cuddl\w*|stroking|"
-    r"petting|pat\w*|scratch\w*|waving|point\w*|show\w*|offering|feeding|reach\w*|"
+    r"petting|pat\w*|scratch\w*|wav\w*|wave|point\w*|show\w*|offering|feeding|reach\w*|"
     r"touch\w*|push\w*|pull\w*|scoop\w*|balanc\w*|cover\w*|clap\w*|counting)\b", re.I)
 
-_BUSY_DEFAULT = ("one arm raised high in a cheerful wave, the other hand resting at "
+# _BUSY_DEFAULT must itself satisfy _HANDS_BUSY, or the guard is not idempotent: run it
+# twice and it appends twice. It said "a cheerful wave" (the noun) while the pattern only
+# knew "waving" (the verb), so a scene came out of the guard still looking idle.
+_BUSY_DEFAULT = ("waving one arm high in a cheerful hello, the other hand resting at "
                  "her side")
 
 
