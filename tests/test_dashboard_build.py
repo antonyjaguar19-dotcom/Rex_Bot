@@ -70,3 +70,56 @@ def test_the_facts_card_offers_nothing_but_the_mascot():
                and not ln.lstrip().startswith("#")]
     assert len(widgets) == 1 and "ui.select(" in widgets[0], \
         f"the Facts card should offer only the mascot picker, found: {widgets}"
+
+
+def test_the_mascot_card_offers_a_family(page):
+    # A lesson line that names someone — "when mummy hugs you" — can only SHOW them if
+    # this mascot has their picture. Without one they come back as a TWIN of the mascot,
+    # so they are left out of the shot instead.
+    #
+    # The Family button lives on a MASCOT CARD, and conftest's _no_gpu_mascot fixture
+    # points the shelf at an empty tmp dir — so the built page has no cards to hang it on.
+    # What the build proves is that the page still ASSEMBLES with the family code in it
+    # (the `page` fixture asserts no ERROR was logged during the build). The button itself
+    # is checked in the source, the same way the Facts card's widget count is.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    assert "Family (" in src, "no Family control on the mascot card"
+    assert "_open_family_dialog(" in src
+    assert len(page.elements) > 100, "and the page still builds"
+
+
+def test_the_family_dialog_uses_the_3x_upload_api():
+    # e.content / e.name is the NiceGUI 2.x API and only fails in the browser. 3.x gives
+    # e.file, and the save is AWAITED — so the handler has to be async.
+    import inspect
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def _open_family_dialog")
+    end = src.index("def render_mascots")
+    family = src[start:end]
+
+    assert "async def _up" in family, "an upload handler must be async — e.file.save is awaited"
+    assert "await e.file.save(" in family
+    assert "e.content" not in family, "e.content is the NiceGUI 2.x upload API"
+
+    # the GPU path never runs on the UI thread
+    assert "_bg_gpu(" in family and "_try_begin(" in family
+
+    # every per-row handler binds its row by DEFAULT ARGUMENT — closing over the loop
+    # variable gives every row the LAST relation
+    assert "_rel=rel" in family
+
+
+def test_the_family_is_in_the_cards_signature():
+    # The card shows "Family (2)". Fold the family into the signature or that count goes
+    # stale the moment you add a third — a count that never changes is a card that never
+    # redraws, which is exactly the bug _slot_sig was written to fix for the slots.
+    import inspect
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def _slot_sig")
+    end = src.index("if not _changed(\"mascots\"", start)
+    assert "_family_of(" in src[start:end]

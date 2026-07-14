@@ -3917,6 +3917,181 @@ def main_page():
     # clip, the card redraws, and it snaps back to showing the front image.
     _MASCOT_SLOT: dict = {}
 
+    def _family_of(mid: str) -> list:
+        """This mascot's family, or an empty shelf if anything is wrong with it."""
+        try:
+            from modules import cast
+            return cast.members(mid)
+        except Exception as e:              # pragma: no cover - a bad family is not fatal
+            log.warning(f"family unreadable for {mid}: {e}")
+            return []
+
+    def _open_family_dialog(mid: str, name: str) -> None:
+        """Mum, dad, grandparents, uncle, aunty — and a relation of your own.
+
+        Upload is the way in: you supply the picture. Generate is there because it is
+        what proved the whole idea (a drawn mother, handed to Qwen as a second reference,
+        came back as a real mother beside the child) but nothing depends on it.
+        """
+        from modules import cast
+
+        with ui.dialog() as dlg, ui.card().style("min-width: 720px; max-width: 92vw;"):
+            ui.label(f"👨‍👩‍👧 {name}'s family").classes("font-bold text-lg")
+            ui.label("A lesson line that names someone — “when mummy hugs you”, “you play "
+                     "with your friends” — can only SHOW them if this mascot has their "
+                     "picture. Without one they come back as a twin of the mascot, so "
+                     "they are left out of the shot instead.") \
+                .classes("text-xs opacity-70").style("max-width: 640px;")
+
+            body = ui.column().classes("w-full gap-1").style("margin-top: 8px;")
+
+            def _paint():
+                body.clear()
+                with body:
+                    for f in _family_of(mid):
+                        rel, label, path = f["relation"], f["label"], f["path"]
+                        with ui.row().classes("w-full items-center gap-3") \
+                                .style("border-bottom: 1px solid #ffffff14; padding: 6px 0;"):
+                            if path:
+                                ui.image(_asset_url(path)) \
+                                    .style("width: 64px; height: 64px; object-fit: cover; "
+                                           "border-radius: 6px;")
+                            else:
+                                ui.label("—").classes("text-xs opacity-40") \
+                                    .style("width: 64px; height: 64px; display: flex; "
+                                           "align-items: center; justify-content: center; "
+                                           "border: 1px dashed #ffffff33; border-radius: 6px;")
+
+                            with ui.column().classes("gap-0").style("width: 190px;"):
+                                ui.label(label).classes("text-sm")
+                                if f.get("prompt"):
+                                    ui.label(f["prompt"][:58]).classes("text-xs opacity-50")
+
+                            # Every handler binds its row's values as DEFAULT ARGUMENTS.
+                            # Closing over the loop variable gives every row the LAST
+                            # relation — the same trap the mascot cards document at the
+                            # `_mid=mid` idiom below.
+                            async def _up(e, _rel=rel, _label=label):
+                                tmp = None
+                                try:
+                                    d = cast.family_dir(mid)
+                                    d.mkdir(parents=True, exist_ok=True)
+                                    tmp = d / f"_upload{Path(e.file.name).suffix.lower()}"
+                                    await e.file.save(tmp)
+                                    cast.put_image(mid, _rel, src=tmp,
+                                                   filename=e.file.name)
+                                except Exception as ex:
+                                    ui.notify(f"❌ {ex}", type="negative")
+                                else:
+                                    ui.notify(f"🖼️ {_label} added", type="positive")
+                                finally:
+                                    if tmp:
+                                        tmp.unlink(missing_ok=True)
+                                _paint()
+                                full_refresh()
+
+                            ui.upload(label="Upload", on_upload=_up, auto_upload=True) \
+                                .props("flat dense accept=image/*").classes("w-40") \
+                                .tooltip("A picture of them — front-on, full body, plain "
+                                         "background works best. That is what identity "
+                                         "transfer keys on.")
+
+                            def _gen(_rel=rel, _label=label):
+                                if not _try_begin(f"{_label} portrait"):
+                                    return
+
+                                def worker():
+                                    try:
+                                        S.push(f"🎨 drawing {name}'s {_label}…")
+                                        got = cast.draw(mid, _rel)
+                                        S.push(f"✅ {_label} drawn" if got
+                                               else f"❌ {_label} could not be drawn")
+                                    except Exception as ex:
+                                        S.push(f"❌ {ex}")
+                                    finally:
+                                        _end()
+                                        full_refresh()
+                                _bg_gpu(f"{_label} portrait", worker)
+                                ui.notify(f"🎨 drawing {_label}… (~2 min)", type="ongoing")
+                                dlg.close()
+
+                            ui.button("Generate", on_click=_gen).props("flat dense") \
+                                .tooltip("Let the bot draw them (~2 min of GPU). Uploading "
+                                         "your own picture is the better way — you choose "
+                                         "who they are.")
+
+                            def _rm(_rel=rel, _label=label):
+                                cast.remove_member(mid, _rel)
+                                ui.notify(f"🗑️ {_label} removed", type="warning")
+                                _paint()
+                                full_refresh()
+
+                            if path or f.get("relation") not in cast.PRESETS:
+                                # A preset with no picture has nothing to remove. A
+                                # relation you ADDED can be removed even while empty —
+                                # otherwise a typo is permanent.
+                                ui.button("🗑️", on_click=_rm) \
+                                    .props("flat dense color=red") \
+                                    .tooltip("Remove them from this mascot's family")
+
+            _paint()
+
+            # --- a relation of your own ---------------------------------------
+            ui.separator().style("margin-top: 10px;")
+            ui.label("Add a relation").classes("text-sm font-bold") \
+                .style("margin-top: 6px;")
+            with ui.row().classes("w-full items-end gap-2"):
+                rel_in = ui.input(label="Relation", placeholder="Cousin Ravi") \
+                    .props("outlined dark dense").classes("w-48")
+                desc_in = ui.input(label="What do they look like?",
+                                   placeholder="a cheerful boy of about ten, short hair, "
+                                               "red t-shirt") \
+                    .props("outlined dark dense").classes("flex-1") \
+                    .tooltip("This is what the artist is told about them, so you choose "
+                             "who they are — and it is what the lesson says about them "
+                             "when they share a shot with the mascot.")
+
+                def _add():
+                    try:
+                        cast.add_relation(mid, rel_in.value, desc_in.value)
+                    except Exception as ex:
+                        ui.notify(f"❌ {ex}", type="negative")
+                        return
+                    ui.notify(f"👤 {rel_in.value} added — now give them a picture",
+                              type="positive")
+                    rel_in.set_value("")
+                    desc_in.set_value("")
+                    _paint()
+                    full_refresh()
+
+                ui.button("＋ Add", on_click=_add).classes("rex-btn-primary")
+
+            # --- the whole family ---------------------------------------------
+            with ui.row().classes("w-full justify-between items-center") \
+                    .style("margin-top: 12px;"):
+                def _wipe():
+                    with ui.dialog() as sure, ui.card():
+                        ui.label(f"Remove {name}'s whole family?").classes("font-bold")
+                        ui.label("Every portrait and every relation you added. Lessons "
+                                 "already rendered are untouched.") \
+                            .classes("text-xs opacity-70")
+                        with ui.row():
+                            ui.button("Cancel", on_click=sure.close).props("flat")
+
+                            def _yes():
+                                cast.remove_family(mid)
+                                ui.notify(f"🗑️ {name}'s family removed", type="warning")
+                                sure.close()
+                                _paint()
+                                full_refresh()
+                            ui.button("Remove all", on_click=_yes) \
+                                .props("flat color=red")
+                    sure.open()
+
+                ui.button("Remove family", on_click=_wipe).props("flat dense color=red")
+                ui.button("Done", on_click=dlg.close).classes("rex-btn-primary")
+        dlg.open()
+
     def render_mascots():
         try:
             ml.migrate()                    # old flat mascot -> the shelf, once
@@ -3948,6 +4123,12 @@ def main_page():
             for role in _MASCOT_ROLES:
                 p = ml.file_for(m["id"], role)
                 out.append((role, p.stat().st_mtime_ns if p else 0))
+            # ...and the FAMILY, or the "Family (2)" count on the card would go stale the
+            # moment you added a third. Same reasoning as the slots above: a count that
+            # never changes is a card that never redraws.
+            for f in _family_of(m["id"]):
+                p = f["path"]
+                out.append((f["relation"], p.stat().st_mtime_ns if p else 0))
             return tuple(out)
 
         # The SLOT a card is looking at is deliberately not in here: _show_slot()
@@ -4050,6 +4231,26 @@ def main_page():
                             dlg.open()
                         ui.button("🗑️", on_click=_delete).props("flat dense color=red") \
                             .tooltip("Delete this mascot")
+
+                    # --- THE FAMILY ---------------------------------------------
+                    # A lesson keeps naming a second person — "when mummy hugs you",
+                    # "you play with your friends". For a long time we could not draw
+                    # them: handed ONE identity reference, Qwen painted the mascot onto
+                    # every human in the frame and the mother came back as her TWIN.
+                    #
+                    # The backend takes image1..image3 and we were passing one. Give it a
+                    # picture of the mother and it draws a mother. The family belongs to
+                    # THIS mascot — a second mascot inheriting the first one's mother is
+                    # the twin problem with extra steps.
+                    def _family(_mid=mid, _name=m["name"]):
+                        _open_family_dialog(_mid, _name)
+
+                    _kin = sum(1 for f in _family_of(mid) if f["path"])
+                    ui.button(f"👨‍👩‍👧 Family ({_kin})", on_click=_family) \
+                        .props("flat dense").classes("w-full") \
+                        .tooltip("Mum, dad, grandparents, uncle, aunty — or a relation of "
+                                 "your own. A lesson line that names them can only show "
+                                 "them if this mascot has their picture.")
 
                     role_sel = ui.select(_MASCOT_ROLES,
                                          value=_MASCOT_SLOT.get(mid, "main"),

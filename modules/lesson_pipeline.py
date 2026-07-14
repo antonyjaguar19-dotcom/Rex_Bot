@@ -276,6 +276,12 @@ def prepare_lesson(lesson: dict,
     # care. A lesson is a film, and a child should not be told, five times, that the
     # scene has changed when it has not.
     backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
+
+    # Whose family. A second mascot inheriting the first one's mother is the twin problem
+    # with extra steps, so the family belongs to the mascot (assets/mascots/<id>/family/).
+    from modules import mascot_library as _ml
+    cast.migrate()                      # the old shared assets/cast/, moved in once
+    mid = _ml.get_active_id()
     _p(f"🎬 this lesson is set in {backdrop}")
 
     gpu_memory.acquire(gpu_memory.QWEN_EDIT)
@@ -300,14 +306,14 @@ def prepare_lesson(lesson: dict,
             # Only when the scene actually names someone: a spare reference is another
             # thing for Qwen to copy into a picture that did not ask for it.
             refs, scene_text = None, b["mascot_scene"]
-            second = cast.ref_for(scene_text)
+            relation, second = cast.ref_for(scene_text, mid)
             if second:
                 refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
                 # Two references and no explanation is an invitation to blend them. Say
                 # which is which — that is what the proving render did, and it came back
                 # with two correct, separate people first try.
-                scene_text = cast.name_the_refs(scene_text, cast.role_in(scene_text))
-                _p(f"👥 line {i+1} has a second person — {second.stem} joins the shot")
+                scene_text = cast.name_the_refs(scene_text, mid, relation)
+                _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
 
             got = mascot.render_scene(scene_text, sp, aspect=ASPECT,
                                       seed=4000 + i + 1000 * int(

@@ -1308,17 +1308,22 @@ def other_people_are_other_people(scene: str) -> str:
     if not m:
         return scene
 
-    # If we have a REFERENCE for them, they stay. Qwen-Edit takes image1..image3, and
+    # If THIS MASCOT HAS A PICTURE OF THEM, they stay. Qwen-Edit takes image1..image3, and
     # handed an actual drawing of the mother it draws an actual mother — measured, first
-    # try. See modules/cast.py: this whole guard was built on a conclusion ("one
-    # reference draws one person") that was a limit of how we CALLED the model, not of
-    # the model. Jeffy is the one who spotted it.
+    # try. See modules/cast.py: this whole guard was built on a conclusion ("one reference
+    # draws one person") that was a limit of how we CALLED the model, not of the model.
+    # Jeffy is the one who spotted it.
+    #
+    # A picture, not merely a NAME: a relation with an empty slot still has nothing for
+    # Qwen to draw from, and would still come back as a twin of the mascot.
     try:
         from modules import cast
-        if cast.role_in(scene):
+        from modules import mascot_library as _ml
+        mid = _ml.get_active_id()
+        if mid and cast.ref_for(scene, mid)[1]:
             return scene
-    except Exception as e:          # pragma: no cover - cast is optional
-        log.debug(f"cast unavailable ({e}); falling back to keeping the mascot alone")
+    except Exception as e:          # pragma: no cover - the family is optional
+        log.debug(f"family unavailable ({e}); keeping the mascot alone")
 
     who = m.group(1).lower()
     log.warning(f"scene put a {who} in the frame and we have no reference for them — "
