@@ -662,6 +662,50 @@ def set_mascot_voice_ref(path) -> None:
     log.info(f"Mascot voice ref: {p.name}")
 
 
+# --- The daily auto-reel ---------------------------------------------------
+# A facts reel writes and renders itself once a day. It used to be unconditional:
+# hardcoded ON at 09:00 IST with no way to stop it, so the GPU disappeared for an
+# hour every morning whether or not anyone wanted a reel that day.
+#
+# Default stays ON, because that is what the bot has always done — turning it off
+# by default would silently change behaviour for a machine that was relying on it.
+def get_daily_facts_enabled() -> bool:
+    v = _load().get("daily_facts_enabled")
+    return True if v is None else bool(v)
+
+
+def set_daily_facts_enabled(enabled: bool) -> None:
+    data = _load(); data["daily_facts_enabled"] = bool(enabled); _save(data)
+    log.info(f"Daily facts reel: {'ON' if enabled else 'OFF'}")
+
+
+def get_daily_facts_hour() -> int:
+    """Hour of the day (IST, 0-23) the reel starts. Default 09:00."""
+    try:
+        v = int(_load().get("daily_facts_hour", 9))
+    except (TypeError, ValueError):
+        return 9
+    return v if 0 <= v <= 23 else 9
+
+
+def set_daily_facts_hour(hour: int) -> None:
+    hour = int(hour)
+    if not 0 <= hour <= 23:
+        raise ValueError("hour must be 0-23")
+    data = _load(); data["daily_facts_hour"] = hour; _save(data)
+    log.info(f"Daily facts reel hour: {hour:02d}:00 IST")
+
+
+def get_daily_facts_last_run() -> str:
+    """ISO date of the last daily reel, or "" — the tick fires hourly and this is
+    what stops it rendering the same day twice after a restart."""
+    return (_load().get("daily_facts_last_run") or "").strip()
+
+
+def set_daily_facts_last_run(day: str) -> None:
+    data = _load(); data["daily_facts_last_run"] = str(day); _save(data)
+
+
 # --- Which mascot ----------------------------------------------------------
 # A folder name under 02_Agent/assets/mascots/ (see modules/mascot_library.py).
 # Kept as a plain string here, deliberately: runtime_settings is the bottom of the

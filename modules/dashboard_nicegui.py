@@ -2578,6 +2578,51 @@ def main_page():
                 .style("margin-left: 8px;")._props["innerHTML"] = "PAUSED"
         queue_container = ui.column().classes("w-full gap-2")
 
+    # ============== DAILY AUTO-REEL (moved into the Facts tab) ==============
+    # Deliberately NOT part of the Facts card: that card is locked to one control
+    # (who presents), and this is not a render setting — it is a schedule. It writes
+    # straight to runtime_settings, and the bot's hourly tick reads it live, so a
+    # change here takes effect without a restart.
+    with ui.card().classes("rex-card w-full") as card_daily:
+        with ui.row().classes("items-center"):
+            ui.label("🗓️ Daily auto-reel").classes("text-xl font-bold")
+            ui.element("span").classes("rex-badge rex-badge-mint") \
+                .style("margin-left: 8px;")._props["innerHTML"] = "SCHEDULE"
+        ui.label("A facts reel writes and renders itself once a day and posts to "
+                 "#videos. It skips itself if the GPU is already busy, so it can "
+                 "never land on top of a render you started.") \
+            .classes("text-xs opacity-70")
+
+        daily_state = ui.label("").classes("text-xs").style("color:#7cf;")
+
+        def _daily_text():
+            if not rs.get_daily_facts_enabled():
+                return "Off — the morning GPU is yours."
+            last = rs.get_daily_facts_last_run() or "never"
+            return (f"On — every day at {rs.get_daily_facts_hour():02d}:00 IST. "
+                    f"Last run: {last}.")
+
+        with ui.row().classes("gap-3 items-center").style("margin-top: 6px;"):
+            daily_sw = ui.switch("Enabled", value=rs.get_daily_facts_enabled()) \
+                .props("dense color=accent")
+            daily_hour = ui.number("Hour (IST)", value=rs.get_daily_facts_hour(),
+                                   min=0, max=23, step=1, format="%.0f") \
+                .props("outlined dark dense").style("width: 120px") \
+                .tooltip("24-hour clock. 9 = 09:00, 21 = 9pm.")
+
+            def _save_daily(_=None):
+                try:
+                    rs.set_daily_facts_hour(int(daily_hour.value))
+                except (TypeError, ValueError) as e:
+                    ui.notify(f"❌ {e}", type="negative")
+                    return
+                rs.set_daily_facts_enabled(bool(daily_sw.value))
+                daily_state.set_text(_daily_text())
+                ui.notify("🗓️ " + _daily_text(), type="positive")
+            daily_sw.on_value_change(_save_daily)
+            daily_hour.on("blur", _save_daily)
+        daily_state.set_text(_daily_text())
+
     # ============== LESSONS (own tab) — a school textbook, taught ==============
     # Phase 1: the book goes in, the topics come out, and YOU edit the list. Nothing
     # is rendered from a topic list the bot chose on its own.
@@ -3004,6 +3049,7 @@ def main_page():
     card_final.move(pipeline_panel)
     card_settings.move(pipeline_panel)   # Settings are story-specific → inside Story
     card_manual.move(manual_panel)
+    card_daily.move(facts_panel)     # a schedule, not a render setting
     card_lesson.move(lesson_panel)
     card_mascots.move(mascots_panel)
     card_models.move(models_panel)

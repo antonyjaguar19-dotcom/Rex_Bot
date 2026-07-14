@@ -68,6 +68,8 @@ if not DISCORD_BOT_TOKEN:
 BOT_VERSION = "0.7.0-styles"
 DISCORD_MSG_LIMIT = 1900
 IST = ZoneInfo("Asia/Kolkata")
+# The daily reel's hour now lives in runtime_settings (rs.get_daily_facts_hour);
+# this is only the fallback default used when the setting has never been written.
 DAILY_GEN_HOUR = 9
 MAX_REVISIONS = 10
 FEEDBACK_TIMEOUT_SEC = 300   # 5 min — then auto-pause (not abandon)
@@ -1397,8 +1399,28 @@ def _daily_facts_topic() -> str:
     return DAILY_FACTS_TOPICS[_dt.date.today().toordinal() % len(DAILY_FACTS_TOPICS)]
 
 
+async def daily_tick():
+    """Runs every hour. Decides whether THIS is the hour to make the daily reel.
+
+    The schedule is read from runtime_settings at fire time, not baked into a cron
+    trigger — so switching it off (or moving it) from the dashboard or Discord takes
+    effect at once, with no rescheduling plumbing and no restart. A cron whose
+    trigger is fixed at boot would keep firing at yesterday's hour.
+    """
+    if not rs.get_daily_facts_enabled():
+        return
+    now = datetime.now(IST)
+    if now.hour != rs.get_daily_facts_hour():
+        return
+    today = now.date().isoformat()
+    if rs.get_daily_facts_last_run() == today:
+        return          # already made one today (a restart must not make a second)
+    rs.set_daily_facts_last_run(today)
+    await daily_auto_generation()
+
+
 async def daily_auto_generation():
-    """9am IST: auto-generate a Facts Shorts reel, ready to post to #videos."""
+    """Auto-generate a Facts Shorts reel, ready to post to #videos."""
     log.info("Daily facts auto-generation triggered.")
     topic = _daily_facts_topic()
     guild = bot.guilds[0] if bot.guilds else None
@@ -1409,6 +1431,18 @@ async def daily_auto_generation():
     ann = v_channel or get_channel_by_name(guild, "claw-bot")
     from modules import facts_writer as fw
     from modules import facts_pipeline as fp
+
+    # TAKE THE GPU LOCK. This used to render straight onto the card: the 9am reel
+    # could land on top of whatever you were rendering by hand, and two jobs sharing
+    # a 16 GB card is how a 90-second clip becomes 16 minutes of thrashing.
+    if not job_lock.acquire("daily facts reel"):
+        who = job_lock.holder_label()
+        log.info(f"Daily facts skipped — GPU busy with {who}")
+        if ann:
+            await ann.send(f"🗓️ Daily facts reel skipped — the GPU is busy with "
+                           f"**{who}**. Run `!facts {topic}` later if you want it.")
+        return
+
     if ann:
         await ann.send(f"🗓️ **Daily facts reel** — topic: **{topic}**. Generating…")
     try:
@@ -1426,6 +1460,8 @@ async def daily_auto_generation():
         log.exception("Daily facts generation failed")
         if ann:
             await ann.send(f"❌ Daily facts failed: `{e}`")
+    finally:
+        job_lock.release()
 
 
 # ============================================================
@@ -1749,9 +1785,12 @@ async def on_ready():
             break
 
     if not scheduler.running:
+        # Every hour on the hour; daily_tick() decides whether THIS is the hour.
+        # The schedule lives in runtime_settings, so switching it off or moving it
+        # takes effect immediately instead of at the next restart.
         scheduler.add_job(
-            daily_auto_generation,
-            trigger=CronTrigger(hour=DAILY_GEN_HOUR, minute=0, timezone=IST),
+            daily_tick,
+            trigger=CronTrigger(minute=0, timezone=IST),
             id="daily_story", replace_existing=True,
         )
         scheduler.start()
@@ -1759,8 +1798,10 @@ async def on_ready():
     for guild in bot.guilds:
         ch = get_channel_by_name(guild, "status")
         if ch:
-            nj = scheduler.get_job("daily_story")
-            next_str = nj.next_run_time.strftime("%Y-%m-%d %H:%M %Z") if nj else "N/A"
+            # The banner used to print the cron's next FIRING, which is now hourly —
+            # it would have promised a reel at 10:00 that the tick was going to skip.
+            next_str = (f"{rs.get_daily_facts_hour():02d}:00 IST"
+                        if rs.get_daily_facts_enabled() else "off")
             pending_count = pf.count()
             pending_line = (
                 f"💾 Paused feedback: `{pending_count}` (use `!pending` to see)\n"
@@ -2943,7 +2984,8 @@ async def cmd_today_script(ctx):
     theme = get_theme_of_the_day()
     await ctx.send(
         f"🌅 **Today's theme:** {theme}\n"
-        f"(Auto-generates daily at {DAILY_GEN_HOUR:02d}:00 IST, "
+        f"(Auto-generates daily at {rs.get_daily_facts_hour():02d}:00 IST"
+        f"{' — currently OFF' if not rs.get_daily_facts_enabled() else ''}, "
         f"or: `!generate_script {theme}`)"
     )
 
@@ -6150,6 +6192,42 @@ async def cmd_set_lipsync(ctx, switch: str = None):
     note = (" — character shots lip-sync via Wan S2V (slow)" if want
             else " — silent I2V for all shots (fast)")
     await ctx.send(f"✅ Lip-sync → `{'on' if want else 'off'}`{note}.")
+
+
+@bot.command(name="daily", aliases=["daily_facts", "auto_facts"])
+async def cmd_daily(ctx, switch: str = None, hour: int = None):
+    """The daily auto-reel: `!daily` status · `!daily on|off` · `!daily on 7` (7am IST).
+
+    A facts reel writes and renders itself once a day. It skips itself if the GPU is
+    already busy — it will never land on top of a render you started."""
+    if switch is None:
+        on = rs.get_daily_facts_enabled()
+        last = rs.get_daily_facts_last_run() or "never"
+        topic = _daily_facts_topic()
+        await ctx.send(
+            f"🗓️ **Daily facts reel:** {'ON' if on else 'OFF'}"
+            + (f" — every day at `{rs.get_daily_facts_hour():02d}:00` IST" if on else "")
+            + f"\nLast run: `{last}` · today's topic would be **{topic}**\n"
+            f"`!daily off` to stop it · `!daily on 7` to move it to 7am.")
+        return
+
+    s = switch.strip().lower()
+    if s not in ("on", "off"):
+        await ctx.send("Usage: `!daily on|off [hour 0-23]`")
+        return
+    if hour is not None:
+        try:
+            rs.set_daily_facts_hour(hour)
+        except ValueError as e:
+            await ctx.send(f"⚠️ {e}")
+            return
+    rs.set_daily_facts_enabled(s == "on")
+
+    if s == "on":
+        await ctx.send(f"✅ Daily facts reel **ON** — every day at "
+                       f"`{rs.get_daily_facts_hour():02d}:00` IST.")
+    else:
+        await ctx.send("✅ Daily facts reel **OFF** — the GPU is yours in the morning.")
 
 
 @bot.command(name="facts_list", aliases=["facts_reels", "reels"])
