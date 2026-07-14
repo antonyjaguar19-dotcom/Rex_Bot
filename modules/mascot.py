@@ -213,6 +213,12 @@ NEGATIVE_PRESENTER = (
     # hugged by your mother. A grinning rock teaches a child the wrong answer.
     "googly eyes on an object, smiling face on a ball, face drawn on a toy, "
     "anthropomorphic object, cartoon eyes on an inanimate object, "
+    # A "playful frown" came back as a small girl SCOWLING with real anger. The teacher
+    # in a lesson for six-year-olds is never cross with them.
+    "angry, scowling, furious, glaring, mean expression, upset, crying, "
+    # A thought bubble is an overlay by another name: Qwen fills it with a garbled
+    # picture-within-a-picture, and it reads as a rendering artefact, not a device.
+    "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture, "
     # Proportion drift: the character kept coming back with long thin legs and a slim
     # body. The build is fixed; only the costume changes.
     "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
@@ -973,7 +979,12 @@ _TEACHING_SYS = (
     "drawn with mouse ears. Say 'hand', 'holding', 'the character'.\n"
     "- FULL BODY, FACING THE CAMERA, mouth open mid-sentence — she is talking to the "
     "child while she does it.\n"
-    "- Warm, kind, encouraging. Never scary, never violent, never sad.\n"
+    "- Warm, kind, encouraging. Never scary, never violent, never sad, and NEVER ANGRY. "
+    "A 'playful frown' came back as a small girl SCOWLING in real anger. When the line "
+    "is puzzled or says what something CANNOT do, she is CURIOUS, not cross: head "
+    "tilted, eyebrows raised, a small questioning smile.\n"
+    "- No thought bubbles, no speech bubbles, no picture-inside-the-picture. The artist "
+    "fills them with garbled nonsense.\n"
     "- Under 30 words. Only what is VISIBLE: who is there, what she is doing, what she "
     "is holding, her expression.\n"
     "- No background, lighting or camera notes. No text, letters or numbers.\n"

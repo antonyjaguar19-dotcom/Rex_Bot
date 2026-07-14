@@ -344,3 +344,16 @@ def test_the_teaching_prompt_keeps_every_guard_the_facts_prompt_learned():
     assert "heart eyes" in sysp                        # symbol eyes
     assert "belly" in sysp                             # modesty
     assert "cannot show a sequence" in sysp            # the montage
+
+
+def test_the_teacher_is_never_angry_and_there_are_no_bubbles():
+    # still_08: "playful frown" came back as a six-year-old SCOWLING in real anger,
+    # with a thought bubble containing a garbled picture-within-a-picture. The teacher
+    # in a lesson for six-year-olds is never cross with the child.
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS.lower()
+    assert "never angry" in sysp
+    assert "curious, not cross" in sysp
+    assert "no thought bubbles" in sysp
+    for banned in ("angry", "scowling", "thought bubble", "speech bubble"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
