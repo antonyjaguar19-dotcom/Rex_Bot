@@ -572,9 +572,8 @@ def test_a_doll_must_look_like_a_toy_not_a_child():
     # of a person, and Qwen drew exactly that: a HEADLESS cloth sack with buttons sewn on
     # its torso, and then a blank white faceless figure. Both read as a voodoo doll.
     # Describe the toy you want, not the absence of a child.
-    assert "round stitched head" in out
     assert "stitched smile" in out
-    assert "clearly a toy" in out
+    assert "arms and legs" in out
     assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
     # SHORT. The first version was 25 words ("a limp cloth rag doll with stitched button
     # eyes and floppy stuffed limbs, obviously a lifeless toy and not a person") and a
@@ -635,7 +634,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
         assert "mother" not in out.lower(), "one reference image draws one person"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
-        assert "rag doll" in out and "round stitched head" in out
+        assert "rag doll" in out and "stitched smile" in out
 
 
 def test_a_scene_with_no_doll_and_no_people_is_untouched():
@@ -809,3 +808,24 @@ def test_a_whole_body_action_is_not_idle_hands_either():
 
     idle = "the mascot character facing the camera, smiling widely"
     assert "waving one arm high" in mas.never_empty_handed(idle)
+
+
+def test_the_doll_is_a_WHOLE_doll():
+    # Third attempt at this one prop, and each failure taught the same lesson: THE MODEL
+    # DRAWS EXACTLY WHAT YOU NAME.
+    #   "stitched button eyes, limp and lifeless"   -> a HEADLESS cloth sack, buttons on
+    #                                                  its torso. Then a blank white
+    #                                                  faceless figure. Voodoo dolls.
+    #   "a round stitched head, yarn hair, a smile" -> a DISEMBODIED HEAD. A knitted ball
+    #                                                  with a face, in 2 shots out of 3.
+    # Name the whole toy, head to toe, and keep it short — 25 words diluted so badly the
+    # doll was dropped from the picture entirely and replaced with a second puppy.
+    out = mas.toys_look_like_toys("the mascot character holding up a doll, smiling")
+    assert "rag doll" in out
+    assert "stitched smile" in out
+    assert "arms and legs" in out, "name the BODY or you get a head on its own"
+    assert len(out.split()) < 26, f"a long descriptor dilutes and the prop vanishes: {out}"
+
+    for banned in ("disembodied head", "doll head with no body", "a ball with a face",
+                   "headless doll", "faceless doll", "creepy doll"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned

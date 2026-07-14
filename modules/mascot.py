@@ -275,6 +275,11 @@ NEGATIVE_PRESENTER = (
     # faceless figure. Both read as a voodoo doll. A rag doll has a head and a smile.
     "headless doll, doll with no head, faceless doll, blank white doll, featureless doll, "
     "eyes on the torso, voodoo doll, creepy doll, sinister toy, "
+    # ...and the over-correction of THAT: naming only "a round stitched head, yarn hair
+    # and a stitched smile" got a DISEMBODIED HEAD — a knitted ball with a face, no body
+    # at all, in two shots out of three. The model draws exactly what you name.
+    "disembodied head, doll head with no body, severed head, a ball with a face, "
+    "floating head, "
     # BOBBLEHEAD. Telling the model "big head, small body" (my own botched repair of the
     # cub language) gave her a head bigger than her torso.
     "bobblehead, oversized head, giant head, head bigger than the body, "
@@ -1246,8 +1251,11 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
                    r"(\s+(?:named|called)\s+\w+)?", re.I)
 # The name goes straight after "rag doll", not on the end — "obviously a lifeless toy
 # and not a person named Ammu" reads as the mascot naming a corpse.
-_DOLL_HEAD = "a cheerful soft rag doll"
-_DOLL_TAIL = " with a round stitched head, yarn hair and a stitched smile, clearly a toy"
+_DOLL_HEAD = "a cheerful rag doll"
+# Short, and it names the WHOLE toy. Both halves matter and each was learned the hard
+# way: 25 words DILUTED and the doll was dropped for a second puppy; naming only the head
+# got a disembodied head, a knitted ball with a face.
+_DOLL_TAIL = " with a stitched smile, yarn hair, a dress, and cloth arms and legs"
 
 _OTHER_PERSON = re.compile(
     r"\b(mother|mum|mummy|mom|mommy|father|dad|daddy|papa|grandmother|grandma|"
