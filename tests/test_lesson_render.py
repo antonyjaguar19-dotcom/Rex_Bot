@@ -292,3 +292,32 @@ def test_the_gate_shows_a_picture_you_can_actually_judge():
     src = inspect.getsource(dash)
     assert "cursor: zoom-in" in src
     assert "redo=True" in src, "the Redo button must ask for a real redo"
+
+
+def test_one_lesson_gets_one_backdrop():
+    # STYLE_PRESENTER only asks for "a bold vivid solid color background", so Qwen picked
+    # a NEW colour on every shot: the first real lesson came out blue, purple, beige,
+    # grey and dark grey — thirteen pictures that watch like clips cut together from four
+    # different videos. A facts reel is one shot and does not care. A lesson is a film.
+    import inspect
+    from modules import lesson_pipeline as lp
+    from modules import mascot as mas
+
+    src = inspect.getsource(lp.prepare_lesson)
+    assert "backdrop = BACKDROPS[" in src
+    assert "background=backdrop" in src
+
+    # stable for a given lesson (a redo must not change the film's colour) and it really
+    # does replace the phrase the style would otherwise leave to the model
+    a = lp.BACKDROPS[sum(ord(c) for c in "20260714_113840") % len(lp.BACKDROPS)]
+    b = lp.BACKDROPS[sum(ord(c) for c in "20260714_113840") % len(lp.BACKDROPS)]
+    assert a == b
+    assert "bold vivid solid color background" in mas.STYLE_PRESENTER
+    assert "background" in inspect.signature(mas.render_scene).parameters
+
+
+def test_a_facts_reel_still_picks_its_own_colour():
+    # The knob is opt-in. Facts mode passes no background and keeps the free choice.
+    import inspect
+    from modules import facts_pipeline as fp
+    assert "background=" not in inspect.getsource(fp._render_facts_mascot)

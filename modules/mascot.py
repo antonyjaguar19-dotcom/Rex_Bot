@@ -1211,7 +1211,8 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  reference_images: Optional[list] = None,
                  headline: str = "",
                  presenter: bool = False,
-                 full_quality: bool = False) -> Optional[Path]:
+                 full_quality: bool = False,
+                 background: str = "") -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -1242,7 +1243,15 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         if presenter:
             # Waist-up: this still is about to be animated by S2V, which breaks
             # legs it cannot see how to move.
-            prompt = f"{scene}, {STYLE_PRESENTER}"
+            style = STYLE_PRESENTER
+            if background:
+                # One lesson, one look. STYLE_PRESENTER only asks for "a bold vivid
+                # solid color background", so Qwen picks a NEW colour every shot: the
+                # first lesson ran blue, purple, beige, grey, dark grey — thirteen
+                # pictures that read as clips from four different videos. A facts reel
+                # is one shot and does not care; a lesson is a film.
+                style = style.replace("bold vivid solid color background", background)
+            prompt = f"{scene}, {style}"
             negative = NEGATIVE_PRESENTER
             baked = False
         elif baked:

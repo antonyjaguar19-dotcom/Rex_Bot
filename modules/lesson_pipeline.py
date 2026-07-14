@@ -59,6 +59,18 @@ STILL_SEC_PER_CLIP = 3.0
 # nobody means to start that from one click.
 MAX_WAN_CLIPS = 20
 
+# One lesson, one backdrop — picked from the lesson's id, so it is stable across a redo
+# but different from the last lesson's. Deliberately plain and bright: the mascot and
+# the prop are the teaching, and the caption has to stay readable over it.
+BACKDROPS = (
+    "bold solid cornflower blue background",
+    "bold solid warm sunshine yellow background",
+    "bold solid mint green background",
+    "bold solid soft coral background",
+    "bold solid lavender background",
+    "bold solid sky teal background",
+)
+
 
 class LessonRenderError(RuntimeError):
     """The lesson cannot be rendered. Raised rather than quietly making a worse one."""
@@ -228,6 +240,15 @@ def prepare_lesson(lesson: dict,
     # ~100s each at full quality — say so, rather than let it look hung.
     _p(f"🖼️ drawing {len(beats)} pictures (~{len(beats) * 100 / 60:.0f} min; a lesson "
        f"draws at full quality so the props are real)…")
+    # ONE LESSON, ONE LOOK. The presenter style only asks for "a bold vivid solid color
+    # background", so Qwen picked a new colour on every shot: the first lesson came out
+    # blue, purple, beige, grey and dark grey — thirteen pictures that watch like clips
+    # cut together from four different videos. A facts reel is one shot and does not
+    # care. A lesson is a film, and a child should not be told, five times, that the
+    # scene has changed when it has not.
+    backdrop = BACKDROPS[sum(ord(c) for c in lesson_id) % len(BACKDROPS)]
+    _p(f"🎨 backdrop for this lesson: {backdrop}")
+
     gpu_memory.acquire(gpu_memory.QWEN_EDIT)
     stills = []
     try:
@@ -240,7 +261,8 @@ def prepare_lesson(lesson: dict,
             got = mascot.render_scene(b["mascot_scene"], sp, aspect=ASPECT,
                                       seed=4000 + i + 1000 * int(
                                           lesson.get("still_take", 0)),
-                                      presenter=True, full_quality=True)
+                                      presenter=True, full_quality=True,
+                                      background=backdrop)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a
                 # lesson with a hole in it, and it must not be discovered in the file.
