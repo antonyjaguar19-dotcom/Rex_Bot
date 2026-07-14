@@ -1125,10 +1125,22 @@ def alive_looks_alive(scene: str) -> str:
 # reference photo is a T-pose.
 #
 # So the rule is not about props or sides or counts. It is: her hands are always busy.
+# "held" and "cradling" are busy hands, and this pattern did not know it — "hold\w*"
+# does not match the irregular past tense, and "cradle" was simply missing. So a scene
+# whose hands were ALREADY FULL ("a plant held in her right hand and a rock held in her
+# left") was judged idle, and never_empty_handed() bolted "waving one arm high, the other
+# hand resting at her side" onto the end of it.
+#
+# That is a flat contradiction — both hands full AND one waving AND one at her side — and
+# the model resolved it the only way it could: it DROPPED A PROP. That is where the rock
+# went in shot 1. A guard that misfires is worse than no guard, because it actively
+# fights the scene.
 _HANDS_BUSY = re.compile(
-    r"\b(?:hold\w*|lift\w*|carry\w*|clutch\w*|grip\w*|hug\w*|cuddl\w*|stroking|"
-    r"petting|pat\w*|scratch\w*|wav\w*|wave|point\w*|show\w*|offering|feeding|reach\w*|"
-    r"touch\w*|push\w*|pull\w*|scoop\w*|balanc\w*|cover\w*|clap\w*|counting)\b", re.I)
+    r"\b(?:hold\w*|held|holds|lift\w*|carry\w*|carrie\w*|cradl\w*|clutch\w*|grip\w*|"
+    r"grasp\w*|hug\w*|cuddl\w*|stroking|stroke\w*|petting|pat\w*|scratch\w*|wav\w*|"
+    r"wave|point\w*|show\w*|offering|feeding|reach\w*|touch\w*|push\w*|pull\w*|"
+    r"scoop\w*|balanc\w*|cover\w*|clap\w*|counting|in (?:her|both|one) (?:hand|hands|"
+    r"arm|arms)|hands? full)\b", re.I)
 
 # _BUSY_DEFAULT must itself satisfy _HANDS_BUSY, or the guard is not idempotent: run it
 # twice and it appends twice. It said "a cheerful wave" (the noun) while the pattern only

@@ -739,3 +739,29 @@ def test_a_second_person_is_an_appositive_not_a_parenthesis():
     assert "(" not in out and ")" not in out, "a parenthesis reads as a prop, not a person"
     assert "mother, a tall grown-up woman with a completely different face" in out
     assert "laughing" in out                 # the rest of the scene survives
+
+
+def test_a_guard_that_misfires_is_worse_than_no_guard():
+    # _HANDS_BUSY did not know "held" (hold\w* does not match the irregular past tense)
+    # or "cradling" (simply missing). So a scene whose hands were ALREADY FULL —
+    # "a plant held in her right hand and a rock held in her left" — was judged IDLE, and
+    # never_empty_handed() bolted "waving one arm high, the other hand resting at her
+    # side" onto the end.
+    #
+    # Both hands full AND one waving AND one at her side is a flat contradiction, and the
+    # model resolved it the only way it could: it DROPPED A PROP. That is where the rock
+    # went in shot 1 of the real lesson.
+    for full in (
+        "the mascot character, a green leafy plant held in her right hand and a grey "
+        "rock held in her left hand, both arms bent",
+        "the mascot character cradling one single real live puppy in both arms, smiling",
+        "the mascot character kneeling beside a puppy, both her hands stroking its back",
+        "the mascot character with a toy car in her hand, laughing",
+        "the mascot character carrying a plate of food, smiling",
+    ):
+        out = mas.never_empty_handed(full)
+        assert out == full, f"busy hands were given ANOTHER job: {out}"
+
+    # and a genuinely idle scene still gets one
+    idle = "the mascot character facing the camera, smiling widely"
+    assert "waving one arm high" in mas.never_empty_handed(idle)
