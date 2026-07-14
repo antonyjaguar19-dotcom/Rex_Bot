@@ -233,3 +233,80 @@ def test_the_lesson_passes_the_second_reference():
         assert "_scene_and_refs(" in inspect.getsource(caller)
     for caller in (lp.prepare_lesson, lp.redraw_still):
         assert "_draw_one(" in inspect.getsource(caller)
+
+
+# --- Name a family member and the bot finds them ---------------------------------
+# Jeffy: "if i mention the family in the prompt will the bot automatically get the family
+# characters tagged under the mascot?" — yes, and asking exposed two real bugs.
+
+def test_the_guards_vocabulary_is_the_familys_vocabulary():
+    # It was a SECOND hand-maintained list, and it drifted the moment the family gained
+    # Uncle and Aunty: the words were in cast.PRESETS but not in mascot._OTHER_PERSON, so
+    # an "aunty" with no picture of her sailed straight past the guard and would have been
+    # drawn as a TWIN OF THE MASCOT — precisely the bug that guard exists to stop,
+    # reintroduced by two lists that had to agree and did not.
+    from modules import mascot as mas
+    words = mas._other_person_words()
+    for who in ("mother", "father", "grandmother", "grandfather", "uncle", "aunt",
+                "teacher", "friend"):
+        assert who in words, who
+    for spoken in ("aunty", "mummy", "daddy", "grandma"):
+        assert mas._OTHER_PERSON.search(f"the mascot with her {spoken}"), spoken
+
+
+def test_naming_someone_you_have_a_picture_of_tags_them(mid, tmp_path, monkeypatch):
+    from modules import lesson_pipeline as lp
+    monkeypatch.setattr(ml, "get_active_id", lambda: mid)
+    cast.put_image(mid, "mother", src=_png(tmp_path / "m.png"), filename="m.png")
+
+    lesson = {"beats": [{"mascot_scene":
+                         "the mascot character being hugged by her mother, laughing"}]}
+    scene_sent, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+
+    assert relation == "mother"
+    assert refs and len(refs) == 2, "the mascot AND the mother"
+    assert "SECOND reference image" in scene_sent, "the model is told which is which"
+    assert "mother" in scene_sent
+
+
+def test_naming_someone_you_have_no_picture_of_leaves_them_out_of_the_SHOT(mid, monkeypatch):
+    # Qwen has nothing to draw her FROM, so it would paint the mascot's own identity onto
+    # her — a twin. She comes out of the picture.
+    from modules import lesson_pipeline as lp
+    monkeypatch.setattr(ml, "get_active_id", lambda: mid)
+
+    lesson = {"beats": [{"mascot_scene":
+                         "the mascot character playing with her aunty in the garden"}]}
+    scene_sent, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+
+    assert refs is None and relation is None
+    assert "aunty" not in scene_sent.lower(), "she would have come back as a twin"
+
+
+def test_but_your_WORDS_are_never_deleted(mid, tmp_path, monkeypatch):
+    # ...only out of the PICTURE. The strip used to happen at SAVE time, destructively: it
+    # deleted the mother from your sentence for good, and WHICH mascot happened to be
+    # active at that moment decided whether she was deleted at all. Add her picture
+    # afterwards and she never came back — your words had been rewritten on disk.
+    #
+    # Now: give this mascot an aunty and the very next redraw has her in it, with no
+    # editing.
+    from modules import lesson_pipeline as lp
+    from modules import lesson_writer as lw
+    monkeypatch.setattr(ml, "get_active_id", lambda: mid)
+
+    scene = "the mascot character playing with her aunty in the garden"
+    kept = mas_clean(scene)
+    assert "aunty" in kept, "your sentence is yours"
+
+    # ...and once she has a picture, the very next draw tags her — no edit needed
+    cast.put_image(mid, "aunt", src=_png(tmp_path / "a.png"), filename="a.png")
+    lesson = {"beats": [{"mascot_scene": kept}]}
+    _, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+    assert relation == "aunt"
+    assert refs and len(refs) == 2
+
+
+def mas_clean(scene):
+    from modules import mascot as mas
+    return mas.clean_scene_for_the_mascot(scene, teaching=True, keep_people=True)

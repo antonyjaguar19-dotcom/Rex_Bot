@@ -1257,9 +1257,27 @@ _DOLL_HEAD = "a cheerful rag doll"
 # got a disembodied head, a knitted ball with a face.
 _DOLL_TAIL = " with a stitched smile, yarn hair, a dress, and cloth arms and legs"
 
-_OTHER_PERSON = re.compile(
-    r"\b(mother|mum|mummy|mom|mommy|father|dad|daddy|papa|grandmother|grandma|"
-    r"grandfather|grandpa|teacher|friend|brother|sister|parent)\b", re.I)
+# Who counts as "a second person". This list is NOT hand-maintained: it is built from
+# modules/cast.py, which is where the family actually lives.
+#
+# It was hand-maintained, and it drifted the moment the family gained Uncle and Aunty —
+# the words were in cast.PRESETS but not here, so an "aunty" with no picture of her sailed
+# straight past this guard and would have been drawn as a TWIN OF THE MASCOT. Exactly the
+# bug this guard exists to stop, reintroduced by two lists that had to agree and did not.
+def _other_person_words() -> set:
+    try:
+        from modules import cast
+        return set(cast.PRESETS) | set(cast.ALIASES)
+    except Exception:                       # pragma: no cover - cast is optional
+        return {"mother", "father", "friend", "teacher"}
+
+
+def _other_person_re() -> re.Pattern:
+    words = sorted(_other_person_words() | {"parent"}, key=len, reverse=True)
+    return re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b", re.I)
+
+
+_OTHER_PERSON = _other_person_re()
 _ADULTS = {"mother", "mum", "mummy", "mom", "mommy", "father", "dad", "daddy", "papa",
            "grandmother", "grandma", "grandfather", "grandpa", "teacher", "parent"}
 
@@ -1368,7 +1386,8 @@ def her_clothes_do_not_change(scene: str) -> str:
     return _tidy(_COSTUME.sub("", scene))
 
 
-def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
+def clean_scene_for_the_mascot(scene: str, teaching: bool = False,
+                               keep_people: bool = False) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway.
 
@@ -1381,14 +1400,26 @@ def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
       warm_face          — a facts mascot may pull a shocked face at a horrifying fact
       alive_looks_alive  — only a lesson needs a real puppy to read as ALIVE beside a toy
       props_fit_in_a_hand— a facts reel's giant honey dipper IS the joke
+
+    `keep_people=True` LEAVES a second person in the scene. Use it when the caller will
+    decide about them later, at DRAW time, where it knows which mascot is rendering and
+    whether that mascot has a picture of them.
+
+    That matters because the strip is destructive. Saving a hand-edited scene used to
+    DELETE the mother from your words for good — and whether she was deleted depended on
+    which mascot happened to be active at the moment you pressed save. Add her picture
+    afterwards, or switch mascots, and she never came back: your sentence had been
+    rewritten on disk. Your words are yours. The pipeline decides at render time.
     """
-    out = other_people_are_other_people(toys_look_like_toys(
+    out = toys_look_like_toys(
         never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
-            keep_the_mascot(one_moment(scene)))))))))
+            keep_the_mascot(one_moment(scene))))))))
     if teaching:
         out = props_fit_in_a_hand(alive_looks_alive(warm_face(
             her_clothes_do_not_change(out))))
-    return out
+    if keep_people:
+        return out
+    return other_people_are_other_people(out)
 
 
 def keep_the_mascot(scene: str) -> str:

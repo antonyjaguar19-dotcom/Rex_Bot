@@ -665,7 +665,15 @@ def set_scene(lesson_id: str, beat_index: int, text: str) -> dict:
 
     from modules import mascot
     before = (text or "").strip()
-    after = mascot.clean_scene_for_the_mascot(before, teaching=True)
+    # keep_people: a mother you named STAYS in your sentence. Whether she can be DRAWN is
+    # decided at render time (lesson_pipeline._scene_and_refs), where we know which mascot
+    # is rendering and whether it has a picture of her.
+    #
+    # It used to be decided here, destructively: saving the scene deleted her from your
+    # words for good, and whether she was deleted depended on which mascot happened to be
+    # active at the moment you pressed save. Add her picture afterwards and she never came
+    # back — your sentence had already been rewritten on disk.
+    after = mascot.clean_scene_for_the_mascot(before, teaching=True, keep_people=True)
 
     beats[beat_index]["mascot_scene"] = after
     beats[beat_index]["approved"] = False       # a different scene is a different picture

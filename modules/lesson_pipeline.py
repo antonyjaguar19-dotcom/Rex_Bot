@@ -196,16 +196,32 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
     """
     scene_text = lesson["beats"][i].get("mascot_scene", "")
     relation, second = cast.ref_for(scene_text, mid)
-    if not second:
-        return scene_text, None, None
 
-    refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
-    # Two references and no explanation is an invitation to blend them. Say which is which
-    # — that is what the proving render did, and it came back with two correct, separate
-    # people first try.
-    scene_text = cast.name_the_refs(scene_text, mid, relation)
-    _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
-    return scene_text, refs, relation
+    if second:
+        refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
+        # Two references and no explanation is an invitation to blend them. Say which is
+        # which — that is what the proving render did, and it came back with two correct,
+        # separate people first try.
+        scene_text = cast.name_the_refs(scene_text, mid, relation)
+        _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
+        return scene_text, refs, relation
+
+    # NAMED, BUT WE HAVE NO PICTURE OF THEM.
+    #
+    # The scene says "her aunty" and this mascot has no aunty. Qwen has nothing to draw her
+    # FROM, so it would paint the mascot's own identity onto her — a TWIN, which is the bug
+    # the whole cast system exists to kill. She comes out of the picture.
+    #
+    # But only out of the PICTURE. The words on disk are untouched: give this mascot an
+    # aunty on the Mascots tab and the very next redraw has her in it, with no editing.
+    named = cast.role_in(scene_text, mid)
+    if named:
+        scene_text = mascot.other_people_are_other_people(scene_text)
+        _p(f"⚠️ line {i+1} names a {named}, but this mascot has no picture of them — "
+           f"leaving them out of the shot (they would come back as a twin). Add one on "
+           f"the Mascots tab and redraw.")
+
+    return scene_text, None, None
 
 
 def _seed_for(lesson: dict, i: int) -> int:
