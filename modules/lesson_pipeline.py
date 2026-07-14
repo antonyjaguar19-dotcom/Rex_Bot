@@ -285,8 +285,33 @@ def render_lesson(lesson_id: str,
     w, h = ASPECTS[ASPECT]
     clips: list = [None] * len(beats)
 
+    # 0. Reuse the Wan clips that are still good.
+    #
+    # A Wan clip costs ~8.5 minutes. Lesson mode is a look-at-it-and-fix-it loop — you
+    # redraw ONE bad picture and render again — and without this every one of those
+    # rounds paid for all the animation a second time. A clip survives if it is newer
+    # than the still it was drawn from and still the length of the line it carries; a
+    # redrawn still is newer than its clip, so fixing a picture re-animates exactly that
+    # shot and nothing else.
+    def _still_reusable(i: int) -> bool:
+        clip = clips_dir / f"clip_{i:02d}.mp4"
+        if not clip.exists() or not clip.stat().st_size:
+            return False
+        if clip.stat().st_mtime < stills[i].stat().st_mtime:
+            return False                      # the picture was redrawn after the clip
+        got = fp._probe_dur(clip)
+        return got > 0 and abs(got - durations[i]) <= 0.15
+
+    for i in range(len(beats)):
+        if beats[i].get("animate") and _still_reusable(i):
+            clips[i] = clips_dir / f"clip_{i:02d}.mp4"
+    reused = sum(1 for c in clips if c is not None)
+    if reused:
+        _p(f"♻️ reusing {reused} animated clip(s) whose picture has not changed "
+           f"(~{reused * WAN_MIN_PER_CLIP:.0f} min saved)")
+
     # 1. The ticked beats: real motion. One Wan clip each, ~8 min apiece.
-    ticked = [i for i, b in enumerate(beats) if b.get("animate")]
+    ticked = [i for i, b in enumerate(beats) if b.get("animate") and clips[i] is None]
     if ticked:
         from modules import horror_video
         _p(f"🎥 animating {len(ticked)} shot(s) with Wan — this is the slow part")

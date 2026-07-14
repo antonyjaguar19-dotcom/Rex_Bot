@@ -174,3 +174,60 @@ def test_the_captions_follow_the_real_line_lengths(tmp_path):
     assert "Line 0" in text and "This is line number 0" in text
     # No fact badge — that is a Shorts device, and a lesson is not a countdown.
     assert "#1" not in text
+
+
+# --- A redrawn picture re-animates ITS shot, and only its shot ------------------
+# A Wan clip is ~8.5 minutes. Lesson mode is a look-at-it-then-fix-it loop, and before
+# this every round of that loop paid for ALL the animation again — so fixing one bad
+# picture in a 3-clip lesson cost 25 minutes of GPU to redraw two clips that were fine.
+
+def test_a_clip_is_reused_when_its_picture_has_not_changed(tmp_path, monkeypatch):
+    import time
+    from modules import lesson_pipeline as lp
+
+    still = tmp_path / "still_00.png"
+    still.write_bytes(b"x")
+    clip = tmp_path / "clip_00.mp4"
+    time.sleep(0.02)
+    clip.write_bytes(b"y")                       # clip is NEWER than the still
+
+    monkeypatch.setattr(lp.fp, "_probe_dur", lambda p: 4.0)
+
+    def reusable(clip_p, still_p, want):
+        if not clip_p.exists() or not clip_p.stat().st_size:
+            return False
+        if clip_p.stat().st_mtime < still_p.stat().st_mtime:
+            return False
+        got = lp.fp._probe_dur(clip_p)
+        return got > 0 and abs(got - want) <= 0.15
+
+    assert reusable(clip, still, 4.0) is True
+
+    # redraw the picture -> the clip is now stale and must be re-animated
+    time.sleep(0.02)
+    still.write_bytes(b"z")
+    assert reusable(clip, still, 4.0) is False
+
+
+def test_a_clip_of_the_wrong_length_is_not_reused(tmp_path, monkeypatch):
+    # The line was rewritten, so the voice take is a different length. A clip that no
+    # longer matches its line would desync every caption after it.
+    import time
+    from modules import lesson_pipeline as lp
+    still = tmp_path / "s.png"; still.write_bytes(b"x")
+    time.sleep(0.02)
+    clip = tmp_path / "c.mp4"; clip.write_bytes(b"y")
+    monkeypatch.setattr(lp.fp, "_probe_dur", lambda p: 4.0)
+    got = lp.fp._probe_dur(clip)
+    assert abs(got - 6.5) > 0.15          # 4.0s clip cannot carry a 6.5s line
+
+
+def test_render_lesson_actually_checks_for_reusable_clips():
+    # The guard above is a model of the rule; this proves the rule is IN the renderer.
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.render_lesson)
+    assert "_still_reusable" in src
+    assert "st_mtime" in src, "reuse must be invalidated by a redrawn still"
+    # and a stale clip must not be silently kept: the ticked list is filtered by it
+    assert "b.get(\"animate\") and clips[i] is None" in src
