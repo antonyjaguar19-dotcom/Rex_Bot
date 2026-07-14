@@ -312,9 +312,11 @@ def test_a_guard_never_cuts_away_the_subject():
 
 
 def test_a_good_scene_survives_every_guard_intact():
-    # The guards must be a net, not a mangler. This is what a correct scene looks like.
-    scene = ("the mascot character facing the camera holding up a doll in one hand, "
-             "a toy car on the floor beside her, shaking her head with a warm knowing smile")
+    # The guards must be a net, not a mangler. This is what a correct scene looks like:
+    # hands busy, one prop held, sizes stated, a warm face, no sequence, no bare skin.
+    scene = ("the mascot character facing the camera holding up a small doll in one hand, "
+             "a small toy car on the floor beside her, shaking her head with a warm "
+             "knowing smile")
     assert mas.clean_scene_for_the_mascot(scene) == scene
 
 
@@ -452,3 +454,33 @@ def test_a_held_prop_touches_the_hand_that_holds_it():
     for banned in ("floating object", "hovering prop", "prop not touching the hand",
                    "object suspended in mid-air"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_a_prop_fits_in_a_hand():
+    # "holding up a grey rock" came back as a BOULDER — bigger than her torso, hugged
+    # with both arms. That also cost her the SECOND prop the scene asked for (a plant),
+    # because both her arms were full of the first. Nothing in the prompt had ever said
+    # how big a prop was. A prop is a child's toy: it goes in a hand.
+    scene = ("the mascot character holding up a green leafy plant in one hand and a "
+             "grey rock in the other, elbows bent")
+    out = mas.props_fit_in_a_hand(scene)
+    assert "small green leafy plant" in out
+    assert "small grey rock" in out
+
+    # a prop already described as small is not re-shrunk (and the guard is idempotent)
+    already = "the mascot character holding a small toy car, smiling"
+    assert mas.props_fit_in_a_hand(already) == already
+    once = mas.clean_scene_for_the_mascot(scene)
+    assert mas.clean_scene_for_the_mascot(once) == once
+
+    for banned in ("giant prop", "boulder", "prop bigger than the character",
+                   "prop hugged with both arms"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+    assert "every prop is SMALL" in mas.STYLE_PRESENTER
+
+
+def test_a_living_creature_is_not_shrunk_into_a_toy():
+    # The puppy is a real animal, not a prop. Calling it "a small puppy" is harmless,
+    # but the guard must not touch a scene that has no prop nouns in it at all.
+    scene = "the mascot character kneeling beside a puppy, stroking its back, laughing"
+    assert mas.props_fit_in_a_hand(scene) == scene

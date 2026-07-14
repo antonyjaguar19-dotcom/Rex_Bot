@@ -203,6 +203,12 @@ STYLE_PRESENTER = (
     # HOVERING in mid-air beside her. A held object is touching the hand that holds it.
     "her fingers wrapped firmly around the prop, gripping it, the hand visibly "
     "closed on the object, the object resting in her palm, "
+    # SCALE. Nothing constrained how BIG a prop was, and "holding up a grey rock" came
+    # back as a BOULDER bigger than her torso, hugged with both arms — which also ate
+    # the second prop, because both her arms were busy with the first. A prop is a
+    # child's toy: it fits in her hand.
+    "every prop is SMALL — a toy, hand-sized, small enough to hold in one hand, "
+    "much smaller than the character, never larger than her head, "
     "bold vivid solid color background, crisp studio lighting, high contrast, "
     "3d character key art"
 )
@@ -222,6 +228,10 @@ NEGATIVE_PRESENTER = (
     "floating object, hovering prop, object suspended in mid-air, "
     "prop not touching the hand, disembodied object, object detached from the hand, "
     "empty open palm under a floating object, "
+    # SCALE. "A grey rock" came back as a BOULDER hugged with both arms — which also
+    # cost her the second prop, since both arms were full of the first.
+    "giant prop, oversized object, boulder, huge rock, prop bigger than the character, "
+    "object larger than her head, prop hugged with both arms, "
     # The face IS the identity. Asked for "heart eyes" the model deleted her eyes and
     # pasted two red emoji over the sockets — that is not an expression, it is a
     # different character. Expressions come from eyebrows and mouths.
@@ -1082,11 +1092,45 @@ def never_empty_handed(scene: str) -> str:
     return _tidy(f"{(scene or '').rstrip(' ,')}, {_BUSY_DEFAULT}")
 
 
+# SCALE. Nothing in the prompt said how BIG a prop was, so "holding up a grey rock" came
+# back as a BOULDER — bigger than her torso, hugged with both arms. That also ate the
+# SECOND prop the scene asked for (a plant), because both her arms were full of the
+# first. A prop is a child's toy. It goes in a hand.
+_PROP_NOUNS = (
+    "rock", "stone", "pebble", "plant", "seedling", "flower", "leaf", "doll", "toy",
+    "car", "ball", "book", "plate", "bowl", "cup", "apple", "fruit", "carrot",
+    "vegetable", "seed", "bone", "brush", "spoon", "globe", "teddy", "wrench",
+)
+_PROP_RE = re.compile(r"\b(?:a|an|the|one|up)\s+((?:\w+\s+){0,2}(?:" +
+                      "|".join(_PROP_NOUNS) + r"))\b", re.I)
+_ALREADY_SMALL = re.compile(r"\b(?:small|little|tiny|toy|hand-sized|miniature)\b", re.I)
+
+
+def props_fit_in_a_hand(scene: str) -> str:
+    """A prop is a child's toy, not a boulder."""
+    s = scene or ""
+    if not _PROP_RE.search(s):
+        return scene
+
+    def _shrink(m):
+        phrase = m.group(1)
+        if _ALREADY_SMALL.search(phrase):
+            return m.group(0)
+        return m.group(0).replace(phrase, f"small {phrase}", 1)
+
+    out = _PROP_RE.sub(_shrink, s)
+    if out != s:
+        log.info("scene named a prop with no size — a prop is hand-sized or it becomes "
+                 "a boulder")
+    return _tidy(out)
+
+
 def clean_scene_for_the_mascot(scene: str) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway."""
-    return never_empty_handed(alive_looks_alive(warm_face(one_focus(keep_it_dressed(
-        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))))))
+    return props_fit_in_a_hand(never_empty_handed(alive_looks_alive(warm_face(
+        one_focus(keep_it_dressed(keep_the_face(keep_the_body(
+            keep_the_mascot(one_moment(scene))))))))))
 
 
 def keep_the_mascot(scene: str) -> str:
