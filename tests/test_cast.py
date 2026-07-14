@@ -218,8 +218,13 @@ def test_a_person_we_cannot_draw_is_still_removed(mid, monkeypatch):
 
 
 def test_the_lesson_passes_the_second_reference():
+    # The draw lives in _draw_one now — shared by the whole batch and by a single-picture
+    # redraw, so the code you use to FIX a bad picture cannot drift from the code that
+    # made it.
     from modules import lesson_pipeline as lp
-    src = inspect.getsource(lp.prepare_lesson)
+    src = inspect.getsource(lp._draw_one)
     assert "cast.ref_for(scene_text, mid)" in src
     assert "reference_images=refs" in src
     assert "cast.name_the_refs(scene_text, mid, relation)" in src
+    for caller in (lp.prepare_lesson, lp.redraw_still):
+        assert "_draw_one(" in inspect.getsource(caller)

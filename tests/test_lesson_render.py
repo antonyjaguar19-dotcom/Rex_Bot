@@ -35,7 +35,10 @@ def lessons(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _lesson(stage="stills", animate=()) -> dict:
+def _lesson(stage="stills", animate=(), approved=True) -> dict:
+    """A prepared lesson. `approved=True` by default because most of these tests are about
+    something else — the gate itself is exercised in
+    test_a_picture_nobody_confirmed_cannot_reach_wan."""
     lid = "20260714_100000"
     d = lw.LESSONS_DIR / lid
     d.mkdir(parents=True, exist_ok=True)
@@ -44,7 +47,7 @@ def _lesson(stage="stills", animate=()) -> dict:
         beats.append({
             "kind": "teach", "narration": f"This is line number {i} of the lesson.",
             "on_screen": f"Line {i}", "image_prompt": "a child",
-            "animate": i in animate, "index": i + 1,
+            "animate": i in animate, "approved": approved, "index": i + 1,
             "still": str(d / f"still_{i:02d}.png"), "duration": 3.0,
         })
     lesson = {"lesson_id": lid, "_id": lid, "title": "Your Body", "topic": "Body",
@@ -309,7 +312,9 @@ def test_one_lesson_gets_one_backdrop():
 
     src = inspect.getsource(lp.prepare_lesson)
     assert "setting_for(" in src
-    assert "background=backdrop" in src
+    # the draw itself lives in _draw_one now — shared by the batch and a single redraw, so
+    # the copy you use to fix a bad picture cannot drift from the one that made it
+    assert "background=backdrop" in inspect.getsource(lp._draw_one)
 
     a = lp.setting_for("Living and Non-living Things")
     b = lp.setting_for("Living and Non-living Things")
@@ -359,3 +364,143 @@ def test_the_tail_the_chimera_and_the_wonky_eye_are_banned():
                    "merged creature", "doll fused with an animal", "chimera",
                    "asymmetric eyes", "lazy eye", "one eye larger than the other"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+# --- NOTHING STARTS WAN ON A PICTURE NOBODY HAS SEEN -----------------------------
+# Almost every serious defect this pipeline has produced — mouse ears, a twin mother, a
+# doll rendered as a living child dangling by the wrist, a headless doll, a boulder, the
+# teacher snarling — rendered cleanly, errored nothing, warned nothing, and was wrong only
+# IN THE FILE. Wan then spent 8.5 minutes animating it.
+#
+# An image pipeline has no failing test: a wrong picture renders exactly as fast and as
+# cleanly as a right one, and the only detector is a person looking at it.
+
+def test_a_picture_nobody_confirmed_cannot_reach_wan(tmp_path, monkeypatch):
+    from modules import lesson_pipeline as lp
+    from modules import lesson_writer as lw
+
+    monkeypatch.setattr(lw, "LESSONS_DIR", tmp_path)
+    monkeypatch.setattr(lp, "LESSONS_DIR", tmp_path)
+    lid = "20260714_130000"
+    (tmp_path / lid).mkdir()
+    beats = [{"kind": "teach", "narration": f"line {i}", "on_screen": "x",
+              "image_prompt": "", "animate": False, "approved": i < 2, "index": i + 1,
+              "kind_": None}
+             for i in range(4)]
+    lw._save({"lesson_id": lid, "title": "T", "topic": "T", "beats": beats,
+              "stage": "stills", "word_count": 8, "estimated_seconds": 12.0})
+
+    with pytest.raises(lp.LessonRenderError) as e:
+        lp.approve(lid)
+    msg = str(e.value)
+    assert "not confirmed" in msg
+    assert "3, 4" in msg, "it must say WHICH pictures"
+
+    for i in (2, 3):
+        lw.set_beat_approved(lid, i, True)
+    got = lp.approve(lid)                    # now it goes through
+    assert got["stage"] == "approved"
+
+
+def test_a_fresh_picture_is_never_pre_approved():
+    # Carrying an old tick across a redraw is exactly how an unlooked-at picture reaches
+    # Wan.
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.prepare_lesson)
+    assert 'b["approved"] = False' in src
+
+    src = inspect.getsource(lp.redraw_still)
+    assert "set_beat_approved(lesson_id, i, False)" in src
+
+
+def test_one_picture_can_be_redrawn_on_its_own():
+    # Before this, fixing one bad picture meant redrawing all thirteen — and "Redo the
+    # pictures" was a twenty-minute NO-OP besides (same scene, fixed seed, byte-identical
+    # images). A redraw needs a NEW SEED or you get the same picture back.
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.redraw_still)
+    assert 'lesson["still_take"] = int(lesson.get("still_take", 0)) + 1' in src
+    assert "_draw_one(" in src
+
+    # ...and the batch and the single redraw go through the SAME draw, or the copy that
+    # drifts is the one you use to fix a bad picture
+    assert "_draw_one(" in inspect.getsource(lp.prepare_lesson)
+
+
+# --- the logo ------------------------------------------------------------------
+
+def test_the_logo_is_small_half_transparent_and_actually_bottom_right():
+    # It was a THIRD of the way across the frame and all but opaque, and it sat at the
+    # RIGHT EDGE, VERTICALLY CENTRED — beside the mascot's head — while its own docstring
+    # and every call-site comment said "bottom-right". The y-expression was (H-h)/2. A
+    # comment is not a test.
+    from modules import musicvideo_assembly as mva
+
+    assert mva.WM_WIDTH_FRAC == 0.10
+    assert mva.WM_OPACITY == 0.5
+
+    f = mva.logo_overlay_filter("v0", "v1", 2, 1920)
+    assert "aa=0.5" in f
+    assert "scale=192:" in f                    # 10% of 1920
+    assert "overlay=W-w-57:H-h-57" in f, "still not bottom-right"
+    assert "(H-h)/2" not in f
+
+
+# --- the outro -----------------------------------------------------------------
+
+def test_the_lesson_ends_on_a_subscribe_about_the_topic(tmp_path, monkeypatch):
+    from modules import lesson_writer as lw
+    monkeypatch.setattr(lw, "LESSONS_DIR", tmp_path)
+    lid = "20260714_140000"
+    (tmp_path / lid).mkdir()
+    beats = [{"kind": "intro", "narration": "Hello!", "on_screen": "Hi",
+              "image_prompt": "", "animate": False, "approved": True, "index": 1},
+             {"kind": "recap", "narration": "Living things eat and grow.",
+              "on_screen": "Recap", "image_prompt": "", "animate": False,
+              "approved": True, "index": 2}]
+    lw._save({"lesson_id": lid, "title": "Living Things",
+              "topic": "Living and Non-living Things", "beats": beats,
+              "stage": "stills", "word_count": 6, "estimated_seconds": 8.0})
+
+    # no Ollama in the tests — the fallback must still give the lesson an ending
+    monkeypatch.setattr(lw, "subscribe_outro", lambda t: lw._fallback_outro(t))
+    assert lw.ensure_outro(lid) is True
+
+    got = lw.load_lesson(lid)["beats"]
+    assert len(got) == 3
+    assert got[1]["narration"] == "Living things eat and grow.", "the RECAP survives"
+    assert got[-1]["kind"] == "outro"
+    assert "subscribe" in got[-1]["narration"].lower()
+    assert "living" in got[-1]["narration"].lower(), "it is about the TOPIC"
+    assert got[-1]["approved"] is False, "a new picture nobody has seen"
+
+    # idempotent — a second prepare must not staple a second outro on
+    assert lw.ensure_outro(lid) is False
+    assert len(lw.load_lesson(lid)["beats"]) == 3
+
+
+def test_the_outro_check_is_the_feature_not_the_prompt(monkeypatch):
+    # A model told to say "subscribe" writes a lovely sign-off that never says it — the
+    # same lesson the fact memory taught (a model told "don't repeat these" rewords the
+    # fact instead). The CHECK is the feature.
+    from modules import lesson_writer as lw
+    import modules.script_generator as sg
+
+    monkeypatch.setattr(sg, "_call_llm",
+                        lambda *a, **k: '{"outro": "Thanks for watching, see you soon!"}')
+    got = lw.subscribe_outro("Fruits")
+    assert "subscribe" in got.lower(), "a CTA with no CTA in it was accepted"
+    assert got == lw._fallback_outro("Fruits")
+
+
+def test_the_recap_is_no_longer_labelled_the_outro():
+    # The last spoken line used to be tagged "outro" purely because it came last, so the
+    # lesson did not END — it just stopped.
+    from modules import lesson_writer as lw
+    kinds = lw._kinds_for(["Hello.", "Living things grow.", "Is a rock alive?",
+                           "So living things eat and grow."])
+    assert kinds[0] == "intro"
+    assert kinds[-1] == "recap"
+    assert "outro" not in kinds

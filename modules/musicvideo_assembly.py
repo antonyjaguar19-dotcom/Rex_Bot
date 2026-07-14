@@ -106,23 +106,37 @@ WATERMARK_TEXT = "Rexjaw"
 
 # Brand logo watermark (transparent PNG) — overlaid bottom-right on every render,
 # replacing the old burned text mark. Missing file => no watermark (graceful).
+#
+# ONE definition, four pipelines: lesson, facts, music and horror all reach this filter
+# (the lesson through lesson_assembly -> facts_assembly._mux_facts). Change it here and
+# it changes everywhere, which is the point — it is one brand mark.
 WATERMARK_PNG = PROJECT_ROOT / "02_Agent" / "assets" / "watermark.png"
-WM_WIDTH_FRAC = 0.16     # logo width as a fraction of the video width
+
+# 0.16 was a THIRD of the way across the frame and all but opaque — it read as part of
+# the picture rather than a mark on it, and in a lesson it competed with the child who is
+# the entire point of the shot.
+WM_WIDTH_FRAC = 0.10     # logo width as a fraction of the video width
 WM_MARGIN_FRAC = 0.03
-WM_OPACITY = 0.9
+WM_OPACITY = 0.5
 
 
 def logo_overlay_filter(in_label: str, out_label: str, logo_idx: int, w: int) -> str:
     """ffmpeg filter_complex snippet: scale the logo to WM_WIDTH_FRAC of the frame
     width, apply WM_OPACITY, overlay bottom-right with a margin. `logo_idx` is the
-    input index of the -i watermark.png. Returns '' when the logo file is absent."""
+    input index of the -i watermark.png. Returns '' when the logo file is absent.
+
+    BOTTOM-right. This docstring said so for months and the code did something else: the
+    y-expression was `(H-h)/2`, which is vertically CENTRED on the right edge. Only the
+    x-axis was ever anchored. Jeffy's rendered frames show it floating at mid-height
+    beside the mascot's head. A comment is not a test.
+    """
     if not WATERMARK_PNG.exists():
         return ""
     lw = max(80, int(w * WM_WIDTH_FRAC))
     m = max(24, int(w * WM_MARGIN_FRAC))
     return (f"[{logo_idx}:v]scale={lw}:-1,format=rgba,"
             f"colorchannelmixer=aa={WM_OPACITY}[wmlogo];"
-            f"[{in_label}][wmlogo]overlay=W-w-{m}:(H-h)/2[{out_label}]")
+            f"[{in_label}][wmlogo]overlay=W-w-{m}:H-h-{m}[{out_label}]")
 
 # Each lyric line needs at least this long on screen to be readable. If the
 # detected singing windows can't give every line this much (e.g. whisper barely

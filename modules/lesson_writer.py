@@ -308,13 +308,96 @@ def _kinds_for(lines: list) -> list:
     """
     kinds = ["teach"] * len(lines)
     kinds[0] = "intro"
+    # The last spoken line of the LESSON is the recap — the part that actually teaches.
+    # It used to be labelled "outro" purely because it came last, which meant the lesson
+    # had no ending, only a stop. The real outro is a beat of its own now (ensure_outro).
     if len(lines) > 1:
-        kinds[-1] = "outro"
+        kinds[-1] = "recap"
 
     questions = [i for i in range(1, len(lines) - 1) if "?" in lines[i]]
     if questions:
         kinds[questions[-1]] = "check"
     return kinds
+
+
+# ==============================================================================
+# THE OUTRO
+# ==============================================================================
+
+_OUTRO_SYS = (
+    "You write the last line a children's lesson video says out loud.\n"
+    "Answer with JSON only: {\"outro\": \"...\"}\n"
+    "\n"
+    "- It asks the child to SUBSCRIBE. The word 'subscribe' must be in it.\n"
+    "- It is about THIS TOPIC — not a generic sign-off. Tie it to what was just taught.\n"
+    "- Warm, simple, spoken to a six-year-old. 14 words at the very most.\n"
+    "- No hashtags, no emoji, no channel name, no 'smash that button'.\n"
+    "\n"
+    "Topic 'Living and Non-living Things' -> "
+    "{\"outro\": \"Subscribe, and we will find more living things together!\"}\n"
+    "Topic 'My Wonderful Body' -> "
+    "{\"outro\": \"Subscribe to learn what else your amazing body can do!\"}\n"
+    "Topic 'Animals Around Us' -> "
+    "{\"outro\": \"Subscribe, and we will meet more animals next time!\"}"
+)
+
+
+def _fallback_outro(topic: str) -> str:
+    return f"Subscribe, and we will learn more about {topic.lower()} next time!"
+
+
+def subscribe_outro(topic: str) -> str:
+    """The line the lesson ENDS on. Never raises — a lesson must not lose its ending to a
+    dead Ollama."""
+    topic = (topic or "this").strip()
+    try:
+        from modules.script_generator import _call_llm, _extract_json
+        raw = _call_llm(f"Topic: {topic}\n\nWrite the closing line.",
+                        _OUTRO_SYS, role="creative")
+        got = ((_extract_json(raw) or {}).get("outro") or "").strip()
+        # The CHECK, not the prompt. A model told to say "subscribe" writes a lovely
+        # sign-off that never says it — the same lesson the fact-memory taught (a model
+        # told "don't repeat these" rewords the fact instead).
+        if got and "subscribe" in got.lower() and len(got.split()) <= 16:
+            return got
+        log.info(f"outro from the model was unusable ({got!r}); using the plain one")
+    except Exception as e:
+        log.info(f"outro LLM failed ({e}); using the plain one")
+    return _fallback_outro(topic)
+
+
+def ensure_outro(lesson_id: str) -> bool:
+    """Give the lesson an ending. Idempotent, so a lesson written before this existed
+    gains one the next time it is prepared, without being rewritten."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    if beats and beats[-1].get("kind") == "outro":
+        return False                        # it already ends on one
+
+    topic = lesson.get("topic") or lesson.get("title") or "this"
+    line = subscribe_outro(topic)
+    beats.append({
+        "kind": "outro",
+        "narration": line,
+        "on_screen": "Subscribe!",
+        "image_prompt": "",
+        # Waving is BUSY HANDS by construction — an idle scene goes home to the reference
+        # photo, and the reference photo is a T-pose (mascot.never_empty_handed).
+        "mascot_scene": ("the mascot character facing the camera waving both hands high "
+                         "above her head, beaming with a big happy smile"),
+        "animate": False,
+        "approved": False,
+        "index": len(beats) + 1,
+    })
+    lesson["beats"] = beats
+    lesson["word_count"] = sum(len(b["narration"].split()) for b in beats)
+    lesson["estimated_seconds"] = round(
+        lesson["word_count"] / WORDS_PER_SEC + PAD_PER_BEAT * len(beats), 1)
+    _save(lesson)
+    log.info(f"{lesson_id}: ends on — {line}")
+    return True
 
 
 def _dress_by_line(lines: list, dress: dict) -> dict:
@@ -366,6 +449,13 @@ def _to_beats(lines: list, dress: dict) -> list:
             # The tickbox. OFF by default and that is deliberate: ON would mean an
             # ~8-minute Wan render for every beat the moment you pressed Render.
             "animate": False,
+            # THE GATE. A picture is not confirmed until a human has LOOKED at it and
+            # said so. Every serious defect this pipeline has produced — mouse ears, a
+            # twin mother, a doll rendered as a living child, a headless doll, a boulder
+            # — rendered cleanly, logged nothing, and was wrong only in the file. Wan
+            # then spent 8.5 minutes animating it. Nothing may start that on a picture
+            # nobody has seen.
+            "approved": False,
             "index": i + 1,
         })
 
@@ -520,6 +610,124 @@ def set_beat_animate(lesson_id: str, beat_index: int, animate: bool) -> bool:
         return False
     beats[beat_index]["animate"] = bool(animate)
     _save(lesson)
+    return True
+
+
+def set_beat_approved(lesson_id: str, beat_index: int, approved: bool) -> bool:
+    """You have LOOKED at this picture and it is right.
+
+    Nothing may start Wan on a picture nobody has seen. Every serious defect this pipeline
+    has produced rendered cleanly and was wrong only in the file — the gate cannot be a
+    thumbnail glanced at on the way to pressing Render.
+    """
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    if not (0 <= beat_index < len(beats)):
+        return False
+    beats[beat_index]["approved"] = bool(approved)
+    _save(lesson)
+    return True
+
+
+def unapproved(lesson: dict) -> list:
+    """The 1-based line numbers whose picture nobody has confirmed."""
+    return [i + 1 for i, b in enumerate(lesson.get("beats", []))
+            if not b.get("approved")]
+
+
+# ==============================================================================
+# REORDER
+# ==============================================================================
+#
+# EVERY ARTIFACT IS NAMED BY THE BEAT'S POSITION — still_04.png, beat_04.wav,
+# clip_04.mp4 — and the narration track is rebuilt by GLOBBING those filenames, not by
+# walking the beats:
+#
+#     wavs = sorted((d / "audio").glob("beat_*.wav"))     # lesson_pipeline
+#
+# So moving a beat in the list and stopping there would leave the VOICE in the old order
+# while the pictures, the captions and the durations followed the new one. The video would
+# render cleanly, log nothing, and be wrong in the file — which is the exact shape of every
+# bug this pipeline has ever shipped. The files move WITH the beat.
+#
+# TWO-PHASE, not descending. shot_editor renames highest-first, which is collision-free for
+# an INSERT (a monotonic +1 shift). A reorder is a PERMUTATION, and for a permutation
+# "highest first" collides: moving 2->0 needs 0->1 and 1->2 at the same time. Everything
+# goes to a temp name, then temp comes back into place.
+
+_ARTIFACTS = (
+    ("stills", "still_{:02d}", (".png",)),
+    ("audio", "beat_{:02d}", (".wav",)),
+    ("clips", "clip_{:02d}", (".mp4",)),
+)
+
+
+def _move_artifacts(lesson_dir: Path, order: list) -> None:
+    """`order[new_index] = old_index`. Rename every family into the new positions."""
+    for sub, template, exts in _ARTIFACTS:
+        d = lesson_dir / sub
+        if not d.is_dir():
+            continue
+        # phase 1 — everything out of the way, so no rename can land on a live file
+        parked = {}
+        for old in range(len(order)):
+            for ext in exts:
+                src = d / f"{template.format(old)}{ext}"
+                if src.is_file():
+                    tmp = d / f"_reorder_{old}{ext}"
+                    src.replace(tmp)
+                    parked[(old, ext)] = tmp
+        # phase 2 — back into place, in the new order
+        for new, old in enumerate(order):
+            for ext in exts:
+                tmp = parked.get((old, ext))
+                if tmp and tmp.is_file():
+                    tmp.replace(d / f"{template.format(new)}{ext}")
+
+
+def move_beat(lesson_id: str, src: int, dst: int) -> bool:
+    """Move one shot to another position — the beat AND everything on disk that belongs
+    to it: its picture, its voice take, its animated clip."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    n = len(beats)
+    if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
+        return False
+
+    order = list(range(n))              # order[new] = old
+    order.insert(dst, order.pop(src))
+
+    d = LESSONS_DIR / lesson_id
+    _move_artifacts(d, order)
+
+    lesson["beats"] = [beats[old] for old in order]
+
+    # The still's ABSOLUTE path is stored on the beat (prepare_lesson writes it), and the
+    # file it names has just been renamed out from under it.
+    for i, b in enumerate(lesson["beats"]):
+        if b.get("still"):
+            b["still"] = str(d / "stills" / f"still_{i:02d}.png")
+        b["index"] = i + 1
+
+    # spoken.json remembers WHICH WORDS the takes on disk are of, in order. Re-order it to
+    # match, or prepare_lesson would find a mismatch and re-record the whole lesson — the
+    # clone is stochastic, and a re-read can collapse a line and drop the lesson to a
+    # preset voice as the price of moving a shot.
+    manifest = d / "audio" / "spoken.json"
+    if manifest.is_file():
+        try:
+            said = json.loads(manifest.read_text(encoding="utf-8"))
+            if isinstance(said, list) and len(said) == n:
+                atomic_write_json(manifest, [said[old] for old in order])
+        except (OSError, ValueError):
+            pass
+
+    _save(lesson)
+    log.info(f"{lesson_id}: moved shot {src + 1} to position {dst + 1}")
     return True
 
 

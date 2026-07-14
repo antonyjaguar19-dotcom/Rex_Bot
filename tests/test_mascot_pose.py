@@ -87,7 +87,9 @@ def test_a_lesson_pays_for_its_props_and_a_facts_reel_does_not():
     from modules import facts_pipeline as fp
     from modules import lesson_pipeline as lp
 
-    assert "full_quality=True" in inspect.getsource(lp.prepare_lesson)
+    # _draw_one is where a lesson's picture is drawn — the batch and a single redraw both
+    # go through it
+    assert "full_quality=True" in inspect.getsource(lp._draw_one)
     assert "full_quality" not in inspect.getsource(fp._render_facts_mascot)
 
 

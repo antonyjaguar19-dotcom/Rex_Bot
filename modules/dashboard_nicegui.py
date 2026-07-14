@@ -144,6 +144,16 @@ except Exception as _e:
     logging.getLogger("claw_bot.dashboard").warning(f"assets mount failed: {_e}")
 
 
+def _mtime(p) -> int:
+    """A file's mtime, or 0. For change signatures: a REDRAWN picture keeps its path and
+    changes only its bytes, so a signature built from paths alone would never notice and
+    the card would go on showing the old image."""
+    try:
+        return Path(p).stat().st_mtime_ns
+    except Exception:
+        return 0
+
+
 def _asset_url(p) -> str:
     """A cache-busted URL for a file under 02_Agent/assets/."""
     p = Path(p)
@@ -1076,6 +1086,32 @@ def prepare_lesson_action(lesson_id: str, refresh_cb, redo: bool = False):
             _end()
             refresh_cb()
     _bg_gpu("lesson pictures", worker)
+
+
+def redraw_still_action(lesson_id: str, i: int, refresh_cb):
+    """Redraw ONE picture, at a new seed. Its confirmation is cleared — it is a new
+    picture and nobody has looked at it.
+
+    Fixing one bad image used to mean redrawing all thirteen (and "Redo the pictures" was
+    a twenty-minute no-op besides: same scene, fixed seed, byte-identical images).
+    """
+    from modules import lesson_pipeline as lp
+
+    if not lesson_id:
+        return
+    if not _try_begin(f"redraw picture {i + 1}"):
+        return
+
+    def worker():
+        try:
+            lp.redraw_still(lesson_id, i, progress_cb=lambda m: S.push(f"· {m}"))
+        except Exception as e:
+            S.push(f"❌ {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu(f"redraw picture {i + 1}", worker)
+    ui.notify(f"🖼️ redrawing picture {i + 1}… (~2 min)", type="ongoing")
 
 
 def render_lesson_action(lesson_id: str, refresh_cb):
@@ -4497,7 +4533,10 @@ def main_page():
         sig = ((lesson or {}).get("lesson_id"), (lesson or {}).get("stage"),
                (lesson or {}).get("video", ""),
                tuple((b["narration"], b["on_screen"], b.get("animate"),
-                      b.get("still", ""))
+                      b.get("approved"), b.get("still", ""),
+                      # the still's MTIME, or a redrawn picture would keep showing the old
+                      # one: the path does not change, only the bytes behind it
+                      _mtime(b.get("still", "")))
                      for b in (lesson or {}).get("beats", [])))
         if not _changed("lesson_script", sig):
             return
@@ -4528,10 +4567,13 @@ def main_page():
             def _repaint_estimate():
                 got = lw.load_lesson(S.lesson_id)
                 e = lp.estimate(got["beats"])
+                left = lw.unapproved(got)
                 est_label.set_text(
                     f"{e['animated']} animated + {e['still']} still shots ≈ "
                     f"{e['minutes']} min of rendering"
-                    + ("  ⚠️ over the cap — untick some" if e["over_cap"] else ""))
+                    + ("  ⚠️ over the cap — untick some" if e["over_cap"] else "")
+                    + (f"  🔒 {len(left)} picture(s) still to confirm" if left
+                       else "  ✅ every picture confirmed"))
 
             for i, b in enumerate(lesson["beats"]):
                 with ui.row().classes("w-full items-center gap-2"):
@@ -4568,7 +4610,46 @@ def main_page():
                         full_refresh()
                     line.on("blur", _save_line)
 
+                    # ▲▼ REORDER. The picture, the voice take and the animated clip all
+                    # move with the beat — see lesson_writer.move_beat. They are named by
+                    # POSITION on disk (still_04.png, beat_04.wav, clip_04.mp4) and the
+                    # narration track is rebuilt by GLOBBING those names, so a reorder that
+                    # did not rename them would leave the voice in the old order while the
+                    # pictures followed the new one. Silent, and wrong only in the file.
+                    def _up(_=None, _i=i):
+                        if lw.move_beat(S.lesson_id, _i, _i - 1):
+                            full_refresh()
+
+                    def _down(_=None, _i=i):
+                        if lw.move_beat(S.lesson_id, _i, _i + 1):
+                            full_refresh()
+
+                    with ui.column().classes("gap-0"):
+                        ui.button("▲", on_click=_up).props("flat dense size=sm") \
+                            .set_enabled(i > 0)
+                        ui.button("▼", on_click=_down).props("flat dense size=sm") \
+                            .set_enabled(i < len(lesson["beats"]) - 1)
+
                     if prepared:
+                        # ✓ CONFIRMED. The one that matters.
+                        #
+                        # Almost every serious defect this pipeline has produced — mouse
+                        # ears, a twin mother, a doll rendered as a living child dangling
+                        # by the wrist, a headless doll, a boulder — rendered cleanly,
+                        # logged nothing, and was wrong only IN THE FILE. Wan then spent
+                        # 8.5 minutes animating it. Render is disabled until every picture
+                        # has been looked at and ticked.
+                        ok = ui.checkbox(value=bool(b.get("approved"))) \
+                            .props(f"dense color=positive name=lesson_ok_{i}") \
+                            .tooltip("I have looked at this picture full size and it is "
+                                     "right. Render stays locked until every one is "
+                                     "ticked.")
+
+                        def _ok(_=None, _i=i, _c=ok):
+                            lw.set_beat_approved(S.lesson_id, _i, bool(_c.value))
+                            _repaint_estimate()
+                        ok.on_value_change(_ok)
+
                         # THE TICKBOX. Each one is ~8.5 minutes of Wan; unticked, the
                         # still gets a slow pan and costs nothing. The choice is saved
                         # to disk — the render reads it back, not the browser.
@@ -4581,6 +4662,15 @@ def main_page():
                             lw.set_beat_animate(S.lesson_id, _i, bool(_c.value))
                             _repaint_estimate()
                         tick.on_value_change(_tick)
+
+                        # 🔁 THIS picture, on its own. Fixing one bad image used to mean
+                        # redrawing all thirteen.
+                        def _redraw(_=None, _i=i):
+                            redraw_still_action(S.lesson_id, _i, full_refresh)
+
+                        ui.button("🔁", on_click=_redraw).props("flat dense") \
+                            .tooltip("Redraw just this picture, at a new seed (~2 min). "
+                                     "Its tick is cleared — look at the new one.")
                     else:
                         ui.label(b["on_screen"]).classes("text-xs opacity-60") \
                             .style("width: 130px;")
@@ -4596,15 +4686,30 @@ def main_page():
                                  "gets animated afterwards.")
                 else:
                     _repaint_estimate()
-                    ui.button("🎬 Render the lesson",
-                              on_click=lambda: render_lesson_action(S.lesson_id,
-                                                                    full_refresh)) \
+                    unconfirmed = lw.unapproved(lesson)
+                    render_btn = ui.button(
+                        "🎬 Render the lesson",
+                        on_click=lambda: render_lesson_action(S.lesson_id, full_refresh)) \
                         .classes("rex-btn-primary")
+                    if unconfirmed:
+                        # LOCKED. Nothing starts an hour of Wan on a picture nobody has
+                        # seen. The backend refuses too (lesson_pipeline.approve) — a
+                        # disabled button is a courtesy, not a gate; a stale tab or a
+                        # Discord command must hit the same wall.
+                        render_btn.disable()
+                        render_btn.set_text(
+                            f"🔒 {len(unconfirmed)} picture(s) not confirmed")
+                        render_btn.tooltip(
+                            f"Look at line(s) "
+                            f"{', '.join(str(n) for n in unconfirmed)} full size and tick "
+                            f"✓. Every bad picture this lesson has produced rendered "
+                            f"perfectly cleanly — the only way to catch one is to look.")
+
                     ui.button("🔁 Redo the pictures",
                               on_click=lambda: prepare_lesson_action(
                                   S.lesson_id, full_refresh, redo=True)) \
                         .props("flat dense") \
-                        .tooltip("Writes NEW scenes and draws them at a new seed. The "
+                        .tooltip("Writes NEW scenes and draws them ALL at a new seed. The "
                                  "voice takes are kept — only the pictures change.")
 
             if lesson.get("video") and Path(lesson["video"]).exists():

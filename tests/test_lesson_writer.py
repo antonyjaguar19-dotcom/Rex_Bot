@@ -98,7 +98,10 @@ def test_a_topic_becomes_a_lesson(book, monkeypatch):
     assert lesson["topic"] == "My Wonderful Body"
     assert lesson["book_id"] == book
     assert [b["kind"] for b in lesson["beats"]][0] == "intro"
-    assert [b["kind"] for b in lesson["beats"]][-1] == "outro"
+    # the LAST SPOKEN line is the recap — the part that teaches. The outro (a subscribe
+    # CTA about the topic) is a beat of its own, added by ensure_outro, so the lesson
+    # ENDS rather than merely stopping.
+    assert [b["kind"] for b in lesson["beats"]][-1] == "recap"
     assert lesson["stage"] == "written"
     # THE narration is the lesson's own prose, verbatim — the model never rewrites it.
     spoken = " ".join(b["narration"] for b in lesson["beats"])
@@ -266,8 +269,12 @@ def test_a_lesson_asks_exactly_one_check_question():
         "We learned that living things eat, move and feel.",
     ]
     kinds = lw._kinds_for(lines)
-    assert kinds == ["intro", "teach", "teach", "check", "outro"]
+    # The last SPOKEN line is the recap. It used to be labelled "outro" purely because it
+    # came last, which meant the lesson had no ending — only a stop. The outro is now a
+    # beat of its own: a subscribe line about the topic, added by ensure_outro.
+    assert kinds == ["intro", "teach", "teach", "check", "recap"]
     assert kinds.count("check") == 1
+    assert "outro" not in kinds
 
 
 def test_a_dropped_caption_does_not_shift_every_caption_after_it():

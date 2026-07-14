@@ -178,6 +178,90 @@ def _remember_takes(narrations: list, audio_dir: Path) -> None:
     atomic_write_json(audio_dir / "spoken.json", narrations)
 
 
+def _draw_one(lesson: dict, i: int, backdrop: str, mid: str, out: Path,
+              _p=lambda m: None):
+    """One picture. The whole batch and a single redraw go through HERE — two copies of
+    this would drift, and the copy that drifted would be the one you use to fix a bad
+    picture."""
+    b = lesson["beats"][i]
+
+    # full_quality: 20 steps at cfg 2.5 (~100s) instead of the 4-step Lightning path
+    # (~27s). A lesson's prop IS the teaching — a plate of vegetables has to look like
+    # vegetables, not candy — so a lesson pays the extra minute a shot. Facts does not.
+    #
+    # A SECOND PERSON GETS A SECOND REFERENCE. "You feel happy when mummy hugs you" needs
+    # a mummy in the picture, and for a long time we could not draw one: handed a single
+    # reference (the mascot), Qwen painted that identity onto every human in the frame and
+    # the mother came back as the child's TWIN. TextEncodeQwenImageEditPlus takes
+    # image1..image3 and we were only ever passing one. See modules/cast.py.
+    #
+    # Only when the scene actually names someone: a spare reference is another thing for
+    # Qwen to copy into a picture that did not ask for it.
+    refs, scene_text = None, b["mascot_scene"]
+    relation, second = cast.ref_for(scene_text, mid)
+    if second:
+        refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
+        # Two references and no explanation is an invitation to blend them. Say which is
+        # which — that is what the proving render did, and it came back with two correct,
+        # separate people first try.
+        scene_text = cast.name_the_refs(scene_text, mid, relation)
+        _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
+
+    return mascot.render_scene(
+        scene_text, out, aspect=ASPECT,
+        seed=4000 + i + 1000 * int(lesson.get("still_take", 0)),
+        presenter=True, full_quality=True,
+        reference_images=refs, background=backdrop, teaching=True)
+
+
+def redraw_still(lesson_id: str, i: int,
+                 progress_cb: Optional[Callable[[str], None]] = None) -> bool:
+    """Redraw ONE picture. A new seed, and its confirmation is cleared.
+
+    Before this, fixing one bad picture meant redrawing all thirteen — and "🔁 Redo the
+    pictures" was for twenty minutes a no-op besides (it kept the scene and the seed, so
+    it handed back byte-identical images). Clip reuse keys on the still's mtime, so
+    redrawing one shot re-animates that shot and no other.
+    """
+    def _p(msg: str):
+        log.info(msg)
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
+    lesson = lw.load_lesson(lesson_id)
+    if not lesson or not (0 <= i < len(lesson.get("beats", []))):
+        return False
+
+    preflight(_p)
+    from modules import mascot_library as _ml
+    cast.migrate()
+    mid = _ml.get_active_id()
+    backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
+
+    # A NEW SEED, or you get the same picture back. That was the whole bug in "Redo the
+    # pictures": same scene, fixed seed, byte-identical images, twenty minutes gone.
+    lesson["still_take"] = int(lesson.get("still_take", 0)) + 1
+    sp = LESSONS_DIR / lesson_id / "stills" / f"still_{i:02d}.png"
+
+    _p(f"🖼️ redrawing picture {i+1}…")
+    gpu_memory.acquire(gpu_memory.QWEN_EDIT)
+    try:
+        got = _draw_one(lesson, i, backdrop, mid, sp, _p)
+    finally:
+        gpu_memory.release(gpu_memory.QWEN_EDIT)
+    if not got:
+        _p(f"❌ picture {i+1} could not be drawn")
+        return False
+
+    lw._save(lesson)                        # keep the bumped seed
+    lw.set_beat_approved(lesson_id, i, False)   # a NEW picture has not been looked at
+    _p(f"✅ picture {i+1} redrawn — confirm it when you have looked")
+    return True
+
+
 # ==============================================================================
 # PHASE 1 — scenes, voice, stills. Then STOP.
 # ==============================================================================
@@ -206,6 +290,15 @@ def prepare_lesson(lesson: dict,
 
     t0 = _t.time()
     lesson_id = lesson["lesson_id"]
+
+    # The lesson ENDS on something. Its last spoken line used to be the last sentence of
+    # the recap, labelled "outro" purely because it came last — so the lesson did not end,
+    # it just stopped. Idempotent, so a lesson written before this gains an ending the next
+    # time it is prepared, without being rewritten.
+    if lw.ensure_outro(lesson_id):
+        lesson = lw.load_lesson(lesson_id)
+        _p(f"👋 the lesson now ends on: {lesson['beats'][-1]['narration']}")
+
     beats = lesson.get("beats", [])
     if not beats:
         raise LessonRenderError("this lesson has no beats")
@@ -289,38 +382,7 @@ def prepare_lesson(lesson: dict,
     try:
         for i, b in enumerate(beats):
             sp = stills_dir / f"still_{i:02d}.png"
-            # full_quality: 20 steps at cfg 2.5 (~100s) instead of the 4-step
-            # Lightning path (~27s). A lesson's prop IS the teaching — a plate of
-            # vegetables has to look like vegetables, not candy — so a lesson pays
-            # the extra minute a shot. A facts reel does not, and stays fast.
-            # A SECOND PERSON GETS A SECOND REFERENCE.
-            #
-            # "You feel happy when mummy hugs you" needs a mummy in the picture, and for
-            # a long time we could not draw one: handed a single reference (the mascot),
-            # Qwen painted that identity onto every human in the frame and the mother
-            # came back as the child's TWIN. I concluded the model could only draw one
-            # person. That was wrong — TextEncodeQwenImageEditPlus takes image1..image3
-            # and we were only ever passing one. Give it a drawing of the mother and it
-            # draws a mother. See modules/cast.py.
-            #
-            # Only when the scene actually names someone: a spare reference is another
-            # thing for Qwen to copy into a picture that did not ask for it.
-            refs, scene_text = None, b["mascot_scene"]
-            relation, second = cast.ref_for(scene_text, mid)
-            if second:
-                refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
-                # Two references and no explanation is an invitation to blend them. Say
-                # which is which — that is what the proving render did, and it came back
-                # with two correct, separate people first try.
-                scene_text = cast.name_the_refs(scene_text, mid, relation)
-                _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
-
-            got = mascot.render_scene(scene_text, sp, aspect=ASPECT,
-                                      seed=4000 + i + 1000 * int(
-                                          lesson.get("still_take", 0)),
-                                      presenter=True, full_quality=True,
-                                      reference_images=refs,
-                                      background=backdrop, teaching=True)
+            got = _draw_one(lesson, i, backdrop, mid, sp, _p)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a
                 # lesson with a hole in it, and it must not be discovered in the file.
@@ -337,6 +399,10 @@ def prepare_lesson(lesson: dict,
     for i, b in enumerate(lesson["beats"]):
         b["still"] = str(stills[i])
         b["duration"] = round(durations[i], 3)
+        # A FRESH PICTURE IS NEVER PRE-APPROVED. These are new images nobody has seen;
+        # carrying an old tick across a redraw is exactly how an unlooked-at picture would
+        # reach Wan.
+        b["approved"] = False
     lesson["narration_dir"] = str(audio_dir)
     lesson["stage"] = "stills"
     lesson["estimated_seconds"] = round(total, 1)
@@ -375,6 +441,24 @@ def approve(lesson_id: str) -> dict:
             f"{est['animated']} animated shots is about {est['minutes']} minutes of "
             f"rendering — over the {MAX_WAN_CLIPS}-shot cap. Untick some: a still with "
             f"a slow pan costs nothing.")
+
+    # EVERY PICTURE MUST HAVE BEEN LOOKED AT. This is the last thing checked and the one
+    # that matters most.
+    #
+    # Almost every serious defect this pipeline has produced — mouse ears, a twin mother, a
+    # doll rendered as a living child dangling by the wrist, a headless doll, a boulder,
+    # the teacher snarling at the camera — rendered cleanly, errored nothing, warned
+    # nothing, and was wrong only IN THE FILE. Wan then spent 8.5 minutes animating it.
+    #
+    # An image pipeline has no failing test: a wrong picture renders exactly as fast and as
+    # cleanly as a right one, and the only detector is a person looking at it. So nothing
+    # starts Wan on a picture nobody has confirmed.
+    missing = lw.unapproved(lesson)
+    if missing:
+        raise LessonRenderError(
+            f"{len(missing)} picture(s) not confirmed yet — line(s) "
+            f"{', '.join(str(n) for n in missing)}. Open each one, look at it properly, "
+            f"and tick ✓. Nothing starts an hour of Wan on a picture nobody has seen.")
     lesson["stage"] = "approved"
     lw._save(lesson)
     return lesson

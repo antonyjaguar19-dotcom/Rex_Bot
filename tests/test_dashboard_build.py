@@ -123,3 +123,41 @@ def test_the_family_is_in_the_cards_signature():
     start = src.index("def _slot_sig")
     end = src.index("if not _changed(\"mascots\"", start)
     assert "_family_of(" in src[start:end]
+
+
+def test_the_gate_has_a_confirm_a_redraw_and_reorder_arrows(page):
+    # THE GATE. Almost every serious defect this pipeline has produced rendered cleanly,
+    # logged nothing, and was wrong only in the file — and Wan then spent 8.5 minutes
+    # animating it. Nothing may start that on a picture nobody has confirmed.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def render_lesson_script")
+    end = src.index("def render_lesson_library", start)
+    gate = src[start:end]
+
+    assert "lesson_ok_" in gate, "no per-picture confirm checkbox"
+    assert "set_beat_approved(" in gate
+    assert "render_btn.disable()" in gate, "Render is not locked while a picture is unconfirmed"
+    assert "not confirmed" in gate
+    assert "redraw_still_action(" in gate, "no per-picture redraw"
+    assert "lw.move_beat(" in gate, "no reorder"
+
+    # the still's MTIME is in the change signature, or a redrawn picture would keep
+    # showing the old one: the path never changes, only the bytes behind it
+    sig = src[src.index('sig = ((lesson or {}).get("lesson_id")'):]
+    assert "_mtime(" in sig[:600]
+    assert 'b.get("approved")' in sig[:600]
+
+    assert len(page.elements) > 100
+
+
+def test_the_disabled_button_is_a_courtesy_not_the_gate():
+    # A stale tab, or a Discord command, must hit the same wall. The real gate is in the
+    # pipeline.
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.approve)
+    assert "lw.unapproved(lesson)" in src
+    assert "not confirmed" in src
