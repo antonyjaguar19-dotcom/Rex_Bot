@@ -635,7 +635,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
         assert "mother" not in out.lower(), "one reference image draws one person"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
-        assert "cloth rag doll" in out
+        assert "rag doll" in out and "round stitched head" in out
 
 
 def test_a_scene_with_no_doll_and_no_people_is_untouched():
