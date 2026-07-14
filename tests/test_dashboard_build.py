@@ -193,12 +193,20 @@ def test_the_prompts_are_revealed(page):
     panel = src[start:src.index("def render_lesson_script", start)]
 
     assert "prompts_for(" in panel, "the panel must be built from the RENDERER's code"
-    assert "What Qwen actually gets" in panel
+    assert "WHAT QWEN ACTUALLY GETS" in panel
     assert "image_negative" in panel
-    assert "readonly outlined dense autogrow" in panel, "the sent prompt is read-only"
     assert "lw.set_scene(" in panel, "an edited scene must go through the guards"
     assert "motion_prompt" in panel
     assert 'got.get("guarded")' in panel, "the UI must SAY when it rewrote your words"
+
+    # READABLE. The sent prompts were tiny dimmed textareas (11px, opacity .7) using
+    # Quasar's `autogrow`, which caps its own height — so a 200-word positive and a
+    # 430-word negative came out clipped, greyed and unreadable. The whole point of the
+    # panel is that you can READ what the model was told.
+    assert "_readonly_block(" in panel
+    assert "white-space: pre-wrap" in panel, "a long prompt must WRAP"
+    assert "overflow-y: auto" in panel, "...and scroll rather than clip"
+    assert "font-size: 11px" not in panel
 
     # the two editable prompts are in the row's change signature, or the panel would go on
     # showing the words you just replaced

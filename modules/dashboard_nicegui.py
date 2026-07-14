@@ -4542,80 +4542,102 @@ def main_page():
         if not p:
             return
 
-        with ui.expansion("🔧 Prompts", icon="tune") \
-                .classes("w-full").props("dense") \
-                .style("margin: 0 0 6px 34px; border-left: 1px solid #ffffff14;"):
+        def _readonly_block(text: str) -> None:
+            """A long prompt, WHOLE and readable.
 
-            # --- what you can change ---------------------------------------
-            ui.label("The scene — what the picture shows").classes("text-xs opacity-70")
-            scene_box = ui.textarea(value=p["scene"]) \
-                .props("outlined dark dense autogrow").classes("w-full") \
-                .tooltip("Your words are cleaned by the SAME guards the bot's own scenes "
-                         "get — 'dressed as a puppy' replaces the mascot, an empty scene "
-                         "gives the T-pose. If they change anything, you will be told "
-                         "what and why.")
+            These were tiny dimmed textareas (11px, opacity .7) with Quasar's `autogrow`,
+            which caps its own height — so a 200-word positive and a 430-word negative were
+            clipped, greyed, and unreadable. The entire point of the panel is that you can
+            READ what the model was told.
 
-            def _save_scene(_=None, _i=i, _f=scene_box):
-                got = lw.set_scene(S.lesson_id, _i, _f.value)
-                if not got.get("saved"):
-                    ui.notify("❌ could not save", type="negative")
-                    return
-                if got.get("guarded"):
-                    # Silently rewriting a person's words is its own kind of lie.
-                    ui.notify(f"⚠️ the guards changed your scene: {got['after'][:110]}",
-                              type="warning", timeout=9000, multi_line=True,
-                              classes="w-96")
-                else:
-                    ui.notify("💾 scene saved", type="positive")
-                ui.notify("🔁 press Redraw to see it — the ✓ has been cleared",
-                          type="info")
-                full_refresh()
+            A plain div wraps, scrolls, and never lies about how much text there is.
+            """
+            ui.label(text).classes("w-full").style(
+                "white-space: pre-wrap; word-break: break-word; "
+                "font-family: ui-monospace, Consolas, monospace; font-size: 12px; "
+                "line-height: 1.55; color: #dce6f2; "
+                "background: #0d1420; border: 1px solid #ffffff1f; border-radius: 6px; "
+                "padding: 10px 12px; max-height: 260px; overflow-y: auto;")
 
-            ui.label("The motion — how Wan moves it") \
-                .classes("text-xs opacity-70").style("margin-top:6px;")
-            motion_box = ui.textarea(value=p["motion"]) \
-                .props("outlined dark dense autogrow").classes("w-full") \
-                .tooltip("Only used if this shot is ticked to Animate. It used to be "
-                         "invented at render time and thrown away — you could not see it, "
-                         "let alone change it.")
+        with ui.expansion("🔧 Prompts", icon="tune").classes("w-full") \
+                .style("margin: 2px 0 10px 0; border: 1px solid #ffffff1f; "
+                       "border-radius: 8px; background: #ffffff08;"):
+            # Everything inside gets the FULL width of the card. The old panel inherited
+            # the beat row's cramped, centred layout and squeezed 400 words into it.
+            with ui.column().classes("w-full gap-3").style("padding: 4px 6px 10px 6px;"):
 
-            def _save_motion(_=None, _i=i, _f=motion_box):
-                lw.set_beat_field(S.lesson_id, _i, "motion_prompt", _f.value)
-                ui.notify("💾 motion prompt saved", type="positive")
-                full_refresh()
+                # --- what you can change -----------------------------------
+                ui.label("THE SCENE — what the picture shows") \
+                    .classes("text-xs font-bold").style("color:#7cf; letter-spacing:.04em;")
+                scene_box = ui.textarea(value=p["scene"]) \
+                    .props("outlined dark autogrow").classes("w-full") \
+                    .style("font-size: 13px;") \
+                    .tooltip("Your words are cleaned by the SAME guards the bot's own "
+                             "scenes get — 'dressed as a puppy' replaces the mascot, an "
+                             "empty scene gives the T-pose. If they change anything, you "
+                             "are told what and why.")
 
-            with ui.row().classes("gap-2 items-center").style("margin-top:6px;"):
-                ui.button("💾 Save", on_click=_save_scene).props("flat dense") \
-                    .classes("rex-btn-primary")
-                ui.button("💾 Save motion", on_click=_save_motion).props("flat dense")
-                if p["motion_is_default"]:
-                    ui.label("(motion is the default — the scene, plus gentle gestures "
-                             "and a slow push-in)").classes("text-xs opacity-50")
+                def _save_scene(_=None, _i=i, _f=scene_box):
+                    got = lw.set_scene(S.lesson_id, _i, _f.value)
+                    if not got.get("saved"):
+                        ui.notify("❌ could not save", type="negative")
+                        return
+                    if got.get("guarded"):
+                        # Silently rewriting a person's words is its own kind of lie.
+                        ui.notify(f"⚠️ the guards changed your scene:\n{got['after']}",
+                                  type="warning", timeout=12000, multi_line=True,
+                                  classes="w-96")
+                    else:
+                        ui.notify("💾 scene saved", type="positive")
+                    ui.notify("🔁 press Redraw to see it — the ✓ has been cleared",
+                              type="info")
+                    full_refresh()
 
-            # --- what actually gets sent (read-only) -----------------------
-            ui.separator().style("margin-top:10px;")
-            with ui.row().classes("items-center gap-2").style("margin-top:6px;"):
-                ui.label(f"What Qwen actually gets ({len(p['image_positive'].split())} "
-                         f"words)").classes("text-sm font-bold opacity-80")
-                _copy_btn(p["image_positive"])
-            ui.textarea(value=p["image_positive"]) \
-                .props("readonly outlined dense autogrow").classes("w-full") \
-                .style("font-size: 11px; opacity: .85;")
+                ui.label("THE MOTION — how Wan moves it") \
+                    .classes("text-xs font-bold").style("color:#7cf; letter-spacing:.04em;")
+                motion_box = ui.textarea(value=p["motion"]) \
+                    .props("outlined dark autogrow").classes("w-full") \
+                    .style("font-size: 13px;") \
+                    .tooltip("Only used if this shot is ticked to Animate. It used to be "
+                             "invented at render time and thrown away — you could not see "
+                             "it, let alone change it.")
 
-            with ui.row().classes("items-center gap-2").style("margin-top:6px;"):
-                ui.label(f"The negative — what it is told NOT to draw "
-                         f"({len(p['image_negative'].split())} words)") \
-                    .classes("text-sm font-bold opacity-80")
-                _copy_btn(p["image_negative"])
-            ui.textarea(value=p["image_negative"]) \
-                .props("readonly outlined dense autogrow").classes("w-full") \
-                .style("font-size: 11px; opacity: .7;")
+                def _save_motion(_=None, _i=i, _f=motion_box):
+                    lw.set_beat_field(S.lesson_id, _i, "motion_prompt", _f.value)
+                    ui.notify("💾 motion prompt saved", type="positive")
+                    full_refresh()
 
-            who = (f" · 2nd reference: {p['relation']}" if p["relation"]
-                   else " · no second person in this shot")
-            ui.label(f"seed {p['seed']} · {p['steps']} steps · cfg {p['cfg']} · "
-                     f"refs: {', '.join(p['refs'])}{who}") \
-                .classes("text-xs opacity-50").style("margin-top:6px;")
+                with ui.row().classes("gap-2 items-center"):
+                    ui.button("💾 Save scene", on_click=_save_scene) \
+                        .classes("rex-btn-primary").props("dense")
+                    ui.button("💾 Save motion", on_click=_save_motion).props("flat dense")
+                    if p["motion_is_default"]:
+                        ui.label("motion is the default — the scene, plus gentle gestures "
+                                 "and a slow push-in").classes("text-xs opacity-50")
+
+                # --- what actually gets sent (read-only) --------------------
+                ui.separator()
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.label(f"WHAT QWEN ACTUALLY GETS · "
+                             f"{len(p['image_positive'].split())} words") \
+                        .classes("text-xs font-bold") \
+                        .style("color:#8f8; letter-spacing:.04em;")
+                    _copy_btn(p["image_positive"])
+                _readonly_block(p["image_positive"])
+
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.label(f"THE NEGATIVE — what it must NOT draw · "
+                             f"{len(p['image_negative'].split())} words") \
+                        .classes("text-xs font-bold") \
+                        .style("color:#f99; letter-spacing:.04em;")
+                    _copy_btn(p["image_negative"])
+                _readonly_block(p["image_negative"])
+
+                who = (f"2nd reference: {p['relation']}" if p["relation"]
+                       else "no second person in this shot")
+                ui.label(f"seed {p['seed']}  ·  {p['steps']} steps  ·  cfg {p['cfg']}  ·  "
+                         f"refs: {', '.join(p['refs'])}  ·  {who}") \
+                    .classes("text-xs opacity-60")
 
     def render_lesson_script():
         """The written lesson, line by line. Every line is EDITABLE — this is the gate
