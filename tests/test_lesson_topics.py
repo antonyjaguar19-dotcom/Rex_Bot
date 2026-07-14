@@ -221,3 +221,59 @@ def test_edits_refuse_what_they_cannot_do(book, monkeypatch):
         lt.merge(book, ["t01"])                        # merge needs two
     with pytest.raises(ValueError, match="pages"):
         lt.add(book, "Ghost Chapter", 40, 50)          # pages outside the book
+
+
+# --- No page belongs to two topics ----------------------------------------------
+# The real Class-1 book: "Fruits" claimed pages 37-40 and "Animals Around Us" claimed
+# 39-52. Pages 39 and 40 belonged to BOTH. The writer builds a lesson from its topic's
+# page range, so the Fruits lesson would have been written partly out of the animals
+# pages — and nothing would have said so. You find out when the mascot starts talking
+# about cows in a lesson about mangoes.
+
+def test_a_page_cannot_belong_to_two_topics():
+    from modules import lesson_topics as lt
+    topics = [
+        {"title": "Vegetables", "first_page": 34, "last_page": 36},
+        {"title": "Fruits", "first_page": 37, "last_page": 40},
+        {"title": "Animals Around Us", "first_page": 39, "last_page": 52},
+    ]
+    out = lt._claim_each_page_once(topics)
+    assert [(t["first_page"], t["last_page"]) for t in out] == [(34, 36), (37, 38), (39, 52)]
+    # every page is claimed at most once
+    seen = set()
+    for t in out:
+        pages = set(range(t["first_page"], t["last_page"] + 1))
+        assert not (pages & seen), f"{t['title']} re-claims {pages & seen}"
+        seen |= pages
+
+
+def test_topics_that_do_not_overlap_are_untouched():
+    from modules import lesson_topics as lt
+    topics = [
+        {"title": "Living and Non-living Things", "first_page": 4, "last_page": 10},
+        {"title": "My Wonderful Body", "first_page": 15, "last_page": 27},
+    ]
+    # the gap (p11-14) is fine — front matter, activities, whatever. Only OVERLAP is a bug.
+    assert lt._claim_each_page_once(list(topics)) == topics
+
+
+def test_an_overlap_that_cannot_be_separated_is_reported_not_hidden():
+    # Trimming would leave the earlier topic with NO pages: they are not two topics,
+    # they are one, and _merge should have caught it. Silently zeroing a page range is
+    # worse than keeping the overlap — so keep it, and say so.
+    from modules import lesson_topics as lt
+    said = []
+    topics = [
+        {"title": "Animals", "first_page": 39, "last_page": 52},
+        {"title": "Animals Around Us", "first_page": 39, "last_page": 52},
+    ]
+    out = lt._claim_each_page_once(topics, said.append)
+    assert len(out) == 2
+    assert any("cannot be separated" in m for m in said)
+
+
+def test_the_splitter_actually_calls_the_guard():
+    # The rule is not the feature; running it is.
+    import inspect
+    from modules import lesson_topics as lt
+    assert "_claim_each_page_once" in inspect.getsource(lt.propose)

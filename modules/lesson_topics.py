@@ -192,6 +192,44 @@ _REDUCE_SYS = (
 )
 
 
+def _claim_each_page_once(topics: list, _p=lambda m: None) -> list:
+    """No page may belong to two topics.
+
+    The real Class-1 book came out with "Fruits" claiming pages 37-40 and "Animals
+    Around Us" claiming 39-52 — pages 39 and 40 belonged to both. The writer builds a
+    lesson from its topic's page range, so the Fruits lesson would have been written
+    partly out of the animals pages, and nothing anywhere would have said so. You would
+    have found out when the mascot started talking about cows in a lesson about mangoes.
+
+    _merge only joins topics that are the SAME topic; a partial overlap between two
+    genuinely different ones survives it. Here the later topic's start wins: a new
+    topic begins at a heading, which is a far more reliable signal than the LLM's guess
+    at where the previous one stopped.
+    """
+    out = []
+    for t in sorted(topics, key=lambda x: (int(x.get("first_page", 0)),
+                                           int(x.get("last_page", 0)))):
+        if out:
+            prev = out[-1]
+            start = int(t.get("first_page", 0))
+            if start <= int(prev.get("last_page", 0)):
+                trimmed = start - 1
+                if trimmed < int(prev.get("first_page", 0)):
+                    # Trimming would leave the earlier topic with no pages at all —
+                    # they are not two topics, they are one. _merge should have caught
+                    # this; if it did not, dropping the page range silently is worse
+                    # than keeping the overlap, so keep it and say so.
+                    _p(f"⚠️ '{prev['title']}' and '{t['title']}' claim the same pages "
+                       f"and cannot be separated — check the topic list")
+                    out.append(t)
+                    continue
+                _p(f"📄 '{prev['title']}' trimmed to p{prev['first_page']}-{trimmed} "
+                   f"— p{start} starts '{t['title']}'")
+                prev["last_page"] = trimmed
+        out.append(t)
+    return out
+
+
 def _consolidate(topics: list, title: str, _p) -> list:
     """One cheap LLM pass over the topic LIST (not the book) to fuse the fragments
     of a chapter that the deterministic rules cannot see.
@@ -316,7 +354,8 @@ def propose(book_id: str, progress_cb: Optional[Callable[[str], None]] = None) -
     #   2. _absorb_nested— a section whose pages are already inside a chapter
     #   3. _consolidate  — the LLM fuses fragments no rule can connect ("Levers"
     #                      belongs to "Simple Machines"; the words share nothing)
-    topics = _consolidate(_absorb_nested(_merge(found)), book["title"], _p)
+    topics = _claim_each_page_once(
+        _consolidate(_absorb_nested(_merge(found)), book["title"], _p), _p)
     for n, t in enumerate(topics, start=1):
         t["id"] = f"t{n:02d}"
     book["topics"] = topics
