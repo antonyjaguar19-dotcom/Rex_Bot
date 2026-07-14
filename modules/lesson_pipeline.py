@@ -262,7 +262,7 @@ def prepare_lesson(lesson: dict,
                                       seed=4000 + i + 1000 * int(
                                           lesson.get("still_take", 0)),
                                       presenter=True, full_quality=True,
-                                      background=backdrop)
+                                      background=backdrop, teaching=True)
             if not got:
                 # No black frames, no gradients. A lesson with a missing picture is a
                 # lesson with a hole in it, and it must not be discovered in the file.

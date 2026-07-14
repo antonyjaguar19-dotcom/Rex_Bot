@@ -199,7 +199,7 @@ def test_the_mascot_stays_dressed():
     assert "belly" not in out
     assert "fruit slice mid-chew" in out and "cheerful smile" in out
     for banned in ("crop top", "bare midriff", "exposed belly"):
-        assert banned in mas.NEGATIVE_PRESENTER, banned
+        assert banned in mas.NEGATIVE_PRESENTER, banned   # modesty is UNIVERSAL
     assert "fully clothed" in mas.STYLE_PRESENTER
     # the PUPPY may still have a belly to scratch
     dog = "the mascot character kneeling beside a puppy, scratching its belly"
@@ -249,7 +249,7 @@ def test_the_teachers_face_is_never_left_to_the_renderer():
 
 def test_warm_face_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
-        "the mascot character holding a rock, angry scowl")
+        "the mascot character holding a rock, angry scowl", teaching=True)
     assert "angry" not in out and "scowl" not in out
     assert "warm friendly smile" in out
 
@@ -350,7 +350,8 @@ def test_a_scene_that_already_says_it_is_not_said_twice():
 
 def test_alive_looks_alive_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
-        "the mascot character holding a doll in one hand and a puppy in the other")
+        "the mascot character holding a doll in one hand and a puppy in the other",
+        teaching=True)
     assert "real live puppy" in out
 
 
@@ -464,19 +465,20 @@ def test_a_prop_fits_in_a_hand():
     scene = ("the mascot character holding up a green leafy plant in one hand and a "
              "grey rock in the other, elbows bent")
     out = mas.props_fit_in_a_hand(scene)
-    assert "small green leafy plant" in out
-    assert "small grey rock" in out
+    assert "a small green leafy plant" in out
+    assert "a small grey rock" in out
 
     # a prop already described as small is not re-shrunk (and the guard is idempotent)
     already = "the mascot character holding a small toy car, smiling"
     assert mas.props_fit_in_a_hand(already) == already
-    once = mas.clean_scene_for_the_mascot(scene)
-    assert mas.clean_scene_for_the_mascot(once) == once
+    once = mas.clean_scene_for_the_mascot(scene, teaching=True)
+    assert mas.clean_scene_for_the_mascot(once, teaching=True) == once
 
+    # prop SCALE is a lesson rule — a facts reel's giant honey dipper is the joke
     for banned in ("giant prop", "boulder", "prop bigger than the character",
                    "prop hugged with both arms"):
-        assert banned in mas.NEGATIVE_PRESENTER, banned
-    assert "every prop is SMALL" in mas.STYLE_PRESENTER
+        assert banned in mas.NEGATIVE_TEACHING, banned
+    assert "every prop is SMALL" in mas.STYLE_TEACHING
 
 
 def test_a_living_creature_is_not_shrunk_into_a_toy():
@@ -484,3 +486,59 @@ def test_a_living_creature_is_not_shrunk_into_a_toy():
     # but the guard must not touch a scene that has no prop nouns in it at all.
     scene = "the mascot character kneeling beside a puppy, stroking its back, laughing"
     assert mas.props_fit_in_a_hand(scene) == scene
+
+
+# --- Each mode tunes its own LLM; facts must not pay for the lesson's fixes -------
+# A FACTS reel is spectacle by design. It is ALLOWED a giant honey dipper, a grinning
+# cartoon sun, and a mascot pulling a shocked face at a horrifying fact — that is the
+# joke, and the joke is the point when the picture's only job is to hold attention on a
+# line you already said out loud. In a LESSON every one of those is a defect. So the
+# lesson gets an overlay and facts keeps exactly what it had.
+
+def test_the_lesson_tunes_its_own_prompt_and_facts_is_untouched():
+    assert "every prop is SMALL" in mas.STYLE_TEACHING
+    assert "every prop is SMALL" not in mas.STYLE_PRESENTER, \
+        "a facts reel's giant honey dipper IS the joke"
+
+    for lesson_only in ("angry", "scowling", "anthropomorphic object", "giant prop",
+                        "thought bubble"):
+        assert lesson_only in mas.NEGATIVE_TEACHING, lesson_only
+        assert lesson_only not in mas.NEGATIVE_PRESENTER, \
+            f"{lesson_only!r} is banned for FACTS too — that is the lesson's rule, not a shared one"
+
+    # but everything that is "the mascot must survive its own picture" IS shared
+    for universal in ("mouse ears", "bobblehead", "floating object", "changed species",
+                      "heart-shaped eyes", "crop top", "t-pose"):
+        assert universal in mas.NEGATIVE_PRESENTER, universal
+        assert universal in mas.NEGATIVE_TEACHING, universal
+
+
+def test_the_pedagogy_guards_only_run_for_a_lesson():
+    cross = "the mascot character holding up a rock, angry scowl"
+    # facts: left alone — a shocked face at a horrifying fact is the point
+    assert mas.clean_scene_for_the_mascot(cross) == cross
+    # lesson: the teacher is never cross with a six-year-old
+    taught = mas.clean_scene_for_the_mascot(cross, teaching=True)
+    assert "angry" not in taught and "scowl" not in taught
+    assert "warm friendly smile" in taught
+    assert "a small rock" in taught            # and the prop fits in a hand
+
+    # the UNIVERSAL guards run for both
+    swap = "the mascot character dressed as a playful puppy, mid-leap"
+    for teaching in (False, True):
+        out = mas.clean_scene_for_the_mascot(swap, teaching=teaching)
+        assert "dressed as" not in out, "the species guard is universal"
+
+
+def test_render_scene_picks_the_right_style_for_the_mode():
+    import inspect
+    src = inspect.getsource(mas.render_scene)
+    assert "STYLE_TEACHING if teaching else STYLE_PRESENTER" in src
+    assert "NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER" in src
+    assert "teaching" in inspect.signature(mas.render_scene).parameters
+
+    from modules import lesson_pipeline as lp
+    assert "teaching=True" in inspect.getsource(lp.prepare_lesson)
+    # facts must NOT ask for the lesson's tuning
+    from modules import facts_pipeline as fp
+    assert "teaching=True" not in inspect.getsource(fp._render_facts_mascot)

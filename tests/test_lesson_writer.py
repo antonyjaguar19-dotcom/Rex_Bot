@@ -319,9 +319,11 @@ def test_the_teaching_prompt_forbids_a_face_on_a_dead_object():
     sysp = mas._TEACHING_SYS.lower()
     assert "never put a face, eyes or a smile on an object that is not alive" in sysp
     assert "grinning rock" in sysp, "the rule must keep the reason, or it gets deleted"
+    # These live in the LESSON's negative, not the shared one — a facts reel is allowed
+    # its grinning cartoon sun.
     for banned in ("googly eyes on an object", "smiling face on a ball",
                    "anthropomorphic object"):
-        assert banned in mas.NEGATIVE_PRESENTER, banned
+        assert banned in mas.NEGATIVE_TEACHING, banned
 
 
 def test_the_teaching_prompt_demands_the_picture_show_the_line():
@@ -356,7 +358,7 @@ def test_the_teacher_is_never_angry_and_there_are_no_bubbles():
     assert "curious, not cross" in sysp
     assert "no thought bubbles" in sysp
     for banned in ("angry", "scowling", "thought bubble", "speech bubble"):
-        assert banned in mas.NEGATIVE_PRESENTER, banned
+        assert banned in mas.NEGATIVE_TEACHING, banned
 
 
 def test_a_costume_may_not_cost_the_mascot_her_identity():

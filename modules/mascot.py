@@ -203,14 +203,25 @@ STYLE_PRESENTER = (
     # HOVERING in mid-air beside her. A held object is touching the hand that holds it.
     "her fingers wrapped firmly around the prop, gripping it, the hand visibly "
     "closed on the object, the object resting in her palm, "
-    # SCALE. Nothing constrained how BIG a prop was, and "holding up a grey rock" came
-    # back as a BOULDER bigger than her torso, hugged with both arms — which also ate
-    # the second prop, because both her arms were busy with the first. A prop is a
-    # child's toy: it fits in her hand.
-    "every prop is SMALL — a toy, hand-sized, small enough to hold in one hand, "
-    "much smaller than the character, never larger than her head, "
     "bold vivid solid color background, crisp studio lighting, high contrast, "
     "3d character key art"
+)
+
+# --- LESSON-ONLY tuning -------------------------------------------------------
+# Everything above is shared with FACTS mode, and facts wants the opposite of some of
+# what a lesson wants: a facts reel is spectacle. It is ALLOWED a giant honey dipper and
+# a grinning cartoon sun — that is the joke, and the joke is the point when the picture's
+# only job is to hold attention on a line you already said out loud.
+#
+# A lesson's picture is what a child who cannot read is learning FROM. So the lesson gets
+# its own overlay, and facts is left exactly as it was.
+STYLE_TEACHING = STYLE_PRESENTER + (
+    # SCALE. Nothing constrained how BIG a prop was, and "holding up a grey rock" came
+    # back as a BOULDER bigger than her torso, hugged with both arms — which also ate the
+    # SECOND prop the scene asked for, because both her arms were full of the first.
+    # A lesson's prop is a child's toy: it fits in her hand. A facts reel's need not.
+    ", every prop is SMALL — a toy, hand-sized, small enough to hold in one hand, "
+    "much smaller than the character, never larger than her head"
 )
 
 NEGATIVE_PRESENTER = (
@@ -228,10 +239,6 @@ NEGATIVE_PRESENTER = (
     "floating object, hovering prop, object suspended in mid-air, "
     "prop not touching the hand, disembodied object, object detached from the hand, "
     "empty open palm under a floating object, "
-    # SCALE. "A grey rock" came back as a BOULDER hugged with both arms — which also
-    # cost her the second prop, since both arms were full of the first.
-    "giant prop, oversized object, boulder, huge rock, prop bigger than the character, "
-    "object larger than her head, prop hugged with both arms, "
     # The face IS the identity. Asked for "heart eyes" the model deleted her eyes and
     # pasted two red emoji over the sockets — that is not an expression, it is a
     # different character. Expressions come from eyebrows and mouths.
@@ -240,22 +247,11 @@ NEGATIVE_PRESENTER = (
     # Modesty. This is a lesson for six-year-olds and the mascot is a small child.
     # A "chef's outfit" came back as a crop top with a bare midriff.
     "crop top, bare midriff, exposed belly, bare stomach, bare chest, undressed, "
-    # A face on an inanimate object. Half these lessons teach what is alive and what is
-    # not, and we drew a smiling cartoon face on the Earth for the line about being
-    # hugged by your mother. A grinning rock teaches a child the wrong answer.
-    "googly eyes on an object, smiling face on a ball, face drawn on a toy, "
-    "anthropomorphic object, cartoon eyes on an inanimate object, "
-    # A "playful frown" came back as a small girl SCOWLING with real anger. The teacher
-    # in a lesson for six-year-olds is never cross with them.
-    "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
     # Identity, lost to a COSTUME rather than to a species swap. A "toy repairman's
     # outfit" (dungarees + a cap over the hair) came back as a completely different
     # child — the face and the hair are all the artist has to recognise her by.
     "different character, different child, different face, changed hairstyle, "
     "hair hidden under a hat, head covered, hood up, helmet, "
-    # A thought bubble is an overlay by another name: Qwen fills it with a garbled
-    # picture-within-a-picture, and it reads as a rendering artefact, not a device.
-    "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture, "
     # Proportion drift: the character kept coming back with long thin legs and a slim
     # body. The build is fixed; only the costume changes.
     "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
@@ -271,6 +267,29 @@ NEGATIVE_PRESENTER = (
     "watermark, text, letters, words, numbers, "
     "blurry, low quality, deformed hands, extra limbs, extra characters, "
     "frame, border, t-pose, cluttered background"
+)
+
+# --- LESSON-ONLY bans ---------------------------------------------------------
+# These are wrong for a FACTS reel and right for a lesson, which is why they are not in
+# the shared negative. A facts reel is spectacle: a grinning cartoon sun is a joke, a
+# giant honey dipper is a joke, and a mascot pulling a shocked face at a horrifying fact
+# is the whole point. In a lesson every one of those is a defect.
+NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
+    # A FACE ON AN INANIMATE OBJECT. Half these lessons teach what is alive and what is
+    # not, and we drew a smiling cartoon face on the Earth for the line about being
+    # hugged by your mother. A grinning rock teaches a child the wrong answer.
+    ", googly eyes on an object, smiling face on a ball, face drawn on a toy, "
+    "anthropomorphic object, cartoon eyes on an inanimate object, "
+    # ANGER. A "playful frown" came back as a small girl SCOWLING in real anger. The
+    # teacher in a lesson for six-year-olds is never cross with them.
+    "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
+    # SCALE. "A grey rock" came back as a BOULDER hugged with both arms — which also cost
+    # her the second prop, since both arms were full of the first.
+    "giant prop, oversized object, boulder, huge rock, prop bigger than the character, "
+    "object larger than her head, prop hugged with both arms, "
+    # BUBBLES. Qwen fills a thought bubble with a garbled picture-within-a-picture; it
+    # reads as a rendering fault, not a device.
+    "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture"
 )
 
 # NOTE: the FALLBACK backend (USO) takes no negative prompt. Its workflow wires
@@ -714,6 +733,9 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
         )
         for attempt in (1, 2):
             raw = _call_llm(prompt, _SCENE_SYS, role="creative")
+            # scene_prompt is the THUMBNAIL path — a facts reel's cover art, which is
+            # spectacle by design. Only the universal guards apply (the mascot must
+            # survive its own picture); the lesson's pedagogy guards do not.
             scene = clean_scene_for_the_mascot(
                 _clean_scene(_extract_json(raw).get("scene") or ""))
             if not scene:
@@ -1101,7 +1123,9 @@ _PROP_NOUNS = (
     "car", "ball", "book", "plate", "bowl", "cup", "apple", "fruit", "carrot",
     "vegetable", "seed", "bone", "brush", "spoon", "globe", "teddy", "wrench",
 )
-_PROP_RE = re.compile(r"\b(?:a|an|the|one|up)\s+((?:\w+\s+){0,2}(?:" +
+# The article is captured SEPARATELY so "small" lands after it. The first version
+# anchored on "a|the|up" and rewrote "holding up a rock" into "holding up small a rock".
+_PROP_RE = re.compile(r"\b(a|an|the|one)\s+((?:\w+\s+){0,2}(?:" +
                       "|".join(_PROP_NOUNS) + r"))\b", re.I)
 _ALREADY_SMALL = re.compile(r"\b(?:small|little|tiny|toy|hand-sized|miniature)\b", re.I)
 
@@ -1113,10 +1137,10 @@ def props_fit_in_a_hand(scene: str) -> str:
         return scene
 
     def _shrink(m):
-        phrase = m.group(1)
+        article, phrase = m.group(1), m.group(2)
         if _ALREADY_SMALL.search(phrase):
             return m.group(0)
-        return m.group(0).replace(phrase, f"small {phrase}", 1)
+        return f"{article} small {phrase}"
 
     out = _PROP_RE.sub(_shrink, s)
     if out != s:
@@ -1125,12 +1149,25 @@ def props_fit_in_a_hand(scene: str) -> str:
     return _tidy(out)
 
 
-def clean_scene_for_the_mascot(scene: str) -> str:
+def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
-    below never spend their effort on a clause that is about to be cut anyway."""
-    return props_fit_in_a_hand(never_empty_handed(alive_looks_alive(warm_face(
-        one_focus(keep_it_dressed(keep_the_face(keep_the_body(
-            keep_the_mascot(one_moment(scene))))))))))
+    below never spend their effort on a clause that is about to be cut anyway.
+
+    The UNIVERSAL guards run for every mode — they are all "the mascot must survive its
+    own picture": no species swap, no borrowed anatomy, no emoji where an eye should be,
+    no bare skin on a child, no T-pose, one moment.
+
+    Three are LESSON pedagogy and would damage a facts reel, which is spectacle by
+    design and allowed its jokes:
+      warm_face          — a facts mascot may pull a shocked face at a horrifying fact
+      alive_looks_alive  — only a lesson needs a real puppy to read as ALIVE beside a toy
+      props_fit_in_a_hand— a facts reel's giant honey dipper IS the joke
+    """
+    out = never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
+        keep_the_mascot(one_moment(scene)))))))
+    if teaching:
+        out = props_fit_in_a_hand(alive_looks_alive(warm_face(out)))
+    return out
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -1288,7 +1325,7 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
             # costume — Qwen-Edit renders a puppy, keeps the clothes, and the
             # character is gone. Telling the model not to is not enough; this is the
             # check.
-            scene = clean_scene_for_the_mascot(scene)
+            scene = clean_scene_for_the_mascot(scene, teaching=teaching)
             bad = scene_violation(scene)
             if not bad:
                 log.info(f"Mascot explainer scene: {scene}")
@@ -1312,7 +1349,8 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  headline: str = "",
                  presenter: bool = False,
                  full_quality: bool = False,
-                 background: str = "") -> Optional[Path]:
+                 background: str = "",
+                 teaching: bool = False) -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -1343,7 +1381,13 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         if presenter:
             # Waist-up: this still is about to be animated by S2V, which breaks
             # legs it cannot see how to move.
-            style = STYLE_PRESENTER
+            #
+            # A LESSON gets its own style and its own bans. A facts reel is spectacle —
+            # it is ALLOWED a giant honey dipper and a grinning cartoon sun, because the
+            # picture's only job is to hold attention on a line you already said. A
+            # lesson's picture is what a child who cannot read is learning FROM, and
+            # every one of those is a defect there. Facts keeps exactly what it had.
+            style = STYLE_TEACHING if teaching else STYLE_PRESENTER
             if background:
                 # One lesson, one look. STYLE_PRESENTER only asks for "a bold vivid
                 # solid color background", so Qwen picks a NEW colour every shot: the
@@ -1352,7 +1396,7 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                 # is one shot and does not care; a lesson is a film.
                 style = style.replace("bold vivid solid color background", background)
             prompt = f"{scene}, {style}"
-            negative = NEGATIVE_PRESENTER
+            negative = NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER
             baked = False
         elif baked:
             prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"
