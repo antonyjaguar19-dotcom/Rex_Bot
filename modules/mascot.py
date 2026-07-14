@@ -1032,11 +1032,35 @@ def alive_looks_alive(scene: str) -> str:
     return _tidy(out)
 
 
+# THE actual invariant, arrived at the long way round. Every T-pose we have shipped —
+# and there were four, by four different routes — has one thing in common: HER HANDS
+# WERE DOING NOTHING. Nothing to hold, or too much to hold and so nothing held, or a
+# thing on each side to reach for. Idle hands go home to the reference photo, and the
+# reference photo is a T-pose.
+#
+# So the rule is not about props or sides or counts. It is: her hands are always busy.
+_HANDS_BUSY = re.compile(
+    r"\b(?:hold\w*|lift\w*|carry\w*|clutch\w*|grip\w*|hug\w*|cuddl\w*|stroking|"
+    r"petting|pat\w*|scratch\w*|waving|point\w*|show\w*|offering|feeding|reach\w*|"
+    r"touch\w*|push\w*|pull\w*|scoop\w*|balanc\w*|cover\w*|clap\w*|counting)\b", re.I)
+
+_BUSY_DEFAULT = ("one arm raised high in a cheerful wave, the other hand resting at "
+                 "her side")
+
+
+def never_empty_handed(scene: str) -> str:
+    """Idle hands go home to the reference photo, and the reference photo is a T-pose."""
+    if _HANDS_BUSY.search(scene or ""):
+        return scene
+    log.info("scene left the mascot's hands empty — giving her something to do with them")
+    return _tidy(f"{(scene or '').rstrip(' ,')}, {_BUSY_DEFAULT}")
+
+
 def clean_scene_for_the_mascot(scene: str) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway."""
-    return alive_looks_alive(warm_face(one_focus(keep_it_dressed(
-        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene))))))))
+    return never_empty_handed(alive_looks_alive(warm_face(one_focus(keep_it_dressed(
+        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))))))
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -1121,6 +1145,12 @@ _TEACHING_SYS = (
     "- NEVER name a body part she may not have. No 'paw', 'snout', 'tail', 'fur' — she "
     "may be a human child, and telling the artist she has paws is how a child ends up "
     "drawn with mouse ears. Say 'hand', 'holding', 'the character'.\n"
+    "- HER HANDS ARE ALWAYS BUSY. This is the most important rule in this list. Every "
+    "ruined picture so far — four of them, by four different routes — had her hands "
+    "doing NOTHING: nothing to hold, or so much to hold that she held none of it, or "
+    "one thing on each side to reach for. Idle hands go home to the reference photo, "
+    "and the reference photo is a T-POSE: arms straight out, staring ahead. She is "
+    "always holding, lifting, stroking, hugging, offering or showing something.\n"
     "- FULL BODY, FACING THE CAMERA, mouth open mid-sentence — she is talking to the "
     "child while she does it.\n"
     "- ALWAYS END WITH HER FACE, and it is ALWAYS warm — smiling, laughing, delighted, "

@@ -350,3 +350,43 @@ def test_alive_looks_alive_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
         "the mascot character holding a doll in one hand and a puppy in the other")
     assert "real live puppy" in out
+
+
+# --- The actual invariant, arrived at the long way round -------------------------
+# Four T-poses shipped, by four different routes, and they all have ONE thing in common:
+# HER HANDS WERE DOING NOTHING.
+#   still_12  nothing to hold           (empty scene)
+#   still_12  a doll AND a car AND both arms raised -> she held neither
+#   still_08  a car on one side, a plant on the other -> she reached for both
+#   still_11  a plant, a puppy and a friend flanking her, hands empty
+# The rule is not about props, or sides, or counts. Idle hands go home to the reference
+# photo, and the reference photo is a T-pose.
+
+def test_the_mascot_is_never_empty_handed():
+    idle = ("the mascot character standing beside a plant, a puppy, and her friend, "
+            "facing the camera, smiling")
+    out = mas.never_empty_handed(idle)
+    assert "one arm raised high" in out
+    assert "the other hand resting at her side" in out   # ASYMMETRIC, so not a T-pose
+
+    for busy in (
+        "the mascot character kneeling beside a puppy, stroking its back, laughing",
+        "the mascot character holding up a toy car in one hand, smiling",
+        "the mascot character hugging her mother, beaming",
+        "the mascot character pointing at a rock, curious",
+        "the mascot character lifting a plate of food, delighted",
+    ):
+        assert mas.never_empty_handed(busy) == busy, f"busy hands were meddled with: {busy}"
+
+
+def test_never_empty_handed_runs_in_the_full_guard():
+    out = mas.clean_scene_for_the_mascot(
+        "the mascot character standing beside a plant and a puppy, facing the camera")
+    assert "one arm raised high" in out
+
+
+def test_the_writer_is_told_the_rule_that_matters_most():
+    sysp = mas._TEACHING_SYS
+    assert "HER HANDS ARE ALWAYS BUSY" in sysp
+    assert "T-POSE" in sysp
+    assert "Idle hands go home to the reference photo" in sysp
