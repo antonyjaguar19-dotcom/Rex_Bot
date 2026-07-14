@@ -314,10 +314,10 @@ def test_a_guard_never_cuts_away_the_subject():
 def test_a_good_scene_survives_every_guard_intact():
     # The guards must be a net, not a mangler. This is what a correct scene looks like:
     # hands busy, one prop held, sizes stated, a warm face, no sequence, no bare skin.
-    scene = ("the mascot character facing the camera holding up a small doll in one hand, "
-             "a small toy car on the floor beside her, shaking her head with a warm "
-             "knowing smile")
-    assert mas.clean_scene_for_the_mascot(scene) == scene
+    scene = ("the mascot character facing the camera holding up a small cloth rag doll "
+             "with stitched eyes in one hand, a small toy car on the floor beside her, "
+             "shaking her head with a warm knowing smile")
+    assert mas.clean_scene_for_the_mascot(scene, teaching=True) == scene
 
 
 def test_a_real_animal_beside_a_toy_is_told_to_look_alive():
@@ -542,3 +542,73 @@ def test_render_scene_picks_the_right_style_for_the_mode():
     # facts must NOT ask for the lesson's tuning
     from modules import facts_pipeline as fp
     assert "teaching=True" not in inspect.getsource(fp._render_facts_mascot)
+
+
+# --- THE REFERENCE BLEEDS ---------------------------------------------------------
+# Qwen-Edit is handed ONE identity reference — the mascot — and it applies that identity
+# to every human-SHAPED thing in the frame. Two ruined stills from one cause, and the
+# second is the worst thing this pipeline has produced:
+#
+#   "being hugged by her smiling mother" -> TWO IDENTICAL NAKSHUS, same clothes, same
+#                                           hair, same butterflies, same bindi.
+#   "holding up a doll named Ammu"       -> a LIVING CHILD with Nakshu's own face,
+#                                           dangling by the wrist. The line it
+#                                           illustrates is "Ammu is a toy and isn't
+#                                           alive": the picture taught the OPPOSITE of
+#                                           the words, and read as a child being hurt.
+#
+# A doll is human-shaped, which is exactly what the reference is, so it is the likeliest
+# thing in any scene to capture it.
+
+def test_a_doll_must_look_like_a_toy_not_a_child():
+    scene = "the mascot character holding up a doll named Ammu in one hand"
+    out = mas.toys_look_like_toys(scene)
+    assert "cloth rag doll" in out
+    assert "stitched button eyes" in out
+    assert "lifeless toy and not a person" in out
+    assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
+    # and the name must not land on the word 'person'
+    assert "not a person named Ammu" not in out
+
+    for banned in ("doll with a human face", "living doll", "a real child held by the arm",
+                   "child in distress", "realistic child instead of a doll"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_a_doll_already_described_as_cloth_is_left_alone():
+    scene = "the mascot character holding a cloth rag doll with stitched eyes, smiling"
+    assert mas.toys_look_like_toys(scene) == scene
+
+
+def test_the_second_person_is_not_a_second_mascot():
+    scene = "the mascot character being hugged by her smiling mother, laughing"
+    out = mas.other_people_are_other_people(scene)
+    assert "GROWN ADULT" in out
+    assert "a completely different face" in out
+    assert "much taller" in out
+    for banned in ("twins", "clone", "duplicate character", "the same character twice"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+
+    # a FRIEND is another child, not an adult
+    friend = mas.other_people_are_other_people(
+        "the mascot character playing with her friend")
+    assert "DIFFERENT CHILD" in friend
+    assert "GROWN ADULT" not in friend
+
+
+def test_the_bleed_guards_are_universal_not_lesson_only():
+    # A twinned mascot is broken in a FACTS reel too — this is "the mascot must survive
+    # its own picture", not pedagogy.
+    for teaching in (False, True):
+        out = mas.clean_scene_for_the_mascot(
+            "the mascot character being hugged by her mother", teaching=teaching)
+        assert "GROWN ADULT" in out
+        out = mas.clean_scene_for_the_mascot(
+            "the mascot character holding a doll", teaching=teaching)
+        assert "cloth rag doll" in out
+
+
+def test_a_scene_with_no_doll_and_no_people_is_untouched():
+    scene = "the mascot character kneeling beside a puppy, stroking its back, laughing"
+    assert mas.toys_look_like_toys(scene) == scene
+    assert mas.other_people_are_other_people(scene) == scene

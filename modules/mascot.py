@@ -230,6 +230,15 @@ NEGATIVE_PRESENTER = (
     # now bans the parts it used to invite.
     "animal ears on a human, mouse ears, cat ears, whiskers, snout, muzzle, tail, "
     "fur on a human face, paws instead of hands, changed species, different creature, "
+    # THE TWIN. Qwen applies the ONE identity reference to every human-shaped thing in
+    # the frame: "hugged by her mother" came back as two identical mascots.
+    "twins, clone, duplicate character, two identical characters, the same character "
+    "twice, mirrored character, second identical child, "
+    # THE LIVING DOLL. A doll is human-SHAPED, so it is the likeliest thing in any scene
+    # to capture the reference — "holding up a doll" returned a LIVING CHILD with the
+    # mascot's own face, dangling by the wrist, in a lesson about how toys are NOT alive.
+    "doll with a human face, realistic child instead of a doll, living doll, "
+    "a real child held by the arm, child dangling, child in distress, "
     # BOBBLEHEAD. Telling the model "big head, small body" (my own botched repair of the
     # cub language) gave her a head bigger than her torso.
     "bobblehead, oversized head, giant head, head bigger than the body, "
@@ -1149,6 +1158,76 @@ def props_fit_in_a_hand(scene: str) -> str:
     return _tidy(out)
 
 
+# THE REFERENCE BLEEDS. Qwen-Edit is handed ONE identity reference — the mascot — and it
+# applies that identity to every human-shaped thing in the frame. Three ruined stills,
+# one cause:
+#
+#   "being hugged by her smiling mother"  -> TWO IDENTICAL NAKSHUS. Same clothes, same
+#                                            hair, same butterflies, same bindi.
+#   "holding up a doll named Ammu"        -> a LIVING CHILD with Nakshu's own face,
+#                                            held dangling by the wrist. The line is
+#                                            "Ammu is a toy and isn't alive". The
+#                                            picture taught the opposite AND read as a
+#                                            child being hurt. This is the worst thing
+#                                            this pipeline has produced.
+#
+# A doll is human-SHAPED, which is exactly what the reference is, so it is the likeliest
+# thing in any scene to be captured. The scene must say, out loud, what a doll is made
+# of and that another person is another person.
+# The name travels WITH the doll ("a doll named Ammu"), or the replacement orphans it
+# into "...not a person named Ammu", which reads as the mascot naming a corpse.
+_DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
+                   r"(?:doll|dolly|teddy|puppet|figurine|action figure)"
+                   r"(\s+(?:named|called)\s+\w+)?", re.I)
+# The name goes straight after "rag doll", not on the end — "obviously a lifeless toy
+# and not a person named Ammu" reads as the mascot naming a corpse.
+_DOLL_HEAD = "a limp cloth rag doll"
+_DOLL_TAIL = (", with stitched button eyes and floppy stuffed limbs, obviously a "
+              "lifeless toy and not a person")
+
+_OTHER_PERSON = re.compile(
+    r"\b(mother|mum|mummy|mom|mommy|father|dad|daddy|papa|grandmother|grandma|"
+    r"grandfather|grandpa|teacher|friend|brother|sister|parent)\b", re.I)
+_ADULTS = {"mother", "mum", "mummy", "mom", "mommy", "father", "dad", "daddy", "papa",
+           "grandmother", "grandma", "grandfather", "grandpa", "teacher", "parent"}
+
+
+def toys_look_like_toys(scene: str) -> str:
+    """A doll is human-shaped, and the identity reference is a human. Say what it is
+    made of, or the doll comes back as a living child wearing the mascot's face."""
+    m = _DOLL.search(scene or "")
+    if not m:
+        return scene
+    if re.search(r"\b(?:rag|cloth|stitched|button eyes|stuffed|plastic|lifeless)\b",
+                 scene, re.I):
+        return scene                       # the scene already says what it is
+    out = _DOLL.sub(
+        lambda x: f"{_DOLL_HEAD}{x.group(1) or ''}{_DOLL_TAIL}", scene, count=1)
+    log.info("scene named a doll without saying it is a TOY — a doll is human-shaped, "
+             "and unsaid it comes back as a living child with the mascot's face")
+    return _tidy(out)
+
+
+def other_people_are_other_people(scene: str) -> str:
+    """The second person in a scene is not a second mascot."""
+    m = _OTHER_PERSON.search(scene or "")
+    if not m:
+        return scene
+    if re.search(r"\b(?:grown|adult|taller|different face|another person)\b", scene, re.I):
+        return scene
+    who = m.group(1).lower()
+    if who in _ADULTS:
+        note = (f", the {who} is a GROWN ADULT — much taller than the child, adult "
+                f"proportions, a completely different face, different hair and different "
+                f"clothes, clearly another person")
+    else:
+        note = (f", the {who} is a DIFFERENT CHILD — a different face, different hair "
+                f"and different clothes, clearly another person")
+    log.info(f"scene has a second person ({who}) — saying they are not the mascot, or "
+             f"the reference copies itself and you get twins")
+    return _tidy(scene.rstrip(" ,") + note)
+
+
 def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway.
@@ -1163,8 +1242,9 @@ def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
       alive_looks_alive  — only a lesson needs a real puppy to read as ALIVE beside a toy
       props_fit_in_a_hand— a facts reel's giant honey dipper IS the joke
     """
-    out = never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
-        keep_the_mascot(one_moment(scene)))))))
+    out = other_people_are_other_people(toys_look_like_toys(
+        never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
+            keep_the_mascot(one_moment(scene)))))))))
     if teaching:
         out = props_fit_in_a_hand(alive_looks_alive(warm_face(out)))
     return out
@@ -1219,7 +1299,16 @@ _TEACHING_SYS = (
     "compare two things, she HOLDS one up and the other waits: 'holding up a toy car "
     "in one hand, a potted plant on the table beside her'.\n"
     "- If the line names a PERSON (mummy, daddy, a friend), that person is IN THE "
-    "PICTURE with the mascot: 'the mascot character being hugged by her smiling mother'.\n"
+    "PICTURE with the mascot — and you MUST say they are a DIFFERENT person: 'her "
+    "mother, a grown adult, much taller, a completely different face and different "
+    "hair'. The artist is given ONE reference photo (the mascot) and copies it onto "
+    "every human it draws: 'being hugged by her smiling mother' came back as TWO "
+    "IDENTICAL MASCOTS hugging.\n"
+    "- A DOLL IS A TOY, AND YOU MUST SAY WHAT IT IS MADE OF. A doll is human-shaped, so "
+    "it is the FIRST thing the artist copies the reference photo onto: 'holding up a "
+    "doll named Ammu' came back as a LIVING CHILD with the mascot's own face, held "
+    "dangling by the wrist — in a lesson about how toys are NOT alive. Always write 'a "
+    "limp cloth rag doll with stitched button eyes, floppy and lifeless'.\n"
     "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
     "she is asking about, head tilted, eyebrows raised.\n"
     "- NEVER put a face, eyes or a smile on an object that is not alive. No smiling "
