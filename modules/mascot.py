@@ -914,11 +914,48 @@ def keep_it_dressed(scene: str) -> str:
     return ",".join(c for c in out.split(",") if c.strip())
 
 
+# Anger, again — and this time the NEGATIVE did not stop it. Line 9 of the first lesson
+# is a negative statement ("they don't eat, they don't grow, they're not alive"), the
+# scene named no expression at all, and Qwen supplied one from the sentiment of the
+# words: a six-year-old scowling and snarling at the camera.
+#
+# Banning "angry" is not enough, because a face is not optional — the model WILL choose
+# one. The scene has to SAY which. So: strip the cross words, and if the scene names no
+# expression, give it a warm one. A teacher's face is never left to the renderer.
+_CROSS = re.compile(
+    r",?\s*[^,]*\b(?:angry|angrily|furious|cross|scowl\w*|glar\w*|snarl\w*|"
+    r"frown\w*|grumpy|annoyed|upset|sad|scared|worried|stern)\b[^,]*", re.I)
+
+_WARM_WORDS = re.compile(
+    r"\b(?:smil\w*|grin\w*|laugh\w*|happy|cheerful|delight\w*|joyful|curious|"
+    r"wonder\w*|excited|eyebrows raised|questioning|gentle|warm|kind|proud|"
+    r"eyes wide|beaming)\b", re.I)
+
+_WARM_DEFAULT = "warm friendly smile, eyebrows raised in curiosity"
+
+
+def warm_face(scene: str) -> str:
+    """The teacher's face is never left to the renderer.
+
+    Strips a cross expression, and NAMES a warm one when the scene named none — a
+    picture has a face whether or not the prompt asked for one, and on a line about
+    what something CANNOT do the model picks the face from the sentiment of the words.
+    """
+    out = _CROSS.sub("", scene or "").strip(" ,")
+    out = ",".join(c for c in out.split(",") if c.strip())
+    if not out:
+        return scene
+    if not _WARM_WORDS.search(out):
+        out = f"{out}, {_WARM_DEFAULT}"
+        log.info("scene named no expression — the teacher is warm by default")
+    return out
+
+
 def clean_scene_for_the_mascot(scene: str) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway."""
-    return keep_it_dressed(
-        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))
+    return warm_face(keep_it_dressed(
+        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene))))))
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -959,7 +996,11 @@ _TEACHING_SYS = (
     "who cannot read is looking at the picture to understand the words. If the picture "
     "shows something else, the line is wasted.\n"
     "- If the line names a THING (a doll, a puppy, a rock, a plant, a toy car, a plate "
-    "of food), that thing is IN THE PICTURE and the mascot is handling it.\n"
+    "of food), that thing is IN THE PICTURE and IN HER HANDS. Say it plainly — 'holding "
+    "a doll in one hand', 'lifting the rock up' — and name ONE prop, two at the most. A "
+    "scene that asked for a doll AND a toy car AND both arms raised came back with "
+    "EMPTY HANDS, standing in the reference photo's own arms-out pose: given too much "
+    "to hold, the artist drops the lot and falls back on the reference.\n"
     "- If the line names a PERSON (mummy, daddy, a friend), that person is IN THE "
     "PICTURE with the mascot: 'the mascot character being hugged by her smiling mother'.\n"
     "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
@@ -990,10 +1031,13 @@ _TEACHING_SYS = (
     "drawn with mouse ears. Say 'hand', 'holding', 'the character'.\n"
     "- FULL BODY, FACING THE CAMERA, mouth open mid-sentence — she is talking to the "
     "child while she does it.\n"
-    "- Warm, kind, encouraging. Never scary, never violent, never sad, and NEVER ANGRY. "
-    "A 'playful frown' came back as a small girl SCOWLING in real anger. When the line "
-    "is puzzled or says what something CANNOT do, she is CURIOUS, not cross: head "
-    "tilted, eyebrows raised, a small questioning smile.\n"
+    "- ALWAYS END WITH HER FACE, and it is ALWAYS warm — smiling, laughing, delighted, "
+    "curious, wide-eyed with wonder. The picture has a face whether you ask for one or "
+    "not, and if you do not say, the artist picks it from the MOOD OF THE WORDS: on the "
+    "line 'they don't eat, they don't grow, they're not alive' it drew a six-year-old "
+    "SCOWLING and snarling at the camera. When a line says what something CANNOT do, "
+    "she is CURIOUS, not cross — head tilted, eyebrows raised, a questioning smile.\n"
+    "- Never scary, never violent, never sad, never angry.\n"
     "- No thought bubbles, no speech bubbles, no picture-inside-the-picture. The artist "
     "fills them with garbled nonsense.\n"
     "- Under 30 words. Only what is VISIBLE: who is there, what she is doing, what she "

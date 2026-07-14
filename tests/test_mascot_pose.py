@@ -223,3 +223,42 @@ def test_every_guard_runs_on_one_scene():
 def test_the_belly_is_cut_when_the_scene_is_hers_alone():
     scene = "the mascot character holding a fruit slice, belly expanding comically"
     assert "belly" not in mas.keep_it_dressed(scene)
+
+
+def test_the_teachers_face_is_never_left_to_the_renderer():
+    # still_08, SECOND time: line 9 is a negative statement ("they don't eat, they don't
+    # grow, they're not alive"), the scene named no expression at all, and Qwen picked
+    # one from the SENTIMENT of the words — a six-year-old scowling and snarling at the
+    # camera. Banning "angry" in the negative did not stop it, because a face is not
+    # optional: the model will choose one. The scene must SAY which.
+    plain = "the mascot character standing between a toy car and a plant, pointing"
+    out = mas.warm_face(plain)
+    assert "warm friendly smile" in out
+    assert "pointing" in out
+
+    cross = "the mascot character holding a rock, playful frown, shaking her head"
+    out = mas.warm_face(cross)
+    assert "frown" not in out
+    assert "shaking her head" in out          # the ACTION survives
+    assert "warm friendly smile" in out
+
+    # a scene that already names a warm face is left alone
+    warm = "the mascot character kneeling beside a puppy, laughing"
+    assert mas.warm_face(warm) == warm
+
+
+def test_warm_face_runs_in_the_full_guard():
+    out = mas.clean_scene_for_the_mascot(
+        "the mascot character holding a rock, angry scowl")
+    assert "angry" not in out and "scowl" not in out
+    assert "warm friendly smile" in out
+
+
+def test_the_teaching_prompt_puts_the_prop_in_her_hands():
+    # still_12: the scene named a doll AND a toy car AND both arms lifted, and came back
+    # with EMPTY HANDS in the reference's own arms-out pose. Given too much to hold, the
+    # artist drops the lot and falls back on the reference — which is the T-pose.
+    sysp = mas._TEACHING_SYS.lower()
+    assert "in her hands" in sysp
+    assert "empty hands" in sysp, "the rule must keep its reason"
+    assert "one prop, two at the most" in sysp
