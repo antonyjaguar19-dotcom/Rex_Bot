@@ -225,7 +225,13 @@ def approve(lesson_id: str) -> dict:
     lesson = lw.load_lesson(lesson_id)
     if not lesson:
         raise LessonRenderError(f"no lesson {lesson_id!r}")
-    if lesson.get("stage") not in ("stills", "approved"):
+    # "rendered" is allowed, and that is the whole point of the mode. You watch the
+    # lesson, one picture is wrong, you redraw it and render again — and the gate has to
+    # let you back through or the loop is a dead end. (It was: approve() refused a
+    # rendered lesson, so the only way to fix a bad still was to write the lesson from
+    # scratch.) Clip reuse in render_lesson means the second pass only re-animates the
+    # shots whose picture actually changed.
+    if lesson.get("stage") not in ("stills", "approved", "rendered"):
         raise LessonRenderError(
             f"this lesson has not been prepared yet (stage={lesson.get('stage')!r}) — "
             f"there are no pictures to look at.")

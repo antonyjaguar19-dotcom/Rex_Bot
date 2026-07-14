@@ -231,3 +231,15 @@ def test_render_lesson_actually_checks_for_reusable_clips():
     assert "st_mtime" in src, "reuse must be invalidated by a redrawn still"
     # and a stale clip must not be silently kept: the ticked list is filtered by it
     assert "b.get(\"animate\") and clips[i] is None" in src
+
+
+def test_a_rendered_lesson_can_go_back_through_the_gate():
+    # The whole mode is a look-at-it-then-fix-it loop: you watch the lesson, one picture
+    # is wrong, you redraw it and render again. approve() refused a lesson whose stage
+    # was "rendered", so the only way to fix a bad still was to write the lesson from
+    # scratch — and the loop the mode is built around was a dead end.
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.approve)
+    assert '"rendered"' in src, "a rendered lesson must be re-approvable"
+    assert '("stills", "approved", "rendered")' in src
