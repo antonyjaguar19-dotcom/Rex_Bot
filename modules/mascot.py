@@ -185,6 +185,7 @@ STYLE_PRESENTER = (
     "exactly the same character as the reference image: the same face, the same body "
     "proportions, the same build, the same species — only the clothes and the props "
     "change, chibi proportions, big head, small body, "
+    "fully clothed, the shirt covers the whole torso, "
     "full body visible, dynamic playful action pose, exaggerated cartoon body "
     "language, mid-motion, big readable facial expression, mouth open "
     "mid-sentence, both hands clearly interacting with the prop, "
@@ -199,6 +200,14 @@ NEGATIVE_PRESENTER = (
     # now bans the parts it used to invite.
     "animal ears on a human, mouse ears, cat ears, whiskers, snout, muzzle, tail, "
     "fur on a human face, paws instead of hands, changed species, different creature, "
+    # The face IS the identity. Asked for "heart eyes" the model deleted her eyes and
+    # pasted two red emoji over the sockets — that is not an expression, it is a
+    # different character. Expressions come from eyebrows and mouths.
+    "heart-shaped eyes, emoji eyes, star eyes, spiral eyes, symbols instead of eyes, "
+    "eyes covered, eyes replaced, "
+    # Modesty. This is a lesson for six-year-olds and the mascot is a small child.
+    # A "chef's outfit" came back as a crop top with a bare midriff.
+    "crop top, bare midriff, exposed belly, bare stomach, bare chest, undressed, "
     # Proportion drift: the character kept coming back with long thin legs and a slim
     # body. The build is fixed; only the costume changes.
     "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
@@ -657,8 +666,8 @@ def scene_prompt(title: str, context: str = "", topic: str = "") -> str:
         )
         for attempt in (1, 2):
             raw = _call_llm(prompt, _SCENE_SYS, role="creative")
-            scene = keep_the_body(
-                keep_the_mascot(_clean_scene(_extract_json(raw).get("scene") or "")))
+            scene = clean_scene_for_the_mascot(
+                _clean_scene(_extract_json(raw).get("scene") or ""))
             if not scene:
                 continue
             bad = scene_violation(scene)
@@ -707,6 +716,15 @@ _EXPLAINER_SYS = (
     "scooping, pointing, lifting, hauling, launching, dodging, juggling.\n"
     "- Hold the prop CLEARLY, out in front of the body. It must never overlap or "
     "pass through the mascot — a hand once went straight through a hat brim.\n"
+    "- ONE MOMENT. A still picture cannot show a sequence. Never write 'then', "
+    "'finally' or 'after that' — 'eats, then grows taller, then hops' comes back as a "
+    "smear of limbs. Pick the single action the line is about.\n"
+    "- NEVER touch the face. Do not write 'heart eyes', 'star eyes' or any symbol in "
+    "place of an eye: the model DELETES her eyes and pastes emoji over the sockets, and "
+    "the face is the whole identity. Expressions are made of eyebrows and mouths.\n"
+    "- The mascot stays DRESSED. This is a lesson for six-year-olds. Never write about "
+    "her belly, tummy or stomach — 'belly expanding comically' got a small child drawn "
+    "in a crop top.\n"
     "- NEVER say what the mascot is made of or what body parts it has. Do not write "
     "'paw', 'snout', 'tail', 'fur' or any other animal part: the mascot may be a child, "
     "and telling the artist it has paws is how a child ends up with mouse ears. Say "
@@ -824,6 +842,69 @@ def keep_the_body(scene: str) -> str:
     return ",".join(out)
 
 
+# --- The face is the identity ------------------------------------------------
+# The scene writer asked for "waving happily with heart eyes" and Qwen did exactly
+# that: it deleted her eyes and pasted two red emoji hearts over the sockets. The
+# mascot's face is the one thing identity transfer keys on — a cartoon symbol in
+# place of an eye is not an expression, it is a different character.
+_SYMBOL_EYES = re.compile(
+    r",?\s*(?:with\s+)?(?:big\s+)?(?:heart|hearts|star|stars|spiral|spirals|x|dollar)"
+    r"[- ]?(?:shaped\s+)?eyes\b", re.I)
+
+# A still is ONE moment. Handed "holding a plate to its mouth, then growing taller,
+# waving happily, finally hopping on one foot", the model tries to draw all four at
+# once and the result is a smear of limbs. Cut at the first sequence word: the scene
+# keeps its first action, which is the one the line is actually about.
+_SEQUENCE = re.compile(r"[,;]?\s*\b(?:then|finally|afterwards|after that|next)\b", re.I)
+
+# Skin. A "belly expanding comically with each bite" got a six-year-old drawn in a
+# crop top with a bare midriff. This is a children's lesson: the mascot is dressed.
+_SKIN = re.compile(
+    r",?\s*\b(?:belly|tummy|stomach|midriff)\b[^,]*", re.I)
+
+
+def keep_the_face(scene: str) -> str:
+    """Symbols are not expressions. Her eyes stay her eyes."""
+    if not _SYMBOL_EYES.search(scene or ""):
+        return scene
+    log.warning("scene replaced the mascot's eyes with a symbol — the face is the identity")
+    return _SYMBOL_EYES.sub("", scene).replace(" ,", ",").strip(" ,")
+
+
+def one_moment(scene: str) -> str:
+    """A still is one moment, not a storyboard. Keep the first action."""
+    m = _SEQUENCE.search(scene or "")
+    if not m:
+        return scene
+    kept = scene[:m.start()].rstrip(" ,;")
+    log.warning(f"scene described a SEQUENCE; a still shows one moment — kept: {kept[:60]}")
+    return kept
+
+
+def keep_it_dressed(scene: str) -> str:
+    """No bare skin on a child in a lesson for children.
+
+    Conservative on purpose. "Scratching its belly" belongs to the puppy named a clause
+    EARLIER, so clause-scoping alone (which works for anatomy) strips the wrong belly
+    here — the pronoun reaches back across the comma. So the cut only happens when the
+    scene mentions no animal at all, and therefore the only body in it is hers. When an
+    animal IS present the negative prompt is what keeps her shirt on, which is the
+    weaker guarantee but never mangles a legitimate scene.
+    """
+    if _ANIMAL_NOUN.search(scene or "") or not _SKIN.search(scene or ""):
+        return scene
+    log.warning("scene bared the mascot's midriff — she stays dressed")
+    out = _SKIN.sub("", scene)
+    return ",".join(c for c in out.split(",") if c.strip())
+
+
+def clean_scene_for_the_mascot(scene: str) -> str:
+    """Every guard, in one call. Order matters: drop the montage first, so the guards
+    below never spend their effort on a clause that is about to be cut anyway."""
+    return keep_it_dressed(
+        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))
+
+
 def keep_the_mascot(scene: str) -> str:
     """Rewrite a scene that would replace the mascot with an animal.
 
@@ -873,7 +954,7 @@ def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
             # costume — Qwen-Edit renders a puppy, keeps the clothes, and the
             # character is gone. Telling the model not to is not enough; this is the
             # check.
-            scene = keep_the_body(keep_the_mascot(scene))
+            scene = clean_scene_for_the_mascot(scene)
             bad = scene_violation(scene)
             if not bad:
                 log.info(f"Mascot explainer scene: {scene}")

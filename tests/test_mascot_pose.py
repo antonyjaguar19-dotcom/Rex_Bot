@@ -60,7 +60,9 @@ def test_the_scene_writer_is_told_and_then_checked():
     """The prompt is not the feature — the check is. Both must be there."""
     assert "NEVER BECOMES SOMETHING ELSE" in mas._EXPLAINER_SYS
     src = inspect.getsource(mas.explainer_scene)
-    assert "keep_the_mascot" in src, "the guard must run on what the model returns"
+    # clean_scene_for_the_mascot() is keep_the_mascot + every sibling guard that came
+    # after it (body, face, montage, modesty) in one call.
+    assert "clean_scene_for_the_mascot" in src, "the guards must run on what the model returns"
 
 
 # --- the pose ------------------------------------------------------------------
@@ -157,3 +159,67 @@ def test_the_scene_writer_is_told_not_to_hand_out_body_parts():
     sys_prompt = mas._EXPLAINER_SYS.lower()
     assert "'paw'" in sys_prompt or "paw" in sys_prompt
     assert "mouse ears" in sys_prompt     # the rule states WHY, or it gets deleted later
+
+
+# --- Three more ways a scene can wreck the mascot, all seen in one real lesson ----
+
+def test_heart_eyes_are_stripped_because_the_face_is_the_identity():
+    # Shipped: the writer asked for "waving happily with heart eyes" and Qwen DELETED
+    # her eyes, pasting two red emoji hearts over the sockets. Identity transfer keys
+    # on the face; a symbol in an eye socket is a different character.
+    scene = "the mascot character waving happily with heart eyes, holding a plate"
+    out = mas.keep_the_face(scene)
+    assert "heart" not in out
+    assert "waving happily" in out and "holding a plate" in out
+    for variant in ("with star eyes", "with big heart-shaped eyes", "with spiral eyes"):
+        assert "eyes" not in mas.keep_the_face(f"the mascot {variant}, smiling")
+    assert "mouse ears" in mas.NEGATIVE_PRESENTER  # the sibling guard is still there
+    assert "heart-shaped eyes" in mas.NEGATIVE_PRESENTER
+
+
+def test_a_still_is_one_moment_not_a_storyboard():
+    # Shipped: "holding a plate of food to its mouth, then growing taller, waving
+    # happily, finally hopping on one foot, showing movement" — four actions in one
+    # frame came back as a smear of limbs.
+    scene = ("the mascot character holding a plate of food to her mouth, then growing "
+             "taller, finally hopping on one foot")
+    out = mas.one_moment(scene)
+    assert out == "the mascot character holding a plate of food to her mouth"
+    # a scene with no sequence word is untouched
+    plain = "the mascot character holding up a rock, playful frown"
+    assert mas.one_moment(plain) == plain
+
+
+def test_the_mascot_stays_dressed():
+    # Shipped: "belly expanding comically with each bite" drew a six-year-old in a crop
+    # top with a bare midriff. This is a lesson for six-year-olds.
+    scene = ("the mascot character in a chef's apron, holding up a fruit slice mid-chew, "
+             "belly expanding comically with each bite, cheerful smile")
+    out = mas.keep_it_dressed(scene)
+    assert "belly" not in out
+    assert "fruit slice mid-chew" in out and "cheerful smile" in out
+    for banned in ("crop top", "bare midriff", "exposed belly"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+    assert "fully clothed" in mas.STYLE_PRESENTER
+    # the PUPPY may still have a belly to scratch
+    dog = "the mascot character kneeling beside a puppy, scratching its belly"
+    assert mas.keep_it_dressed(dog) == dog
+
+
+def test_every_guard_runs_on_one_scene():
+    scene = ("the mascot character dressed as a playful puppy, balancing on one paw, "
+             "belly showing, with heart eyes, then hopping away")
+    out = mas.clean_scene_for_the_mascot(scene)
+    for banned in ("dressed as a playful puppy", "paw", "heart eyes", "then"):
+        assert banned not in out, f"{banned!r} survived every guard: {out!r}"
+    assert "standing beside a puppy" in out      # she is herself, next to the animal
+    # "belly" SURVIVES here, and that is the documented trade. keep_it_dressed only cuts
+    # when no animal is in the scene, because a pronoun reaches back across a comma
+    # ("puppy, scratching its belly") and the blunt version stripped the DOG's belly.
+    # With an animal present the NEGATIVE prompt is what keeps her shirt on.
+    assert "crop top" in mas.NEGATIVE_PRESENTER
+
+
+def test_the_belly_is_cut_when_the_scene_is_hers_alone():
+    scene = "the mascot character holding a fruit slice, belly expanding comically"
+    assert "belly" not in mas.keep_it_dressed(scene)
