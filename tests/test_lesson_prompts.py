@@ -50,8 +50,11 @@ def test_there_is_only_one_prompt_builder():
     # render_scene must CALL the builder, not carry its own copy. Two copies is how a
     # preview starts telling you something the renderer is not doing.
     src = inspect.getsource(mas.render_scene)
-    assert "build_presenter_prompt(scene, background, teaching)" in src
+    assert "build_presenter_prompt(" in src
     assert "STYLE_TEACHING if teaching" not in src, "render_scene has its own copy again"
+    # ...and it tells the builder when there are TWO references, or every identity clause
+    # ("the same face as THE reference image") stays ambiguous and Qwen mixes the two.
+    assert "two_people=two_people" in src
 
 
 def test_the_revealed_prompt_is_byte_for_byte_what_qwen_gets(lesson):
@@ -154,3 +157,57 @@ def test_editing_the_scene_clears_the_tick(lesson):
     lw.set_scene(lesson, 0, "the mascot character waving, smiling")
     assert lw.load_lesson(lesson)["beats"][0]["approved"] is False
     assert lw.unapproved(lw.load_lesson(lesson)) == [1]
+
+
+# --- TWO references need TWO identities ------------------------------------------
+# Jeffy attached a mother for Nakshu and the hug came back with BOTH of them drifted: the
+# child in her mother's kurta and trousers instead of her white top and denim skirt, both
+# with the same brown hair, neither face the one it started from.
+#
+# The instructions did their job perfectly. They were pointed at the wrong picture half the
+# time. Every identity clause in the style says "THE reference image" — SINGULAR, written
+# when there was only ever one — so with two, Qwen resolved the ambiguity by mixing them.
+
+def test_two_references_get_two_identities():
+    one, neg_one = mas.build_presenter_prompt("a scene", "a garden", teaching=True)
+    two, neg_two = mas.build_presenter_prompt("a scene", "a garden", teaching=True,
+                                              two_people=True)
+
+    # the singular clause — the one that put the child in her mother's clothes — is GONE
+    assert "EXACTLY THE SAME CLOTHES as in the reference image" in one
+    assert "EXACTLY THE SAME CLOTHES as in the reference image" not in two
+
+    # ...and replaced by one that says WHOSE
+    assert "FIRST reference image" in two and "SECOND reference image" in two
+    assert "Neither one takes the other's face, hair, clothes or build" in two
+    assert "the grown-up is a head and shoulders taller" in two
+
+    # the ways two references actually went wrong are banned
+    for banned in ("the child wearing the adult's clothes", "swapped hair",
+                   "the two faces blended together", "both people with the same hair",
+                   "one art style bleeding into the other"):
+        assert banned in neg_two, banned
+        assert banned not in neg_one, "a one-reference shot must not pay for this"
+
+
+def test_the_shot_knows_when_it_has_two_people(lesson, monkeypatch, tmp_path):
+    from modules import cast
+    from modules import mascot_library as ml
+
+    # a solo shot keeps the single-identity style
+    p = lp.prompts_for(lesson, 0)
+    assert "EXACTLY THE SAME CLOTHES as in the reference image" in p["image_positive"]
+
+    # ...and a shot with a family member in it does not
+    monkeypatch.setattr(lw, "load_lesson", lambda _l, _o=lw.load_lesson: _with_mum(_o(_l)))
+    mid = ml.get_active_id()
+    if mid and cast.have(mid, "mother"):
+        p = lp.prompts_for(lesson, 0)
+        assert "FIRST reference image" in p["image_positive"]
+
+
+def _with_mum(lesson):
+    if lesson:
+        lesson["beats"][0]["mascot_scene"] = \
+            "the mascot character being hugged by her mother, laughing"
+    return lesson

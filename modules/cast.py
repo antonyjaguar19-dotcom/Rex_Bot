@@ -378,12 +378,28 @@ def ref_for(scene: str, mid: str) -> tuple:
 
 
 def name_the_refs(scene: str, mid: str, relation: str) -> str:
-    """Tell the model which reference is which.
+    """Tell the model which reference is which — and NOTHING ELSE about them.
 
     Two references and no explanation is an invitation to blend them. The render that
     proved this works said so explicitly — "the little girl in the FIRST reference image
     ... the grown woman in the SECOND" — and came back with two correct, separate people
     on the first try.
+
+    WE DO NOT DESCRIBE THEM. This sentence used to carry the relation's appearance text
+    ("long black hair in a braid, a simple teal kurta and dark trousers") — the PRESET's
+    words — and it carried them even when Jeffy had uploaded a picture of his own mother.
+    So the prompt described one woman while the reference image showed another, and the
+    prompt won: she came back in a teal kurta with a braid instead of the tan patterned
+    kurta and dupatta he had given her.
+
+    It is the same rule the mascot's own body taught, twice, at the cost of a defect each
+    time: BY REFERENCE, NEVER BY DESCRIPTION. Any adjective competes with the picture, and
+    the adjective wins, because Qwen weights the text over the reference. Point at the
+    picture and say "that one".
+
+    The appearance text still has a job — it is what `draw()` renders a member FROM, and
+    it is how a custom relation gets a face at all. It just has no business in a prompt
+    that already has their photograph attached.
     """
     if not relation or "reference image" in (scene or ""):
         return scene
@@ -391,10 +407,10 @@ def name_the_refs(scene: str, mid: str, relation: str) -> str:
     who = ml.describe(mid) or {}
     mascot_name = who.get("name") or "the mascot"
     label = got.get("label") or relation
-    desc = got.get("prompt") or ""
-    them = f"{label}, {desc}" if desc else label
+    kind = "child" if relation == "friend" else "grown-up"
     return (f"{mascot_name}, the child in the FIRST reference image, together with her "
-            f"{them} — the person in the SECOND reference image. {scene}")
+            f"{label} — the {kind} in the SECOND reference image, copied exactly from that "
+            f"image. {scene}")
 
 
 # ==============================================================================

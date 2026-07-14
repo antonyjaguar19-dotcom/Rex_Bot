@@ -191,6 +191,15 @@ def test_the_scene_says_which_reference_is_which(mid, tmp_path):
     assert "SECOND reference image" in out
     assert "Nakshu" in out, "the mascot is named, not called 'the little girl'"
     assert "Mom" in out
+    # ...and we do NOT describe her. This sentence used to carry the PRESET's appearance
+    # text ("long black hair in a braid, a simple teal kurta") even when Jeffy had uploaded
+    # a photo of his own mother — so the prompt described one woman while the reference
+    # showed another, and THE PROMPT WON: she came back in a teal kurta with a braid.
+    #
+    # By reference, never by description. The same rule the mascot's own body taught twice.
+    assert "teal kurta" not in out
+    assert "braid" not in out
+    assert "copied exactly from that image" in out
     # and it is not applied twice
     assert cast.name_the_refs(out, mid, "mother") == out
 

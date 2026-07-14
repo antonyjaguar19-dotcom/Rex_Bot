@@ -1607,8 +1607,58 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
 # RENDER
 # ==============================================================================
 
+# TWO REFERENCES NEED TWO IDENTITIES.
+#
+# Every identity instruction in STYLE_PRESENTER / STYLE_TEACHING says "THE reference
+# image" — singular. It was written when there was only ever one. Hand Qwen a second
+# reference and those sentences become ambiguous, and it resolves the ambiguity by mixing:
+#
+#   "the same face ... as the reference image"          -> whose face?
+#   "EXACTLY THE SAME CLOTHES as in the reference image" -> whose clothes?
+#
+# Measured, on Jeffy's own upload: the child came back in the MOTHER'S kurta and trousers
+# instead of her white top and denim skirt, both of them with the same brown hair, and
+# neither face the one it started from. The instructions did their job perfectly — they
+# were just pointed at the wrong picture half the time.
+#
+# So when there are two, EVERY identity clause is replaced with one that says WHOSE.
+_TWO_PEOPLE_IDENTITY = (
+    "TWO DIFFERENT PEOPLE, each copied from their OWN reference image and nothing else. "
+    "The CHILD is exactly the character in the FIRST reference image — her face, her hair "
+    "and hair ornaments, her clothes, her shoes, her head size and her body proportions, "
+    "all unchanged. The GROWN-UP is exactly the person in the SECOND reference image — "
+    "her face, her hair, her clothes, her adult height and adult proportions, all "
+    "unchanged. Neither one takes the other's face, hair, clothes or build. The child is "
+    "small and the grown-up is a head and shoulders taller, "
+)
+
+# The identity sentences the SINGLE-reference style opens with. Replaced wholesale when a
+# second person is in the shot.
+_ONE_PERSON_IDENTITY_TEACHING = (
+    "exactly the same character as the reference image: the same face, the same head "
+    "size, the same body proportions, the same build, the same species — she is wearing "
+    "EXACTLY THE SAME CLOTHES as in the reference image — the same top, the same skirt, "
+    "the same shoes, unchanged in every shot; only the PROPS change, "
+)
+_ONE_PERSON_IDENTITY = (
+    "exactly the same character as the reference image: the same face, the same head "
+    "size, the same body proportions, the same build, the same species — only the "
+    "clothes and the props change, "
+)
+
+# ...and the ways two references go wrong.
+NEGATIVE_TWO_PEOPLE = (
+    ", the child wearing the adult's clothes, the adult wearing the child's clothes, "
+    "swapped outfits, swapped hair, the two faces blended together, the two characters "
+    "merged, both people with the same hair, both people the same height, "
+    "the child drawn as an adult, the adult drawn as a child, "
+    "one art style bleeding into the other, mismatched art styles"
+)
+
+
 def build_presenter_prompt(scene: str, background: str = "",
-                           teaching: bool = False) -> tuple:
+                           teaching: bool = False,
+                           two_people: bool = False) -> tuple:
     """The EXACT strings a presenter still is rendered from: (positive, negative).
 
     This exists so the dashboard can SHOW you what the model actually gets. It must be the
@@ -1625,6 +1675,18 @@ def build_presenter_prompt(scene: str, background: str = "",
     who cannot read is learning FROM, and every one of those is a defect there.
     """
     style = STYLE_TEACHING if teaching else STYLE_PRESENTER
+    negative = NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER
+
+    if two_people:
+        # Point every identity clause at the RIGHT picture. See _TWO_PEOPLE_IDENTITY: the
+        # singular "the reference image" is what put the child in her mother's kurta.
+        one = _ONE_PERSON_IDENTITY_TEACHING if teaching else _ONE_PERSON_IDENTITY
+        if one in style:
+            style = style.replace(one, _TWO_PEOPLE_IDENTITY)
+        else:                       # pragma: no cover - the style was edited; still say it
+            style = _TWO_PEOPLE_IDENTITY + style
+        negative = negative + NEGATIVE_TWO_PEOPLE
+
     if background:
         # One lesson, one look. The style only asks for "a bold vivid solid color
         # background", so Qwen picked a NEW colour every shot: the first lesson ran blue,
@@ -1632,7 +1694,6 @@ def build_presenter_prompt(scene: str, background: str = "",
         # four different videos. A facts reel is one shot and does not care; a lesson is a
         # film.
         style = style.replace("bold vivid solid color background", background)
-    negative = NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER
     return f"{scene}, {style}", negative
 
 
@@ -1672,7 +1733,13 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         # cannot (Flux garbles small text), so it always gets the overlay.
         baked = bool(headline) and bid == BACKEND_ID and can_bake(headline)
         if presenter:
-            prompt, negative = build_presenter_prompt(scene, background, teaching)
+            # TWO references means TWO identities, and every identity clause in the style
+            # says "THE reference image" — singular, written when there was only one. Hand
+            # Qwen a second and it resolves the ambiguity by MIXING: the child came back in
+            # her mother's kurta, both with the same brown hair, neither face its own.
+            two_people = bool(reference_images) and len(reference_images) > 1
+            prompt, negative = build_presenter_prompt(
+                scene, background, teaching, two_people=two_people)
             baked = False
         elif baked:
             prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"

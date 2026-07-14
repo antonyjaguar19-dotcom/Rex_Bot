@@ -276,7 +276,10 @@ def prompts_for(lesson_id: str, i: int) -> dict:
     mid = _ml.get_active_id()
     backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
     scene_text, refs, relation = _scene_and_refs(lesson, i, mid)
-    positive, negative = mascot.build_presenter_prompt(scene_text, backdrop, teaching=True)
+    # Same signal render_scene uses: two references means two identities to keep apart.
+    positive, negative = mascot.build_presenter_prompt(
+        scene_text, backdrop, teaching=True,
+        two_people=bool(refs) and len(refs) > 1)
 
     return {
         "scene": b.get("mascot_scene", ""),      # what you edit

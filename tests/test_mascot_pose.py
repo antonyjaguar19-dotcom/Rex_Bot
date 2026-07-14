@@ -543,7 +543,7 @@ def test_render_scene_picks_the_right_style_for_the_mode():
     src = inspect.getsource(mas.build_presenter_prompt)
     assert "STYLE_TEACHING if teaching else STYLE_PRESENTER" in src
     assert "NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER" in src
-    assert "build_presenter_prompt(scene, background, teaching)" in         inspect.getsource(mas.render_scene)
+    assert "build_presenter_prompt(" in inspect.getsource(mas.render_scene)
     assert "teaching" in inspect.signature(mas.render_scene).parameters
 
     from modules import lesson_pipeline as lp
