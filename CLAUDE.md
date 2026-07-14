@@ -105,6 +105,92 @@ Local AI animation pipeline. Theme → 30-sec kids story (Qwen 2.5 14B via Ollam
 
 ---
 
+## 3L. LESSON MODE (2026-07-14) — a textbook goes in, a lesson comes out
+
+6th pipeline. Upload a school textbook PDF → the book is split into its real topics →
+pick one → the mascot teaches it. 16x9, 60-120s, no music bed, per-shot animate tickbox.
+Dashboard only. Modules: `lesson_book` (pypdf + pypdfium2 + `qwen2.5vl:7b` for SCANS),
+`lesson_topics`, `lesson_writer`, `lesson_pipeline`, `lesson_assembly`, `lesson_library`.
+
+**Supervised e2e on the real Class-1 science book (a pure scan: 18 chars of text in 64
+pages). 20 defects found by LOOKING at every artifact; all 20 fixed. 763 tests green.**
+Every one of them shipped a video that looked right at every intermediate step and was
+wrong in the file — nothing errored, nothing warned.
+
+### The mascot's body belongs to the REFERENCE, not the prompt (`mascot.py`)
+- `STYLE_PRESENTER` called the subject "a short chunky **cub**" holding the prop in "both
+  **paws**" — leftovers from when the mascot WAS a jaguar cub. Nakshu is a human girl, and
+  Qwen drew her with **MOUSE EARS**: told the subject has paws, it reasons backwards to
+  the creature paws belong to. The build is now PINNED to the reference ("the same face,
+  the same body proportions, the same species — only the clothes and the props change").
+- Identity is also lost to a **COSTUME**: a "toy repairman's outfit" (dungarees + a cap
+  over the hair) returned a COMPLETELY DIFFERENT CHILD. Face and hair are all the artist
+  has. Ordinary clothes; never anything over her hair.
+
+### **THE T-POSE: idle hands go home to the reference photo** ← the one that matters
+Four T-poses shipped by four routes — empty scene · too much to hold (she held NEITHER,
+props on the floor) · one thing each side (she reached for both; arms-spread IS the
+T-pose) · things flanking her, hands empty. **All four have one thing in common: HER
+HANDS WERE DOING NOTHING.** Not props, not sides, not counts — I tried each and each
+fixed one instance. `never_empty_handed()` gives idle hands an asymmetric job.
+
+### A lesson is not a facts reel (`_TEACHING_SYS`)
+Lesson mode was drawing with the FACTS prompt, which asks for spectacle ("make it FUN",
+"surprise the viewer", "physical comedy"). So "you feel happy when mummy or daddy hugs
+you" got a girl hugging a **smiling cartoon Earth** — and this lesson exists to teach
+that non-living things do not feel. **The picture taught the opposite of the words.**
+`teaching=True` → the picture shows what the LINE SAYS; nothing inanimate gets a face.
+- **Alive must LOOK alive**: "a doll in one hand and a puppy in the other" came back as
+  TWO PLUSH TOY DOGS. The one contrast the line is built on, gone (`alive_looks_alive`).
+- **The teacher's face is never left to the renderer**: on "they don't eat, they don't
+  grow, they're not alive" the scene named no expression, so Qwen took it from the MOOD
+  OF THE WORDS and drew a six-year-old **snarling**. Banning "angry" cannot work — a face
+  is not optional (`warm_face`).
+- Also caught: emoji **heart eyes** replacing her eyes; a **crop top / bare midriff** on a
+  six-year-old ("belly expanding comically"); a four-action **montage** in one still.
+- Guards are a NET, the prompt is the mechanism, and every guard exits through `_tidy()`
+  — an early clause-scoped delete cut "the mascot character" out of its own scene.
+  Clause-scoped on purpose: a real puppy KEEPS its tail ("puppy, scratching its belly").
+
+### One lesson, one look
+`STYLE_PRESENTER` says only "bold vivid solid color background", so Qwen picked a new
+colour every shot — blue/purple/beige/grey. 13 pictures that watch like four different
+videos. `BACKDROPS[hash(lesson_id)]`, stable across a redo. Facts keeps its free choice.
+
+### The fix-it loop was a dead end (all 3 found by DRIVING the UI)
+- `approve()` refused stage="rendered" → render once and there was **no way back through
+  the gate**; the only way to fix one picture was to rewrite the lesson.
+- **"🔁 Redo the pictures" was a 20-minute NO-OP** — `prepare_lesson` skips a beat that
+  already has a scene, and the seed is a fixed `4000+i`, so it redrew byte-identical
+  images. `redo=True` rewrites the scenes and moves the seed.
+- The gate showed a **104px thumbnail** and asked you to judge it. Every defect above is
+  a few pixels wide at that size. Click to enlarge.
+- Clip **reuse** (mtime vs the still + duration): fixing one picture re-animates THAT
+  shot, not all of them (was 8.5 min × every ticked shot, every round).
+- Voice takes are kept when the words are unchanged — the clone is stochastic and a
+  re-read could collapse a line and drop the lesson to a preset voice **as the price of
+  fixing a picture**.
+
+### Structure (probed, not assumed)
+Wan is 16fps, Ken Burns is 30fps, and **the concat demuxer stream-copies** — so
+`lesson_assembly.normalize_segment()` RESAMPLES every segment to 30fps/1920x1080/exact
+duration. Verified: **76.53s of video against 76.53s of narration.** No `-shortest`.
+`publish_kit.attach(aspects=…)` — it was `aspect=`, a TypeError swallowed by try/except,
+and the lesson shipped with no title/description/thumbnail.
+`lesson_library.delete_lesson` also sweeps the Wan strays OUTSIDE the lesson tree
+(`videos/hwan_<id>_*`, `clips/_mv_temp/hseg_<id>_*`) — id validated before any glob.
+
+### Landmines
+- **NEVER** route lesson voice through `facts_pipeline._voice_beats_mascot()` — it ends in
+  `_fit_to_budget()`, the FACTS 40-second ceiling, and a 90s lesson comes out gabbling at
+  1.45x with nothing erroring. Use `_voice_beats_clone()`. Pinned: `test_lesson_budget.py`.
+- `model_registry.get_vision()` NEVER falls back to a text model — a text model does not
+  error on an image, it INVENTS the page.
+- `pypdf.page.images` returns the DOCUMENT's images (page 1 == page 9, byte-identical).
+  Rasterize with pypdfium2.
+- The launcher killed the old BOT but not the old LAUNCHER, whose crash-loop respawned it
+  10s later → **two live bots**. `launch_clawbot.ps1` now kills sibling launchers first.
+
 ## 3F. FACTS MODE — **FROZEN 2026-07-13**. Spec: `02_Agent/FACTS_MODE.md`. Don't tune it without being asked.
 Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice, Wan 720p shots, read-along captions, music bed, thumbnail held as the first frame, under 40s. Frozen settings + reasons live in **`FACTS_MODE.md`**; `config_snapshot/` mirrors `05_Config` (which is outside git). 577 tests green. Commits: 6623667, 5e6d99c, 30582d6, ad1c8bf, d4d9fd0, c787651.
 - **Music bed (3 shipped bugs, all silent).** ACE-Step under-fills — asked 49s it wrote 29s of music + 10s of digital silence + 8s of junk. Fixes: ask **2x** and *measure the composed body*, re-ask longer if short (`_MUSIC_ASK_HEADROOM=2.0`, `_MUSIC_TRIES=2`); cut the bed at its **music body** (`_music_body_end`, first gap ≥1.5s under −45dB after ≥8s of music) not its tail — trimming the tail left the hole mid-track and `_align_music_tail` (which fits a long track by cutting from the FRONT to keep the outro) then kept the dead air; **never loop** a short bed (replaying its opening = the same 8 bars twice, heard instantly) — it starts late instead.
