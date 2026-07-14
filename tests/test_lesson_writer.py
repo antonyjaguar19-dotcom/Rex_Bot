@@ -371,10 +371,18 @@ def test_a_costume_may_not_cost_the_mascot_her_identity():
     # the hair: face and hair are the only two things the artist recognises her by.
     from modules import mascot as mas
     sysp = mas._TEACHING_SYS.lower()
-    assert "ordinary clothes" in sysp
-    assert "never a head-to-toe costume" in sysp
-    assert "over her hair" in sysp
-    assert "completely different child" in sysp, "the rule must keep its reason"
+    # The rule got STRONGER: a lesson does not mention her clothes at all. She wears her
+    # own, unchanged, shot after shot — one girl, on one day, in one film. That kills the
+    # repairman's costume AND the outfit drift (a pinafore in shot 1, a skirt in shot 3).
+    assert "never mention her clothes at all" in sysp
+    assert "they do not change" in sysp
+    assert "toy repairman" in sysp, "the rule must keep its reason"
+    assert "thirteen different days" in sysp
+    # and the guard enforces it, because a rule in a prompt is a wish
+    out = mas.clean_scene_for_the_mascot(
+        "the mascot character dressed in a toy repairman costume, holding a toy car",
+        teaching=True)
+    assert "repairman" not in out
     for banned in ("different character", "different child", "changed hairstyle",
                    "hair hidden under a hat"):
         assert banned in mas.NEGATIVE_PRESENTER, banned

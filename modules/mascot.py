@@ -193,7 +193,8 @@ STYLE_PRESENTER = (
     # adjective. Point at the picture and say "that one, in different clothes".
     "exactly the same character as the reference image: the same face, the same head "
     "size, the same body proportions, the same build, the same species — only the "
-    "clothes and the props change, "
+    "clothes and the props change, "  # facts: a costume per fact IS the joke
+
     "fully clothed, the shirt covers the whole torso, "
     "full body visible, dynamic playful action pose, exaggerated cartoon body "
     "language, mid-motion, big readable facial expression, mouth open "
@@ -215,7 +216,15 @@ STYLE_PRESENTER = (
 #
 # A lesson's picture is what a child who cannot read is learning FROM. So the lesson gets
 # its own overlay, and facts is left exactly as it was.
-STYLE_TEACHING = STYLE_PRESENTER + (
+STYLE_TEACHING = STYLE_PRESENTER.replace(
+    # A LESSON is one girl, on one day, in one film. The shared line invites a costume
+    # change on every shot — right for a facts reel (each fact gets its own gag costume)
+    # and wrong here: shot 1 came back in a pinafore and shot 3 in her white top and
+    # denim skirt, and thirteen of those watch like thirteen different days.
+    "only the clothes and the props change",
+    "she is wearing EXACTLY THE SAME CLOTHES as in the reference image — the same top, "
+    "the same skirt, the same shoes, unchanged in every shot; only the PROPS change",
+) + (
     # SCALE. Nothing constrained how BIG a prop was, and "holding up a grey rock" came
     # back as a BOULDER bigger than her torso, hugged with both arms — which also ate the
     # SECOND prop the scene asked for, because both her arms were full of the first.
@@ -1228,6 +1237,33 @@ def other_people_are_other_people(scene: str) -> str:
     return _tidy(scene.rstrip(" ,") + note)
 
 
+# A LESSON is one girl, on one day, in one film. Her clothes do not change.
+#
+# The shared style says "only the clothes and the props change" — correct for a FACTS
+# reel, where a costume per fact is the joke, and wrong here: shot 1 came back in a
+# pinafore and shot 3 in her white top and denim skirt. Thirteen of those watch like
+# thirteen different days.
+#
+# The costume clause is also how the mascot lost her identity outright once: a "toy
+# repairman's costume" (dungarees + a cap over the hair) returned a different child.
+_GARMENT = (r"(?:coat|hat|cap|apron|suit|costume|outfit|uniform|jacket|sweater|dress|"
+            r"clothes|helmet|gown|robe|cape|goggles|scarf|boots|gloves)")
+# The trailing "(and <garment>)*" matters: "dressed in a chef hat and apron" stopped at
+# "hat" and left a dangling "and apron" behind.
+_COSTUME = re.compile(
+    r",?\s*\b(?:wearing|dressed (?:in|as)|clad in)\s+"
+    r"(?:(?!facing|holding|lifting|kneeling|hugging|pointing)[^,])*?" + _GARMENT +
+    r"(?:\s+and\s+(?:an?\s+)?(?:\w+\s+){0,2}" + _GARMENT + r")*\b", re.I)
+
+
+def her_clothes_do_not_change(scene: str) -> str:
+    """Strip the costume. In a lesson she wears her own clothes, shot after shot."""
+    if not _COSTUME.search(scene or ""):
+        return scene
+    log.info("scene put the mascot in a costume — in a lesson her clothes never change")
+    return _tidy(_COSTUME.sub("", scene))
+
+
 def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway.
@@ -1246,7 +1282,8 @@ def clean_scene_for_the_mascot(scene: str, teaching: bool = False) -> str:
         never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
             keep_the_mascot(one_moment(scene)))))))))
     if teaching:
-        out = props_fit_in_a_hand(alive_looks_alive(warm_face(out)))
+        out = props_fit_in_a_hand(alive_looks_alive(warm_face(
+            her_clothes_do_not_change(out))))
     return out
 
 
@@ -1321,10 +1358,13 @@ _TEACHING_SYS = (
     "in one hand and a puppy in the other' came back holding TWO PLUSH TOY DOGS — both "
     "read as toys, and the one contrast the whole line is built on was gone. The living "
     "thing is ALIVE and MOVING; the toy is obviously a toy.\n"
-    "- ORDINARY CLOTHES. Her own everyday clothes, in nearly every shot. A costume only "
-    "when the costume itself TEACHES the line — a chef's hat does not explain that "
-    "living things grow, and a toy repairman's outfit does not explain that toys are "
-    "not alive.\n"
+    "- NEVER MENTION HER CLOTHES AT ALL. She wears her own everyday clothes in every "
+    "shot of the lesson, and they do not change — this is one girl, on one day, in one "
+    "film. A lesson whose character is in a pinafore in shot 1 and a skirt in shot 3 "
+    "watches like thirteen different days. Do not write 'wearing', 'dressed in', or "
+    "name any costume: a chef's hat does not explain that living things grow, and a toy "
+    "repairman's outfit does not explain that toys are not alive. Describe what she is "
+    "DOING and what she is HOLDING. Nothing else.\n"
     "- NEVER a head-to-toe costume, and NEVER a cap, helmet, hood or anything else over "
     "her hair. Her FACE and her HAIR are the only two things the artist has to "
     "recognise her by. A 'toy repairman's costume' — dungarees and a cap — came back as "

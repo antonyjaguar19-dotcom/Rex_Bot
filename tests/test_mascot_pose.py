@@ -612,3 +612,58 @@ def test_a_scene_with_no_doll_and_no_people_is_untouched():
     scene = "the mascot character kneeling beside a puppy, stroking its back, laughing"
     assert mas.toys_look_like_toys(scene) == scene
     assert mas.other_people_are_other_people(scene) == scene
+
+
+# --- One girl, one day, one film -------------------------------------------------
+# The shared style says "only the clothes and the props change". Correct for a FACTS
+# reel — a costume per fact IS the joke. Wrong for a LESSON: shot 1 came back in a
+# pinafore and shot 3 in her white top and denim skirt, and thirteen of those watch like
+# thirteen different days.
+#
+# The costume clause is also how she lost her identity outright: a "toy repairman's
+# costume" (dungarees + a cap over her hair) returned a completely different child.
+
+def test_a_lesson_pins_her_clothes_and_facts_keeps_its_costumes():
+    assert "only the clothes and the props change" in mas.STYLE_PRESENTER
+    assert "EXACTLY THE SAME CLOTHES" in mas.STYLE_TEACHING
+    assert "only the clothes and the props change" not in mas.STYLE_TEACHING
+
+
+def test_the_costume_is_stripped_from_a_lesson_scene_only():
+    for scene, gone in (
+        ("the mascot character wearing a scientist lab coat facing the camera, "
+         "holding up a small plant", "lab coat"),
+        ("the mascot character dressed in a chef hat and apron, holding a small plate "
+         "of food, smiling", "apron"),
+        ("the mascot character dressed in a toy repairman costume facing the camera, "
+         "holding up a small broken toy car", "repairman"),
+    ):
+        lesson = mas.clean_scene_for_the_mascot(scene, teaching=True)
+        assert gone not in lesson, f"{gone!r} survived the lesson guard: {lesson}"
+        assert lesson.lower().startswith("the mascot character")
+        # a FACTS reel keeps its costume — that is the joke
+        assert gone in mas.clean_scene_for_the_mascot(scene)
+
+
+def test_the_costume_guard_keeps_the_action_and_the_framing():
+    scene = ("the mascot character wearing a tiny jacket facing the camera, kneeling "
+             "beside a puppy, stroking its back")
+    out = mas.clean_scene_for_the_mascot(scene, teaching=True)
+    assert "jacket" not in out
+    assert "facing the camera" in out       # the framing survives
+    assert "kneeling beside a puppy" in out  # the action survives
+    assert "stroking its back" in out
+
+
+def test_chained_garments_do_not_leave_a_dangling_and():
+    # "dressed in a chef hat and apron" stopped at "hat" and left ", and apron" behind.
+    out = mas.her_clothes_do_not_change(
+        "the mascot character dressed in a chef hat and apron, holding a plate")
+    assert "apron" not in out and "and apron" not in out
+    assert "holding a plate" in out
+
+
+def test_a_scene_naming_no_clothes_is_untouched():
+    scene = "the mascot character holding up a small toy car in one hand, smiling"
+    assert mas.her_clothes_do_not_change(scene) == scene
+    assert mas.clean_scene_for_the_mascot(scene, teaching=True) == scene
