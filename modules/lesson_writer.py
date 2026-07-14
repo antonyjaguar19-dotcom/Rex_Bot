@@ -687,19 +687,13 @@ def _move_artifacts(lesson_dir: Path, order: list) -> None:
                     tmp.replace(d / f"{template.format(new)}{ext}")
 
 
-def move_beat(lesson_id: str, src: int, dst: int) -> bool:
-    """Move one shot to another position — the beat AND everything on disk that belongs
-    to it: its picture, its voice take, its animated clip."""
-    lesson = load_lesson(lesson_id)
-    if not lesson:
-        return False
-    beats = lesson.get("beats", [])
+def _apply_order(lesson: dict, order: list) -> bool:
+    """`order[new_index] = old_index`. Permute the beats AND everything on disk that
+    belongs to them. Both move_beat and reset_order come through here — a second copy of
+    this would be a second chance to desync the voice from the pictures."""
+    lesson_id = lesson["lesson_id"]
+    beats = lesson["beats"]
     n = len(beats)
-    if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
-        return False
-
-    order = list(range(n))              # order[new] = old
-    order.insert(dst, order.pop(src))
 
     d = LESSONS_DIR / lesson_id
     _move_artifacts(d, order)
@@ -727,7 +721,64 @@ def move_beat(lesson_id: str, src: int, dst: int) -> bool:
             pass
 
     _save(lesson)
+    return True
+
+
+def _stamp_original_order(beats: list) -> None:
+    """Remember where each beat STARTED, so Reset can put it back.
+
+    Stamped lazily, on the first move — not at write time. A lesson written before this
+    existed has no record of its original order, and inventing one from the CURRENT order
+    (after you have already shuffled it) would make Reset a no-op that looked like it
+    worked. The first move is the last moment the order is still the original one.
+    """
+    if all("orig" in b for b in beats):
+        return
+    for i, b in enumerate(beats):
+        b.setdefault("orig", i)
+
+
+def move_beat(lesson_id: str, src: int, dst: int) -> bool:
+    """Move one shot to another position — the beat AND everything on disk that belongs
+    to it: its picture, its voice take, its animated clip."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    n = len(beats)
+    if not (0 <= src < n) or not (0 <= dst < n) or src == dst:
+        return False
+
+    _stamp_original_order(beats)        # BEFORE the permutation, or "original" is a lie
+
+    order = list(range(n))              # order[new] = old
+    order.insert(dst, order.pop(src))
+    _apply_order(lesson, order)
     log.info(f"{lesson_id}: moved shot {src + 1} to position {dst + 1}")
+    return True
+
+
+def is_reordered(lesson: dict) -> bool:
+    """Has the running order been changed from the one the lesson was written in?"""
+    beats = lesson.get("beats", [])
+    if not any("orig" in b for b in beats):
+        return False                    # never moved
+    return [b.get("orig", i) for i, b in enumerate(beats)] != list(range(len(beats)))
+
+
+def reset_order(lesson_id: str) -> bool:
+    """Put the shots back in the order the lesson was written in."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    if not is_reordered(lesson):
+        return False
+
+    # order[new] = old: sort the CURRENT positions by where each beat started.
+    order = sorted(range(len(beats)), key=lambda i: beats[i].get("orig", i))
+    _apply_order(lesson, order)
+    log.info(f"{lesson_id}: running order reset to the written one")
     return True
 
 

@@ -134,3 +134,69 @@ def test_a_move_that_changes_nothing_is_refused(lesson):
     assert lw.move_beat(lid, 1, 1) is False
     assert lw.move_beat(lid, -1, 0) is False
     assert lw.move_beat(lid, 0, 9) is False
+
+
+# --- RESET -----------------------------------------------------------------------
+
+def test_reset_puts_every_shot_and_every_file_back(lesson):
+    lid, d = lesson
+    lw.move_beat(lid, 3, 0)
+    lw.move_beat(lid, 2, 1)
+    assert [b["narration"] for b in lw.load_lesson(lid)["beats"]] != \
+        ["line 0", "line 1", "line 2", "line 3"]
+
+    assert lw.reset_order(lid) is True
+    got = lw.load_lesson(lid)["beats"]
+    assert [b["narration"] for b in got] == ["line 0", "line 1", "line 2", "line 3"]
+
+    # and the files came back with them — the whole point
+    assert _on_disk(d, "stills", "still_{:02d}.png", 4) == [
+        f"picture of line {i}" for i in range(4)]
+    assert _on_disk(d, "audio", "beat_{:02d}.wav", 4) == [
+        f"voice of line {i}" for i in range(4)]
+    assert _on_disk(d, "clips", "clip_{:02d}.mp4", 4) == [
+        f"clip of line {i}" for i in range(4)]
+
+
+def test_the_original_order_is_stamped_before_the_first_move_not_after(lesson):
+    # Stamping it lazily is the only honest moment: a lesson written before this existed
+    # has no record of its original order, and inventing one from the CURRENT order — after
+    # it has already been shuffled — would make Reset a no-op that LOOKED like it worked.
+    lid, _ = lesson
+    assert all("orig" not in b for b in lw.load_lesson(lid)["beats"])
+
+    lw.move_beat(lid, 3, 0)
+    got = lw.load_lesson(lid)["beats"]
+    assert [b["orig"] for b in got] == [3, 0, 1, 2], "it remembers where each shot STARTED"
+
+
+def test_reset_is_not_offered_when_nothing_moved(lesson):
+    # A button that does nothing is worse than no button — this codebase has already
+    # shipped one ("Redo the pictures" was a twenty-minute no-op).
+    lid, _ = lesson
+    assert lw.is_reordered(lw.load_lesson(lid)) is False
+    assert lw.reset_order(lid) is False
+
+    lw.move_beat(lid, 0, 2)
+    assert lw.is_reordered(lw.load_lesson(lid)) is True
+
+    lw.reset_order(lid)
+    assert lw.is_reordered(lw.load_lesson(lid)) is False, "back home — nothing left to reset"
+
+
+def test_reset_keeps_the_voice_takes(lesson):
+    from modules import lesson_pipeline as lp
+    lid, d = lesson
+    lw.move_beat(lid, 3, 0)
+    lw.reset_order(lid)
+
+    narrations = [b["narration"] for b in lw.load_lesson(lid)["beats"]]
+    assert len(lp._reusable_takes(narrations, d / "audio")) == 4, \
+        "a reset must not cost you a re-record"
+
+
+def test_move_and_reset_share_one_permutation(lesson):
+    # Two copies of the rename would be two chances to desync the voice from the pictures.
+    import inspect
+    assert "_apply_order(" in inspect.getsource(lw.move_beat)
+    assert "_apply_order(" in inspect.getsource(lw.reset_order)

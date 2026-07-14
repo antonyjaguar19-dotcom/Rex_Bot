@@ -144,11 +144,28 @@ def test_the_gate_has_a_confirm_a_redraw_and_reorder_arrows(page):
     assert "redraw_still_action(" in gate, "no per-picture redraw"
     assert "lw.move_beat(" in gate, "no reorder"
 
-    # the still's MTIME is in the change signature, or a redrawn picture would keep
-    # showing the old one: the path never changes, only the bytes behind it
-    sig = src[src.index('sig = ((lesson or {}).get("lesson_id")'):]
-    assert "_mtime(" in sig[:600]
-    assert 'b.get("approved")' in sig[:600]
+    # THE TICKBOXES ARE NAMED. Two checkboxes that do completely different jobs sat side
+    # by side, unlabelled, a few pixels apart: one says the picture is right, the other
+    # spends 8.5 minutes of GPU.
+    assert 'ui.checkbox("Looks right"' in gate
+    assert 'ui.checkbox("Animate (~8 min)"' in gate
+
+    # ↺ RESET, and only when there is something to reset. A button that does nothing is
+    # worse than no button — this codebase has already shipped one ("Redo the pictures"
+    # was a twenty-minute no-op).
+    assert "lw.reset_order(" in gate
+    assert "if lw.is_reordered(lesson):" in gate
+
+    # The change signature has to carry three things or the row silently goes stale:
+    #   approved — or ticking it would not redraw the row
+    #   orig     — or "↺ Reset order" would not appear when you move a shot
+    #   MTIME    — or a REDRAWN picture would keep showing the old one: the path never
+    #              changes, only the bytes behind it
+    sig_start = src.index('sig = ((lesson or {}).get("lesson_id")')
+    sig = src[sig_start:src.index("if not _changed(\"lesson_script\"", sig_start)]
+    assert 'b.get("approved")' in sig
+    assert 'b.get("orig")' in sig
+    assert "_mtime(" in sig
 
     assert len(page.elements) > 100
 

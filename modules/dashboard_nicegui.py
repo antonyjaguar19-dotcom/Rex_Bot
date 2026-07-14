@@ -4534,6 +4534,9 @@ def main_page():
                (lesson or {}).get("video", ""),
                tuple((b["narration"], b["on_screen"], b.get("animate"),
                       b.get("approved"), b.get("still", ""),
+                      # where this beat STARTED — or the "↺ Reset order" button would not
+                      # appear when you move a shot, nor vanish when you put it back
+                      b.get("orig"),
                       # the still's MTIME, or a redrawn picture would keep showing the old
                       # one: the path does not change, only the bytes behind it
                       _mtime(b.get("still", "")))
@@ -4631,46 +4634,62 @@ def main_page():
                             .set_enabled(i < len(lesson["beats"]) - 1)
 
                     if prepared:
-                        # ✓ CONFIRMED. The one that matters.
-                        #
-                        # Almost every serious defect this pipeline has produced — mouse
-                        # ears, a twin mother, a doll rendered as a living child dangling
-                        # by the wrist, a headless doll, a boulder — rendered cleanly,
-                        # logged nothing, and was wrong only IN THE FILE. Wan then spent
-                        # 8.5 minutes animating it. Render is disabled until every picture
-                        # has been looked at and ticked.
-                        ok = ui.checkbox(value=bool(b.get("approved"))) \
-                            .props(f"dense color=positive name=lesson_ok_{i}") \
-                            .tooltip("I have looked at this picture full size and it is "
-                                     "right. Render stays locked until every one is "
-                                     "ticked.")
+                        # The two tickboxes do COMPLETELY different jobs and sat side by
+                        # side, unlabelled, a few pixels apart — one confirms the picture
+                        # is right, the other spends 8.5 minutes of GPU. They are named
+                        # now, and separated.
+                        with ui.row().classes("items-center gap-4") \
+                                .style("margin-left: 10px; padding-left: 12px; "
+                                       "border-left: 1px solid #ffffff1f;"):
 
-                        def _ok(_=None, _i=i, _c=ok):
-                            lw.set_beat_approved(S.lesson_id, _i, bool(_c.value))
-                            _repaint_estimate()
-                        ok.on_value_change(_ok)
+                            # ✓ CONFIRMED. The one that matters.
+                            #
+                            # Almost every serious defect this pipeline has produced —
+                            # mouse ears, a twin mother, a doll rendered as a living child
+                            # dangling by the wrist, a headless doll, a boulder — rendered
+                            # cleanly, logged nothing, and was wrong only IN THE FILE. Wan
+                            # then spent 8.5 minutes animating it. Render stays locked
+                            # until every picture has been looked at and ticked.
+                            ok = ui.checkbox("Looks right",
+                                             value=bool(b.get("approved"))) \
+                                .props(f"dense color=positive name=lesson_ok_{i}") \
+                                .classes("text-xs") \
+                                .tooltip("I have looked at this picture FULL SIZE and it "
+                                         "is right. Render stays locked until every one "
+                                         "is ticked — a bad picture renders just as "
+                                         "cleanly as a good one, so looking is the only "
+                                         "way to catch it.")
 
-                        # THE TICKBOX. Each one is ~8.5 minutes of Wan; unticked, the
-                        # still gets a slow pan and costs nothing. The choice is saved
-                        # to disk — the render reads it back, not the browser.
-                        tick = ui.checkbox(value=bool(b.get("animate"))) \
-                            .props(f"dense color=accent name=lesson_tick_{i}") \
-                            .tooltip("Animate this shot with Wan (~8 min of GPU). "
-                                     "Unticked = the picture with a slow pan, free.")
+                            def _ok(_=None, _i=i, _c=ok):
+                                lw.set_beat_approved(S.lesson_id, _i, bool(_c.value))
+                                _repaint_estimate()
+                            ok.on_value_change(_ok)
 
-                        def _tick(_=None, _i=i, _c=tick):
-                            lw.set_beat_animate(S.lesson_id, _i, bool(_c.value))
-                            _repaint_estimate()
-                        tick.on_value_change(_tick)
+                            # ~8.5 minutes of Wan each; unticked, the still gets a slow
+                            # pan and costs nothing. Saved to disk — the render reads it
+                            # back, not the browser.
+                            tick = ui.checkbox("Animate (~8 min)",
+                                               value=bool(b.get("animate"))) \
+                                .props(f"dense color=accent name=lesson_tick_{i}") \
+                                .classes("text-xs") \
+                                .tooltip("Give this shot real motion with Wan (~8 min of "
+                                         "GPU). Unticked = the picture with a slow pan, "
+                                         "which is free.")
 
-                        # 🔁 THIS picture, on its own. Fixing one bad image used to mean
-                        # redrawing all thirteen.
-                        def _redraw(_=None, _i=i):
-                            redraw_still_action(S.lesson_id, _i, full_refresh)
+                            def _tick(_=None, _i=i, _c=tick):
+                                lw.set_beat_animate(S.lesson_id, _i, bool(_c.value))
+                                _repaint_estimate()
+                            tick.on_value_change(_tick)
 
-                        ui.button("🔁", on_click=_redraw).props("flat dense") \
-                            .tooltip("Redraw just this picture, at a new seed (~2 min). "
-                                     "Its tick is cleared — look at the new one.")
+                            # 🔁 THIS picture, on its own. Fixing one bad image used to
+                            # mean redrawing all thirteen.
+                            def _redraw(_=None, _i=i):
+                                redraw_still_action(S.lesson_id, _i, full_refresh)
+
+                            ui.button("🔁", on_click=_redraw).props("flat dense") \
+                                .tooltip("Redraw just THIS picture, at a new seed "
+                                         "(~2 min). Its tick is cleared — look at the "
+                                         "new one before you render.")
                     else:
                         ui.label(b["on_screen"]).classes("text-xs opacity-60") \
                             .style("width: 130px;")
@@ -4711,6 +4730,22 @@ def main_page():
                         .props("flat dense") \
                         .tooltip("Writes NEW scenes and draws them ALL at a new seed. The "
                                  "voice takes are kept — only the pictures change.")
+
+                    # ↺ RESET ORDER. Only offered once the order has actually been
+                    # changed — a button that does nothing is worse than no button, and
+                    # this codebase has already shipped one ("Redo the pictures" was a
+                    # twenty-minute no-op).
+                    if lw.is_reordered(lesson):
+                        def _reset():
+                            if lw.reset_order(S.lesson_id):
+                                ui.notify("↺ back to the written order", type="positive")
+                                full_refresh()
+
+                        ui.button("↺ Reset order", on_click=_reset) \
+                            .props("flat dense") \
+                            .tooltip("Put the shots back in the order the lesson was "
+                                     "written in. The pictures, the voice takes and the "
+                                     "clips all go back with them.")
 
             if lesson.get("video") and Path(lesson["video"]).exists():
                 ui.video(_media_url(Path(lesson["video"]))) \
