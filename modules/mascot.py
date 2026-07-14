@@ -270,6 +270,11 @@ NEGATIVE_PRESENTER = (
     # mascot's own face, dangling by the wrist, in a lesson about how toys are NOT alive.
     "doll with a human face, realistic child instead of a doll, living doll, "
     "a real child held by the arm, child dangling, child in distress, "
+    # ...and the OPPOSITE, which is what "limp and lifeless, stitched button eyes" got:
+    # a HEADLESS cloth sack with buttons sewn onto its torso, and then a blank white
+    # faceless figure. Both read as a voodoo doll. A rag doll has a head and a smile.
+    "headless doll, doll with no head, faceless doll, blank white doll, featureless doll, "
+    "eyes on the torso, voodoo doll, creepy doll, sinister toy, "
     # BOBBLEHEAD. Telling the model "big head, small body" (my own botched repair of the
     # cub language) gave her a head bigger than her torso.
     "bobblehead, oversized head, giant head, head bigger than the body, "
@@ -1241,8 +1246,8 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
                    r"(\s+(?:named|called)\s+\w+)?", re.I)
 # The name goes straight after "rag doll", not on the end — "obviously a lifeless toy
 # and not a person named Ammu" reads as the mascot naming a corpse.
-_DOLL_HEAD = "a cloth rag doll"
-_DOLL_TAIL = " with stitched button eyes, limp and lifeless"
+_DOLL_HEAD = "a cheerful soft rag doll"
+_DOLL_TAIL = " with a round stitched head, yarn hair and a stitched smile, clearly a toy"
 
 _OTHER_PERSON = re.compile(
     r"\b(mother|mum|mummy|mom|mommy|father|dad|daddy|papa|grandmother|grandma|"
@@ -1268,36 +1273,45 @@ def toys_look_like_toys(scene: str) -> str:
 
 
 def other_people_are_other_people(scene: str) -> str:
-    """The second person in a scene is not a second mascot."""
+    """THERE IS ONE PERSON IN A MASCOT PICTURE, AND IT IS THE MASCOT.
+
+    Qwen-Edit is handed exactly ONE identity reference, so it can draw exactly ONE
+    person. It has nothing to draw a second person FROM. Three attempts, each failing
+    worse than the last:
+
+        no note        -> two identical Nakshus hugging. A twin, not a mother.
+        parenthesised  -> "her smiling mother (a grown adult, much taller, a completely
+                          different face...)" read as a PROP DESCRIPTION. The mother
+                          vanished and the child was left holding a small doll.
+        appositive     -> "her mother, a tall grown-up woman with a completely different
+                          face and long hair" — and BOTH girls came back with the long
+                          brown hair and the different face. Nakshu was gone from her own
+                          lesson: no bindi, no topknot, no butterflies, on either of them.
+
+    There is no wording that fixes this. The model cannot invent a consistent second
+    character from a reference of the first, and every instruction meant for the second
+    person lands on both. So the second person does not go in the picture.
+
+    A six-year-old does not need to SEE the mother to understand the line "you feel happy
+    when mummy hugs you" — she needs to see the FEELING, and the mascot can carry that on
+    her own face and in her own arms.
+    """
     m = _OTHER_PERSON.search(scene or "")
     if not m:
         return scene
-    if re.search(r"\b(?:grown|adult|taller|different face|another person)\b", scene, re.I):
-        return scene
     who = m.group(1).lower()
-    if who in _ADULTS:
-        note = ("a tall grown-up woman with a completely different face and long hair"
-                if who in {"mother", "mum", "mummy", "mom", "mommy", "grandmother",
-                           "grandma"} else
-                "a tall grown-up man with a completely different face and short hair")
-    else:
-        note = "another child with a completely different face and different hair"
-
-    # IN PLACE and in NATURAL ENGLISH — an appositive, not a parenthesis.
-    #
-    # Two things had to be got right here, and I got each wrong once:
-    #   * appended  -> "...her mother, laughing, THE MOTHER is a grown adult..." names her
-    #     twice, and every extra mention of a thing is another copy of that thing (that is
-    #     literally how one puppy became two).
-    #   * parenthesised -> "her smiling mother (a grown adult, much taller, a completely
-    #     different face...)" made Qwen read the whole bracket as a PROP DESCRIPTION. The
-    #     mother vanished from the picture entirely and the child was left holding a small
-    #     doll instead.
-    # An appositive reads as what it is: the same person, described.
-    out = _OTHER_PERSON.sub(lambda x: f"{x.group(1)}, {note},", scene, count=1)
-    log.info(f"scene has a second person ({who}) — saying in place that they are not the "
-             f"mascot, or the reference copies itself and you get twins")
-    return _tidy(out)
+    log.warning(f"scene put a {who} in the frame — there is only ONE identity reference, "
+                f"so a second person comes back as a TWIN. Keeping the mascot alone.")
+    out = re.sub(r",?\s*[^,]*\b" + re.escape(who) + r"\b[^,]*", "", scene, count=1,
+                 flags=re.I)
+    # A plural pronoun is left pointing at nobody once the second person is gone:
+    # "both of them laughing" with only one person in the frame.
+    out = _tidy(re.sub(r",?\s*\b(?:both of them|the two of them|each other|together)\b",
+                       "", out, flags=re.I))
+    if not _HANDS_BUSY.search(out):
+        out = _tidy(out + ", both arms wrapped around herself in a happy hug, eyes "
+                          "closed, a big blissful smile")
+    return out
 
 
 # A LESSON is one girl, on one day, in one film. Her clothes do not change.

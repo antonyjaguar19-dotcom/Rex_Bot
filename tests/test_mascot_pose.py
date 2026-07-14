@@ -567,9 +567,14 @@ def test_render_scene_picks_the_right_style_for_the_mode():
 def test_a_doll_must_look_like_a_toy_not_a_child():
     scene = "the mascot character holding up a doll named Ammu in one hand"
     out = mas.toys_look_like_toys(scene)
-    assert "cloth rag doll" in out
-    assert "stitched button eyes" in out
-    assert "limp and lifeless" in out
+    assert "rag doll" in out
+    # A HEAD and a SMILE. "stitched button eyes, limp and lifeless" described the ABSENCE
+    # of a person, and Qwen drew exactly that: a HEADLESS cloth sack with buttons sewn on
+    # its torso, and then a blank white faceless figure. Both read as a voodoo doll.
+    # Describe the toy you want, not the absence of a child.
+    assert "round stitched head" in out
+    assert "stitched smile" in out
+    assert "clearly a toy" in out
     assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
     # SHORT. The first version was 25 words ("a limp cloth rag doll with stitched button
     # eyes and floppy stuffed limbs, obviously a lifeless toy and not a person") and a
@@ -578,7 +583,10 @@ def test_a_doll_must_look_like_a_toy_not_a_child():
     assert len(out.split()) < 30, f"the doll descriptor is diluting the scene: {out}"
 
     for banned in ("doll with a human face", "living doll", "a real child held by the arm",
-                   "child in distress", "realistic child instead of a doll"):
+                   "child in distress", "realistic child instead of a doll",
+                   # ...and the opposite, which is what the first fix produced:
+                   "headless doll", "faceless doll", "blank white doll", "creepy doll",
+                   "eyes on the torso", "voodoo doll"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
 
@@ -587,22 +595,35 @@ def test_a_doll_already_described_as_cloth_is_left_alone():
     assert mas.toys_look_like_toys(scene) == scene
 
 
-def test_the_second_person_is_not_a_second_mascot():
-    scene = "the mascot character being hugged by her smiling mother, laughing"
-    out = mas.other_people_are_other_people(scene)
-    assert "tall grown-up woman" in out
-    assert "a completely different face" in out
-    # the note goes IN PLACE, beside the word "mother" — appending it named her twice,
-    # and every extra mention of a thing is another copy of that thing
-    assert "mother, a tall grown-up woman" in out
-    for banned in ("twins", "clone", "duplicate character", "the same character twice"):
-        assert banned in mas.NEGATIVE_PRESENTER, banned
+def test_there_is_only_ever_one_person_in_the_picture():
+    # Qwen-Edit is handed exactly ONE identity reference, so it can draw exactly ONE
+    # person — it has nothing to draw a second one FROM. Three attempts, each worse:
+    #   no note       -> two identical Nakshus hugging. A twin, not a mother.
+    #   parenthesised -> the mother read as a PROP; she vanished and the child was left
+    #                    holding a doll.
+    #   appositive    -> BOTH girls came back with the mother's "completely different
+    #                    face and long hair". Nakshu was gone from her own lesson — no
+    #                    bindi, no topknot, no butterflies, on either of them.
+    # There is no wording that fixes this. The second person does not go in the picture.
+    out = mas.other_people_are_other_people(
+        "the mascot character facing the camera, her mother kneeling down and hugging "
+        "her warmly, both of them laughing")
+    assert "mother" not in out.lower()
+    assert "both of them" not in out.lower(), "a plural pronoun pointing at nobody"
+    # the FEELING is carried by the mascot, on her own
+    assert "arms wrapped around herself" in out
+    assert "blissful" in out
 
-    # a FRIEND is another child, not an adult
+    # a friend goes too
     friend = mas.other_people_are_other_people(
-        "the mascot character playing with her friend")
-    assert "another child" in friend
-    assert "grown-up" not in friend
+        "the mascot character playing with her friend, laughing together")
+    assert "friend" not in friend.lower()
+    assert "together" not in friend.lower()
+
+
+def test_a_scene_with_only_the_mascot_is_untouched():
+    scene = "the mascot character kneeling beside a puppy, stroking its back, laughing"
+    assert mas.other_people_are_other_people(scene) == scene
 
 
 def test_the_bleed_guards_are_universal_not_lesson_only():
@@ -611,7 +632,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
     for teaching in (False, True):
         out = mas.clean_scene_for_the_mascot(
             "the mascot character being hugged by her mother", teaching=teaching)
-        assert "tall grown-up woman" in out
+        assert "mother" not in out.lower(), "one reference image draws one person"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
         assert "cloth rag doll" in out
@@ -705,8 +726,7 @@ def test_a_guard_never_names_a_thing_twice():
 
     mum = "the mascot character being hugged by her smiling mother, laughing"
     out = mas.clean_scene_for_the_mascot(mum, teaching=True)
-    assert _times_named(out, "mother") == 1, f"the mother is named twice: {out}"
-    assert "tall grown-up woman" in out      # still marked a DIFFERENT person, just once
+    assert _times_named(out, "mother") == 0, "a second person cannot be drawn at all"
 
 
 def test_the_marks_are_made_in_place_not_appended():
@@ -728,17 +748,18 @@ def test_the_animals_duplicate_too():
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
 
-def test_a_second_person_is_an_appositive_not_a_parenthesis():
-    # "her smiling mother (a grown adult, much taller, a completely different face...)"
-    # made Qwen read the whole BRACKET as a prop description. The mother vanished from
-    # the picture entirely and the child was left holding a small doll instead.
+def test_the_appositive_did_not_work_either_so_the_person_is_gone():
+    # This test used to assert the appositive ("her mother, a tall grown-up woman with a
+    # completely different face and long hair"). It RENDERED, and it was wrong: BOTH
+    # girls came back with the long brown hair and the different face, and Nakshu was
+    # gone from her own lesson — no bindi, no topknot, no butterflies, on either of them.
     #
-    # An appositive reads as what it is: the same person, described.
+    # One reference image can only produce one person. The instruction meant for the
+    # second person lands on both.
     out = mas.other_people_are_other_people(
         "the mascot character being hugged by her smiling mother, laughing")
-    assert "(" not in out and ")" not in out, "a parenthesis reads as a prop, not a person"
-    assert "mother, a tall grown-up woman with a completely different face" in out
-    assert "laughing" in out                 # the rest of the scene survives
+    assert "mother" not in out.lower(), "a second person cannot be drawn from one reference"
+    assert "arms wrapped around herself" in out
 
 
 def test_a_guard_that_misfires_is_worse_than_no_guard():
