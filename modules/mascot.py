@@ -1098,9 +1098,12 @@ def alive_looks_alive(scene: str) -> str:
         word = m.group(0)
         if re.match(r"(?:real|live|living)\b", word, re.I):
             return word                    # already said
-        return f"real live {m.group(1)}"   # the article, if any, is already in the text
+        # IN PLACE, and ONLY in place. The first version also appended ", the puppy alive
+        # and moving" on the end — which named the puppy a SECOND time, and Qwen duly
+        # drew TWO PUPPIES, one in each hand. Every extra mention of a thing is another
+        # copy of that thing. Say it once.
+        return f"real live {m.group(1)}, wagging and blinking"
     out = _LIVE_ANIMAL.sub(_mark, s, count=1)
-    out = f"{out.rstrip(' ,')}, the {_LIVE_ANIMAL.search(s).group(1)} alive and moving"
     log.info("scene put a real animal beside a toy — saying so, or both come back plush")
     return _tidy(out)
 
@@ -1226,15 +1229,19 @@ def other_people_are_other_people(scene: str) -> str:
         return scene
     who = m.group(1).lower()
     if who in _ADULTS:
-        note = (f", the {who} is a GROWN ADULT — much taller than the child, adult "
-                f"proportions, a completely different face, different hair and different "
-                f"clothes, clearly another person")
+        note = ("a grown adult, much taller, adult proportions, a completely different "
+                "face and different hair, clearly another person")
     else:
-        note = (f", the {who} is a DIFFERENT CHILD — a different face, different hair "
-                f"and different clothes, clearly another person")
-    log.info(f"scene has a second person ({who}) — saying they are not the mascot, or "
-             f"the reference copies itself and you get twins")
-    return _tidy(scene.rstrip(" ,") + note)
+        note = ("a different child, a completely different face and different hair, "
+                "clearly another person")
+    # IN PLACE, never appended. An appended note names the person a SECOND time, and
+    # every extra mention of a thing is another copy of that thing — that is exactly how
+    # "a real live puppy ... the puppy alive and moving" came back as TWO PUPPIES, one in
+    # each hand. Say who they are once, where they are named.
+    out = _OTHER_PERSON.sub(lambda x: f"{x.group(1)} ({note})", scene, count=1)
+    log.info(f"scene has a second person ({who}) — saying in place that they are not the "
+             f"mascot, or the reference copies itself and you get twins")
+    return _tidy(out)
 
 
 # A LESSON is one girl, on one day, in one film. Her clothes do not change.

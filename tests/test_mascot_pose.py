@@ -330,8 +330,8 @@ def test_a_real_animal_beside_a_toy_is_told_to_look_alive():
              "hand and a puppy in the other, curious")
     out = mas.alive_looks_alive(scene)
     assert "real live puppy" in out
-    assert "alive and moving" in out
-    assert "doll named Ammu" in out       # the toy is untouched
+    assert "wagging and blinking" in out   # marked ALIVE, in place, ONCE
+    assert "doll named Ammu" in out        # the toy is untouched
 
 
 def test_an_animal_with_no_toy_beside_it_is_left_alone():
@@ -583,17 +583,20 @@ def test_a_doll_already_described_as_cloth_is_left_alone():
 def test_the_second_person_is_not_a_second_mascot():
     scene = "the mascot character being hugged by her smiling mother, laughing"
     out = mas.other_people_are_other_people(scene)
-    assert "GROWN ADULT" in out
+    assert "grown adult" in out
     assert "a completely different face" in out
     assert "much taller" in out
+    # the note goes IN PLACE, beside the word "mother" — appending it named her twice,
+    # and every extra mention of a thing is another copy of that thing
+    assert "mother (a grown adult" in out
     for banned in ("twins", "clone", "duplicate character", "the same character twice"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
     # a FRIEND is another child, not an adult
     friend = mas.other_people_are_other_people(
         "the mascot character playing with her friend")
-    assert "DIFFERENT CHILD" in friend
-    assert "GROWN ADULT" not in friend
+    assert "a different child" in friend
+    assert "grown adult" not in friend
 
 
 def test_the_bleed_guards_are_universal_not_lesson_only():
@@ -602,7 +605,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
     for teaching in (False, True):
         out = mas.clean_scene_for_the_mascot(
             "the mascot character being hugged by her mother", teaching=teaching)
-        assert "GROWN ADULT" in out
+        assert "grown adult" in out
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
         assert "cloth rag doll" in out
@@ -667,3 +670,43 @@ def test_a_scene_naming_no_clothes_is_untouched():
     scene = "the mascot character holding up a small toy car in one hand, smiling"
     assert mas.her_clothes_do_not_change(scene) == scene
     assert mas.clean_scene_for_the_mascot(scene, teaching=True) == scene
+
+
+# --- Every extra mention of a thing is another copy of that thing -----------------
+# alive_looks_alive() marked the animal in place AND appended ", the puppy alive and
+# moving" on the end. That named the puppy TWICE, and Qwen drew TWO PUPPIES, one in each
+# hand, in a scene that asked for one. other_people_are_other_people() had the same
+# shape and would have produced two mothers.
+#
+# A guard may rewrite a noun where it stands. It may never mention it again.
+
+def _times_named(scene, noun):
+    import re
+    return len(re.findall(rf"\b{noun}\b", scene, re.I))
+
+
+def test_a_guard_never_names_a_thing_twice():
+    puppy = ("the mascot character holding up a puppy in one hand and a potted plant "
+             "beside her, smiling widely")
+    out = mas.clean_scene_for_the_mascot(puppy, teaching=True)
+    assert _times_named(out, "puppy") == 1, f"the puppy is named twice: {out}"
+
+    both = "the mascot character holding a doll in one hand and a puppy in the other"
+    out = mas.clean_scene_for_the_mascot(both, teaching=True)
+    assert _times_named(out, "puppy") == 1, f"the puppy is named twice: {out}"
+    assert _times_named(out, "doll") == 1, f"the doll is named twice: {out}"
+    assert "real live puppy" in out          # still marked ALIVE, just once
+
+    mum = "the mascot character being hugged by her smiling mother, laughing"
+    out = mas.clean_scene_for_the_mascot(mum, teaching=True)
+    assert _times_named(out, "mother") == 1, f"the mother is named twice: {out}"
+    assert "grown adult" in out              # still marked a DIFFERENT person, just once
+
+
+def test_the_marks_are_made_in_place_not_appended():
+    import inspect
+    for fn in (mas.alive_looks_alive, mas.other_people_are_other_people):
+        src = inspect.getsource(fn)
+        assert ".sub(" in src, f"{fn.__name__} must rewrite in place"
+    # the appended-note shape is what caused two puppies
+    assert 'f"{out.rstrip' not in inspect.getsource(mas.alive_looks_alive)
