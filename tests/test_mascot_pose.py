@@ -474,11 +474,15 @@ def test_a_prop_fits_in_a_hand():
     once = mas.clean_scene_for_the_mascot(scene, teaching=True)
     assert mas.clean_scene_for_the_mascot(once, teaching=True) == once
 
-    # prop SCALE is a lesson rule — a facts reel's giant honey dipper is the joke
+    # prop SCALE is a lesson rule — a facts reel's giant honey dipper is the joke.
+    # Banned in BOTH directions: "hand-sized, never larger than her head" over-corrected
+    # into doll-house scale — a puppy the size of a finger, perched on her fingertips.
     for banned in ("giant prop", "boulder", "prop bigger than the character",
-                   "prop hugged with both arms"):
+                   "prop hugged with both arms",
+                   "miniature prop", "doll-house sized toy", "finger-sized animal"):
         assert banned in mas.NEGATIVE_TEACHING, banned
-    assert "every prop is SMALL" in mas.STYLE_TEACHING
+    assert "the props are toys a child can hold" in mas.STYLE_TEACHING
+    assert "roughly the size of her head" in mas.STYLE_TEACHING
 
 
 def test_a_living_creature_is_not_shrunk_into_a_toy():
@@ -496,8 +500,8 @@ def test_a_living_creature_is_not_shrunk_into_a_toy():
 # lesson gets an overlay and facts keeps exactly what it had.
 
 def test_the_lesson_tunes_its_own_prompt_and_facts_is_untouched():
-    assert "every prop is SMALL" in mas.STYLE_TEACHING
-    assert "every prop is SMALL" not in mas.STYLE_PRESENTER, \
+    assert "the props are toys a child can hold" in mas.STYLE_TEACHING
+    assert "the props are toys a child can hold" not in mas.STYLE_PRESENTER, \
         "a facts reel's giant honey dipper IS the joke"
 
     for lesson_only in ("angry", "scowling", "anthropomorphic object", "giant prop",
@@ -565,10 +569,13 @@ def test_a_doll_must_look_like_a_toy_not_a_child():
     out = mas.toys_look_like_toys(scene)
     assert "cloth rag doll" in out
     assert "stitched button eyes" in out
-    assert "lifeless toy and not a person" in out
+    assert "limp and lifeless" in out
     assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
-    # and the name must not land on the word 'person'
-    assert "not a person named Ammu" not in out
+    # SHORT. The first version was 25 words ("a limp cloth rag doll with stitched button
+    # eyes and floppy stuffed limbs, obviously a lifeless toy and not a person") and a
+    # long descriptor DILUTES: the model dropped the doll entirely and drew a SECOND
+    # PUPPY in its place. The negative carries what the scene no longer has to spell out.
+    assert len(out.split()) < 30, f"the doll descriptor is diluting the scene: {out}"
 
     for banned in ("doll with a human face", "living doll", "a real child held by the arm",
                    "child in distress", "realistic child instead of a doll"):

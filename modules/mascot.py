@@ -229,8 +229,8 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     # back as a BOULDER bigger than her torso, hugged with both arms — which also ate the
     # SECOND prop the scene asked for, because both her arms were full of the first.
     # A lesson's prop is a child's toy: it fits in her hand. A facts reel's need not.
-    ", every prop is SMALL — a toy, hand-sized, small enough to hold in one hand, "
-    "much smaller than the character, never larger than her head"
+    ", the props are toys a child can hold — roughly the size of her head, "
+    "clearly held in her hands, never bigger than her body and never doll-house tiny"
 )
 
 NEGATIVE_PRESENTER = (
@@ -310,7 +310,11 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     # SCALE. "A grey rock" came back as a BOULDER hugged with both arms — which also cost
     # her the second prop, since both arms were full of the first.
     "giant prop, oversized object, boulder, huge rock, prop bigger than the character, "
-    "object larger than her head, prop hugged with both arms, "
+    "prop hugged with both arms, "
+    # ...and the opposite. "Hand-sized, never larger than her head" over-corrected into
+    # DOLL-HOUSE scale: a puppy the size of a finger, perched on her fingertips.
+    "miniature prop, doll-house sized toy, finger-sized animal, tiny objects, "
+    "props perched on fingertips, "
     # BUBBLES. Qwen fills a thought bubble with a garbled picture-within-a-picture; it
     # reads as a rendering fault, not a device.
     "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture"
@@ -1199,9 +1203,8 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
                    r"(\s+(?:named|called)\s+\w+)?", re.I)
 # The name goes straight after "rag doll", not on the end — "obviously a lifeless toy
 # and not a person named Ammu" reads as the mascot naming a corpse.
-_DOLL_HEAD = "a limp cloth rag doll"
-_DOLL_TAIL = (", with stitched button eyes and floppy stuffed limbs, obviously a "
-              "lifeless toy and not a person")
+_DOLL_HEAD = "a cloth rag doll"
+_DOLL_TAIL = " with stitched button eyes, limp and lifeless"
 
 _OTHER_PERSON = re.compile(
     r"\b(mother|mum|mummy|mom|mommy|father|dad|daddy|papa|grandmother|grandma|"
