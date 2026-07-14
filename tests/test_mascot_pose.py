@@ -583,20 +583,19 @@ def test_a_doll_already_described_as_cloth_is_left_alone():
 def test_the_second_person_is_not_a_second_mascot():
     scene = "the mascot character being hugged by her smiling mother, laughing"
     out = mas.other_people_are_other_people(scene)
-    assert "grown adult" in out
+    assert "tall grown-up woman" in out
     assert "a completely different face" in out
-    assert "much taller" in out
     # the note goes IN PLACE, beside the word "mother" — appending it named her twice,
     # and every extra mention of a thing is another copy of that thing
-    assert "mother (a grown adult" in out
+    assert "mother, a tall grown-up woman" in out
     for banned in ("twins", "clone", "duplicate character", "the same character twice"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
     # a FRIEND is another child, not an adult
     friend = mas.other_people_are_other_people(
         "the mascot character playing with her friend")
-    assert "a different child" in friend
-    assert "grown adult" not in friend
+    assert "another child" in friend
+    assert "grown-up" not in friend
 
 
 def test_the_bleed_guards_are_universal_not_lesson_only():
@@ -605,7 +604,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
     for teaching in (False, True):
         out = mas.clean_scene_for_the_mascot(
             "the mascot character being hugged by her mother", teaching=teaching)
-        assert "grown adult" in out
+        assert "tall grown-up woman" in out
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
         assert "cloth rag doll" in out
@@ -700,7 +699,7 @@ def test_a_guard_never_names_a_thing_twice():
     mum = "the mascot character being hugged by her smiling mother, laughing"
     out = mas.clean_scene_for_the_mascot(mum, teaching=True)
     assert _times_named(out, "mother") == 1, f"the mother is named twice: {out}"
-    assert "grown adult" in out              # still marked a DIFFERENT person, just once
+    assert "tall grown-up woman" in out      # still marked a DIFFERENT person, just once
 
 
 def test_the_marks_are_made_in_place_not_appended():
@@ -720,3 +719,16 @@ def test_the_animals_duplicate_too():
     for banned in ("two puppies", "duplicate animal", "the same animal twice",
                    "more than one puppy"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_a_second_person_is_an_appositive_not_a_parenthesis():
+    # "her smiling mother (a grown adult, much taller, a completely different face...)"
+    # made Qwen read the whole BRACKET as a prop description. The mother vanished from
+    # the picture entirely and the child was left holding a small doll instead.
+    #
+    # An appositive reads as what it is: the same person, described.
+    out = mas.other_people_are_other_people(
+        "the mascot character being hugged by her smiling mother, laughing")
+    assert "(" not in out and ")" not in out, "a parenthesis reads as a prop, not a person"
+    assert "mother, a tall grown-up woman with a completely different face" in out
+    assert "laughing" in out                 # the rest of the scene survives

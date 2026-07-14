@@ -1235,16 +1235,25 @@ def other_people_are_other_people(scene: str) -> str:
         return scene
     who = m.group(1).lower()
     if who in _ADULTS:
-        note = ("a grown adult, much taller, adult proportions, a completely different "
-                "face and different hair, clearly another person")
+        note = ("a tall grown-up woman with a completely different face and long hair"
+                if who in {"mother", "mum", "mummy", "mom", "mommy", "grandmother",
+                           "grandma"} else
+                "a tall grown-up man with a completely different face and short hair")
     else:
-        note = ("a different child, a completely different face and different hair, "
-                "clearly another person")
-    # IN PLACE, never appended. An appended note names the person a SECOND time, and
-    # every extra mention of a thing is another copy of that thing — that is exactly how
-    # "a real live puppy ... the puppy alive and moving" came back as TWO PUPPIES, one in
-    # each hand. Say who they are once, where they are named.
-    out = _OTHER_PERSON.sub(lambda x: f"{x.group(1)} ({note})", scene, count=1)
+        note = "another child with a completely different face and different hair"
+
+    # IN PLACE and in NATURAL ENGLISH — an appositive, not a parenthesis.
+    #
+    # Two things had to be got right here, and I got each wrong once:
+    #   * appended  -> "...her mother, laughing, THE MOTHER is a grown adult..." names her
+    #     twice, and every extra mention of a thing is another copy of that thing (that is
+    #     literally how one puppy became two).
+    #   * parenthesised -> "her smiling mother (a grown adult, much taller, a completely
+    #     different face...)" made Qwen read the whole bracket as a PROP DESCRIPTION. The
+    #     mother vanished from the picture entirely and the child was left holding a small
+    #     doll instead.
+    # An appositive reads as what it is: the same person, described.
+    out = _OTHER_PERSON.sub(lambda x: f"{x.group(1)}, {note},", scene, count=1)
     log.info(f"scene has a second person ({who}) — saying in place that they are not the "
              f"mascot, or the reference copies itself and you get twins")
     return _tidy(out)
