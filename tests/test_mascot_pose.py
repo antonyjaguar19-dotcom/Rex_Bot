@@ -594,30 +594,19 @@ def test_a_doll_already_described_as_cloth_is_left_alone():
     assert mas.toys_look_like_toys(scene) == scene
 
 
-def test_there_is_only_ever_one_person_in_the_picture():
-    # Qwen-Edit is handed exactly ONE identity reference, so it can draw exactly ONE
-    # person — it has nothing to draw a second one FROM. Three attempts, each worse:
-    #   no note       -> two identical Nakshus hugging. A twin, not a mother.
-    #   parenthesised -> the mother read as a PROP; she vanished and the child was left
-    #                    holding a doll.
-    #   appositive    -> BOTH girls came back with the mother's "completely different
-    #                    face and long hair". Nakshu was gone from her own lesson — no
-    #                    bindi, no topknot, no butterflies, on either of them.
-    # There is no wording that fixes this. The second person does not go in the picture.
+def test_a_person_we_cannot_draw_is_kept_out_of_the_picture():
+    # Handed ONE identity reference, Qwen paints it onto every human in the frame, and a
+    # second person comes back as a TWIN of the mascot. So someone we have no reference
+    # for does not go in the picture at all.
+    #
+    # Someone we CAN draw is a different matter — see tests/test_cast.py. The backend
+    # takes image1..image3 and we had only ever passed one; give it a drawing of the
+    # mother and it draws a mother. I called that a limit of the model for most of a day,
+    # and it was a limit of how we were calling it.
     out = mas.other_people_are_other_people(
-        "the mascot character facing the camera, her mother kneeling down and hugging "
-        "her warmly, both of them laughing")
-    assert "mother" not in out.lower()
-    assert "both of them" not in out.lower(), "a plural pronoun pointing at nobody"
-    # the FEELING is carried by the mascot, on her own
-    assert "arms wrapped around herself" in out
-    assert "blissful" in out
-
-    # a friend goes too
-    friend = mas.other_people_are_other_people(
-        "the mascot character playing with her friend, laughing together")
-    assert "friend" not in friend.lower()
-    assert "together" not in friend.lower()
+        "the mascot character standing beside her parent, waving")
+    assert "parent" not in out.lower()
+    assert out.lower().startswith("the mascot character")
 
 
 def test_a_scene_with_only_the_mascot_is_untouched():
@@ -630,8 +619,8 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
     # its own picture", not pedagogy.
     for teaching in (False, True):
         out = mas.clean_scene_for_the_mascot(
-            "the mascot character being hugged by her mother", teaching=teaching)
-        assert "mother" not in out.lower(), "one reference image draws one person"
+            "the mascot character standing beside her parent", teaching=teaching)
+        assert "parent" not in out.lower(), "no reference, so they would be a twin"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
         assert "rag doll" in out and "stitched smile" in out
@@ -723,9 +712,11 @@ def test_a_guard_never_names_a_thing_twice():
     assert _times_named(out, "doll") == 1, f"the doll is named twice: {out}"
     assert "real live puppy" in out          # still marked ALIVE, just once
 
-    mum = "the mascot character being hugged by her smiling mother, laughing"
-    out = mas.clean_scene_for_the_mascot(mum, teaching=True)
-    assert _times_named(out, "mother") == 0, "a second person cannot be drawn at all"
+    # (the mother is drawable now — a cast reference — so she STAYS. See test_cast.py.
+    # Someone with no reference is still removed.)
+    stranger = "the mascot character waving at her parent, laughing"
+    out = mas.clean_scene_for_the_mascot(stranger, teaching=True)
+    assert _times_named(out, "parent") == 0, "we have no reference, so they are not drawn"
 
 
 def test_the_marks_are_made_in_place_not_appended():
@@ -747,18 +738,17 @@ def test_the_animals_duplicate_too():
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
 
-def test_the_appositive_did_not_work_either_so_the_person_is_gone():
-    # This test used to assert the appositive ("her mother, a tall grown-up woman with a
-    # completely different face and long hair"). It RENDERED, and it was wrong: BOTH
-    # girls came back with the long brown hair and the different face, and Nakshu was
-    # gone from her own lesson — no bindi, no topknot, no butterflies, on either of them.
+def test_the_appositive_did_not_work_either_and_neither_did_any_wording():
+    # Three wordings, three failures — appended (two mothers), parenthesised (the mother
+    # became a prop and vanished), appositive (BOTH girls got the mother's face and hair).
+    # None of them could work: the model was drawing both people from the SAME reference.
     #
-    # One reference image can only produce one person. The instruction meant for the
-    # second person lands on both.
+    # The answer was never a better sentence. It was a second reference image, which the
+    # backend has accepted all along. tests/test_cast.py owns that now; what stays here is
+    # the fallback for someone we cannot draw.
     out = mas.other_people_are_other_people(
-        "the mascot character being hugged by her smiling mother, laughing")
-    assert "mother" not in out.lower(), "a second person cannot be drawn from one reference"
-    assert "arms wrapped around herself" in out
+        "the mascot character waving at her parent")
+    assert "parent" not in out.lower()
 
 
 def test_a_guard_that_misfires_is_worse_than_no_guard():
