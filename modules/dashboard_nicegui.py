@@ -4514,6 +4514,109 @@ def main_page():
                     dlg.open()
                 ui.button("➕ Add topic", on_click=_add).props("flat dense")
 
+    def _copy_btn(text: str):
+        """The existing idiom (see the publish kit): a 📋 that puts the string on the
+        clipboard."""
+        return ui.button("📋 Copy", on_click=lambda j=json.dumps(text):
+                         ui.run_javascript(f"navigator.clipboard.writeText({j})")) \
+            .props("flat dense color=accent")
+
+    def _render_prompt_panel(i: int, beat: dict) -> None:
+        """What this shot ACTUALLY sends to the two models — and the two strings you can
+        change.
+
+        Built from lesson_pipeline.prompts_for(), which is built from the same functions
+        the renderer calls. A preview assembled by a second copy of that code would drift
+        from the truth, and a preview that can lie is worse than none — this project has
+        already paid for exactly that: the watermark's docstring said "bottom-right" for
+        months while the code said (H-h)/2, and the logo floated at mid-height in every
+        frame.
+        """
+        from modules import lesson_pipeline as lp
+
+        try:
+            p = lp.prompts_for(S.lesson_id, i)
+        except Exception as e:                  # a bad prompt panel must not kill the page
+            log.warning(f"prompts unreadable for line {i+1}: {e}")
+            return
+        if not p:
+            return
+
+        with ui.expansion("🔧 Prompts", icon="tune") \
+                .classes("w-full").props("dense") \
+                .style("margin: 0 0 6px 34px; border-left: 1px solid #ffffff14;"):
+
+            # --- what you can change ---------------------------------------
+            ui.label("The scene — what the picture shows").classes("text-xs opacity-70")
+            scene_box = ui.textarea(value=p["scene"]) \
+                .props("outlined dark dense autogrow").classes("w-full") \
+                .tooltip("Your words are cleaned by the SAME guards the bot's own scenes "
+                         "get — 'dressed as a puppy' replaces the mascot, an empty scene "
+                         "gives the T-pose. If they change anything, you will be told "
+                         "what and why.")
+
+            def _save_scene(_=None, _i=i, _f=scene_box):
+                got = lw.set_scene(S.lesson_id, _i, _f.value)
+                if not got.get("saved"):
+                    ui.notify("❌ could not save", type="negative")
+                    return
+                if got.get("guarded"):
+                    # Silently rewriting a person's words is its own kind of lie.
+                    ui.notify(f"⚠️ the guards changed your scene: {got['after'][:110]}",
+                              type="warning", timeout=9000, multi_line=True,
+                              classes="w-96")
+                else:
+                    ui.notify("💾 scene saved", type="positive")
+                ui.notify("🔁 press Redraw to see it — the ✓ has been cleared",
+                          type="info")
+                full_refresh()
+
+            ui.label("The motion — how Wan moves it") \
+                .classes("text-xs opacity-70").style("margin-top:6px;")
+            motion_box = ui.textarea(value=p["motion"]) \
+                .props("outlined dark dense autogrow").classes("w-full") \
+                .tooltip("Only used if this shot is ticked to Animate. It used to be "
+                         "invented at render time and thrown away — you could not see it, "
+                         "let alone change it.")
+
+            def _save_motion(_=None, _i=i, _f=motion_box):
+                lw.set_beat_field(S.lesson_id, _i, "motion_prompt", _f.value)
+                ui.notify("💾 motion prompt saved", type="positive")
+                full_refresh()
+
+            with ui.row().classes("gap-2 items-center").style("margin-top:6px;"):
+                ui.button("💾 Save", on_click=_save_scene).props("flat dense") \
+                    .classes("rex-btn-primary")
+                ui.button("💾 Save motion", on_click=_save_motion).props("flat dense")
+                if p["motion_is_default"]:
+                    ui.label("(motion is the default — the scene, plus gentle gestures "
+                             "and a slow push-in)").classes("text-xs opacity-50")
+
+            # --- what actually gets sent (read-only) -----------------------
+            ui.separator().style("margin-top:10px;")
+            with ui.row().classes("items-center gap-2").style("margin-top:6px;"):
+                ui.label(f"What Qwen actually gets ({len(p['image_positive'].split())} "
+                         f"words)").classes("text-sm font-bold opacity-80")
+                _copy_btn(p["image_positive"])
+            ui.textarea(value=p["image_positive"]) \
+                .props("readonly outlined dense autogrow").classes("w-full") \
+                .style("font-size: 11px; opacity: .85;")
+
+            with ui.row().classes("items-center gap-2").style("margin-top:6px;"):
+                ui.label(f"The negative — what it is told NOT to draw "
+                         f"({len(p['image_negative'].split())} words)") \
+                    .classes("text-sm font-bold opacity-80")
+                _copy_btn(p["image_negative"])
+            ui.textarea(value=p["image_negative"]) \
+                .props("readonly outlined dense autogrow").classes("w-full") \
+                .style("font-size: 11px; opacity: .7;")
+
+            who = (f" · 2nd reference: {p['relation']}" if p["relation"]
+                   else " · no second person in this shot")
+            ui.label(f"seed {p['seed']} · {p['steps']} steps · cfg {p['cfg']} · "
+                     f"refs: {', '.join(p['refs'])}{who}") \
+                .classes("text-xs opacity-50").style("margin-top:6px;")
+
     def render_lesson_script():
         """The written lesson, line by line. Every line is EDITABLE — this is the gate
         before a single frame is rendered, and the render reads these words back off
@@ -4537,6 +4640,9 @@ def main_page():
                       # where this beat STARTED — or the "↺ Reset order" button would not
                       # appear when you move a shot, nor vanish when you put it back
                       b.get("orig"),
+                      # the two prompts you can edit — or the panel would go on showing
+                      # the words you just replaced
+                      b.get("mascot_scene", ""), b.get("motion_prompt", ""),
                       # the still's MTIME, or a redrawn picture would keep showing the old
                       # one: the path does not change, only the bytes behind it
                       _mtime(b.get("still", "")))
@@ -4693,6 +4799,17 @@ def main_page():
                     else:
                         ui.label(b["on_screen"]).classes("text-xs opacity-60") \
                             .style("width: 130px;")
+
+                # --- 🔧 THE PROMPTS -------------------------------------------
+                # None of this was visible ANYWHERE. What reaches Qwen is
+                # f"{scene}, {style}" — the scene plus ~120 words of STYLE_TEACHING and a
+                # ~90-word negative, in no log, no JSON and on no screen. Every rule
+                # hammered in this week (proportions by reference, the props fit in a
+                # hand, nothing inanimate gets a face) lived in a string nobody could
+                # read. The video prompt was worse: invented at render time and thrown
+                # away.
+                if prepared:
+                    _render_prompt_panel(i, b)
 
             with ui.row().classes("gap-2 items-center").style("margin-top: 8px;"):
                 if not prepared:

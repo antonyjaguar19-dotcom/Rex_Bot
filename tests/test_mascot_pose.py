@@ -538,9 +538,12 @@ def test_the_pedagogy_guards_only_run_for_a_lesson():
 
 def test_render_scene_picks_the_right_style_for_the_mode():
     import inspect
-    src = inspect.getsource(mas.render_scene)
+    # The assembly lives in build_presenter_prompt now — ONE builder, so the dashboard can
+    # show you exactly what the model gets without a second copy that could drift from it.
+    src = inspect.getsource(mas.build_presenter_prompt)
     assert "STYLE_TEACHING if teaching else STYLE_PRESENTER" in src
     assert "NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER" in src
+    assert "build_presenter_prompt(scene, background, teaching)" in         inspect.getsource(mas.render_scene)
     assert "teaching" in inspect.signature(mas.render_scene).parameters
 
     from modules import lesson_pipeline as lp

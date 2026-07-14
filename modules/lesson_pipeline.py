@@ -178,40 +178,104 @@ def _remember_takes(narrations: list, audio_dir: Path) -> None:
     atomic_write_json(audio_dir / "spoken.json", narrations)
 
 
+def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
+    """(scene_text, refs, relation) — the scene EXACTLY as the model will receive it.
+
+    Shared by the renderer and by the reveal panel. A preview built from a second copy of
+    this would drift from what is actually sent, and a preview that can lie is worse than
+    no preview.
+
+    A SECOND PERSON GETS A SECOND REFERENCE. "You feel happy when mummy hugs you" needs a
+    mummy in the picture, and for a long time we could not draw one: handed a single
+    reference (the mascot), Qwen painted that identity onto every human in the frame and
+    the mother came back as the child's TWIN. TextEncodeQwenImageEditPlus takes
+    image1..image3 and we were only ever passing one. See modules/cast.py.
+
+    Only when the scene actually names someone: a spare reference is another thing for Qwen
+    to copy into a picture that did not ask for it.
+    """
+    scene_text = lesson["beats"][i].get("mascot_scene", "")
+    relation, second = cast.ref_for(scene_text, mid)
+    if not second:
+        return scene_text, None, None
+
+    refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
+    # Two references and no explanation is an invitation to blend them. Say which is which
+    # — that is what the proving render did, and it came back with two correct, separate
+    # people first try.
+    scene_text = cast.name_the_refs(scene_text, mid, relation)
+    _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
+    return scene_text, refs, relation
+
+
+def _seed_for(lesson: dict, i: int) -> int:
+    """A NEW seed after a redraw, or you get the same picture back — which is exactly what
+    "Redo the pictures" did for twenty minutes."""
+    return 4000 + i + 1000 * int(lesson.get("still_take", 0))
+
+
+def default_motion(beat: dict) -> str:
+    """What Wan is told when nobody has written a motion prompt by hand."""
+    return (f"{beat.get('mascot_scene', '')}, gentle lively gestures, "
+            f"subtle camera push-in")
+
+
 def _draw_one(lesson: dict, i: int, backdrop: str, mid: str, out: Path,
               _p=lambda m: None):
     """One picture. The whole batch and a single redraw go through HERE — two copies of
     this would drift, and the copy that drifted would be the one you use to fix a bad
-    picture."""
-    b = lesson["beats"][i]
+    picture.
 
-    # full_quality: 20 steps at cfg 2.5 (~100s) instead of the 4-step Lightning path
-    # (~27s). A lesson's prop IS the teaching — a plate of vegetables has to look like
-    # vegetables, not candy — so a lesson pays the extra minute a shot. Facts does not.
-    #
-    # A SECOND PERSON GETS A SECOND REFERENCE. "You feel happy when mummy hugs you" needs
-    # a mummy in the picture, and for a long time we could not draw one: handed a single
-    # reference (the mascot), Qwen painted that identity onto every human in the frame and
-    # the mother came back as the child's TWIN. TextEncodeQwenImageEditPlus takes
-    # image1..image3 and we were only ever passing one. See modules/cast.py.
-    #
-    # Only when the scene actually names someone: a spare reference is another thing for
-    # Qwen to copy into a picture that did not ask for it.
-    refs, scene_text = None, b["mascot_scene"]
-    relation, second = cast.ref_for(scene_text, mid)
-    if second:
-        refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
-        # Two references and no explanation is an invitation to blend them. Say which is
-        # which — that is what the proving render did, and it came back with two correct,
-        # separate people first try.
-        scene_text = cast.name_the_refs(scene_text, mid, relation)
-        _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
-
+    full_quality: 20 steps at cfg 2.5 (~100s) instead of the 4-step Lightning path (~27s).
+    A lesson's prop IS the teaching — a plate of vegetables has to look like vegetables,
+    not candy — so a lesson pays the extra minute a shot. A facts reel does not.
+    """
+    scene_text, refs, _ = _scene_and_refs(lesson, i, mid, _p)
     return mascot.render_scene(
         scene_text, out, aspect=ASPECT,
-        seed=4000 + i + 1000 * int(lesson.get("still_take", 0)),
+        seed=_seed_for(lesson, i),
         presenter=True, full_quality=True,
         reference_images=refs, background=backdrop, teaching=True)
+
+
+def prompts_for(lesson_id: str, i: int) -> dict:
+    """Everything this shot actually sends to the models — the image prompt, its negative,
+    the video prompt, and the numbers.
+
+    None of it was visible anywhere: what reaches Qwen is `f"{scene}, {style}"`, and the
+    ~120 words of STYLE_TEACHING and ~90 of NEGATIVE_TEACHING appear in no log, no JSON and
+    no screen. Every rule hammered in this week — proportions by reference, the props fit
+    in a hand, nothing inanimate gets a face — lives in a string nobody could read.
+
+    Built from the SAME functions the renderer calls, so it cannot drift from the truth.
+    """
+    lesson = lw.load_lesson(lesson_id)
+    if not lesson or not (0 <= i < len(lesson.get("beats", []))):
+        return {}
+    b = lesson["beats"][i]
+
+    from modules import mascot_library as _ml
+    from modules.image_backends import comfyui_qwen_edit as qe
+
+    mid = _ml.get_active_id()
+    backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
+    scene_text, refs, relation = _scene_and_refs(lesson, i, mid)
+    positive, negative = mascot.build_presenter_prompt(scene_text, backdrop, teaching=True)
+
+    return {
+        "scene": b.get("mascot_scene", ""),      # what you edit
+        "scene_sent": scene_text,                # what the model is told (+ the family line)
+        "image_positive": positive,              # ...plus the style. THIS is what Qwen gets.
+        "image_negative": negative,
+        "motion": b.get("motion_prompt") or default_motion(b),
+        "motion_is_default": not b.get("motion_prompt"),
+        "seed": _seed_for(lesson, i),
+        "steps": qe.DEFAULT_STEPS_FULL,          # read from the backend, never retyped
+        "cfg": qe.DEFAULT_CFG_FULL,
+        "backdrop": backdrop,
+        "relation": relation,
+        "refs": [Path(r).name for r in (refs or mascot.mascot_refs(max_refs=1))],
+    }
 
 
 def redraw_still(lesson_id: str, i: int,
@@ -403,6 +467,10 @@ def prepare_lesson(lesson: dict,
         # carrying an old tick across a redraw is exactly how an unlooked-at picture would
         # reach Wan.
         b["approved"] = False
+        # The video prompt used to be invented at render time and thrown away, so it could
+        # not be seen or edited. Write it down. A hand-edited one is never overwritten.
+        if not b.get("motion_prompt"):
+            b["motion_prompt"] = default_motion(b)
     lesson["narration_dir"] = str(audio_dir)
     lesson["stage"] = "stills"
     lesson["estimated_seconds"] = round(total, 1)
@@ -540,11 +608,14 @@ def render_lesson(lesson_id: str,
         _p(f"🎥 animating {len(ticked)} shot(s) with Wan — this is the slow part")
         gpu_memory.acquire(gpu_memory.WAN_VIDEO)
         try:
+            # The motion prompt is STORED on the beat now (prepare_lesson writes the
+            # default), so what the reveal panel shows is what Wan is actually handed. It
+            # used to be invented here and thrown away — a throwaway dict copy — which is
+            # why it could not be seen or changed.
             sub = {"_id": lesson_id,
                    "beats": [dict(beats[i], motion_prompt=(
-                       beats[i].get("motion_prompt")
-                       or f"{beats[i].get('mascot_scene', '')}, gentle lively gestures, "
-                          f"subtle camera push-in")) for i in ticked]}
+                       beats[i].get("motion_prompt") or default_motion(beats[i])))
+                       for i in ticked]}
             made = horror_video.render_shot_clips(
                 sub, [stills[i] for i in ticked], [durations[i] for i in ticked],
                 aspect_ratio="16:9", progress_cb=_p, fill_mode="retime")

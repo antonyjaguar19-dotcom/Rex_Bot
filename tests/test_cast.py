@@ -222,9 +222,14 @@ def test_the_lesson_passes_the_second_reference():
     # redraw, so the code you use to FIX a bad picture cannot drift from the code that
     # made it.
     from modules import lesson_pipeline as lp
-    src = inspect.getsource(lp._draw_one)
+    # _scene_and_refs is the single source: the RENDERER uses it, and so does the reveal
+    # panel. A preview built from a second copy would drift from what is actually sent.
+    src = inspect.getsource(lp._scene_and_refs)
     assert "cast.ref_for(scene_text, mid)" in src
-    assert "reference_images=refs" in src
     assert "cast.name_the_refs(scene_text, mid, relation)" in src
+
+    assert "reference_images=refs" in inspect.getsource(lp._draw_one)
+    for caller in (lp._draw_one, lp.prompts_for):
+        assert "_scene_and_refs(" in inspect.getsource(caller)
     for caller in (lp.prepare_lesson, lp.redraw_still):
         assert "_draw_one(" in inspect.getsource(caller)

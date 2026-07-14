@@ -178,3 +178,33 @@ def test_the_disabled_button_is_a_courtesy_not_the_gate():
     src = inspect.getsource(lp.approve)
     assert "lw.unapproved(lesson)" in src
     assert "not confirmed" in src
+
+
+def test_the_prompts_are_revealed(page):
+    # None of it was visible ANYWHERE: what reaches Qwen is f"{scene}, {style}" — the
+    # scene plus ~120 words of STYLE_TEACHING and a ~90-word negative, in no log, no JSON
+    # and on no screen. The video prompt was worse: invented at render time inside a
+    # throwaway dict and never stored.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def _render_prompt_panel")
+    panel = src[start:src.index("def render_lesson_script", start)]
+
+    assert "prompts_for(" in panel, "the panel must be built from the RENDERER's code"
+    assert "What Qwen actually gets" in panel
+    assert "image_negative" in panel
+    assert "readonly outlined dense autogrow" in panel, "the sent prompt is read-only"
+    assert "lw.set_scene(" in panel, "an edited scene must go through the guards"
+    assert "motion_prompt" in panel
+    assert 'got.get("guarded")' in panel, "the UI must SAY when it rewrote your words"
+
+    # the two editable prompts are in the row's change signature, or the panel would go on
+    # showing the words you just replaced
+    sig_start = src.index('sig = ((lesson or {}).get("lesson_id")')
+    sig = src[sig_start:src.index("if not _changed(\"lesson_script\"", sig_start)]
+    assert 'b.get("mascot_scene", "")' in sig
+    assert 'b.get("motion_prompt", "")' in sig
+
+    assert len(page.elements) > 100

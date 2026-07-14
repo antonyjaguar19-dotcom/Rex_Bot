@@ -637,6 +637,45 @@ def unapproved(lesson: dict) -> list:
             if not b.get("approved")]
 
 
+def set_scene(lesson_id: str, beat_index: int, text: str) -> dict:
+    """Hand-edit the scene a picture is drawn from — GUARDED, exactly like the bot's own.
+
+    The guards used to run at WRITE time only (inside mascot.explainer_scene), and
+    render_scene never called them. So a hand-edited scene reached Qwen byte-for-byte and
+    could walk straight back into a defect we had already fixed and paid for:
+
+        "dressed as a puppy"    -> the mascot is GONE; Qwen draws a puppy in her clothes
+        an empty scene          -> idle hands go home to the reference photo, which is a
+                                   T-POSE
+        "a doll"                -> a headless cloth sack with buttons on its torso
+        "with heart eyes"       -> her eyes deleted, two red emoji pasted over the sockets
+
+    So an edit is cleaned by the same guards, and we hand back WHAT CHANGED so the UI can
+    say so. Silently rewriting a person's words is its own kind of lie.
+
+    The picture is also un-confirmed: the scene changed, so the image on screen is no
+    longer the image this scene describes.
+    """
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return {"saved": False}
+    beats = lesson.get("beats", [])
+    if not (0 <= beat_index < len(beats)):
+        return {"saved": False}
+
+    from modules import mascot
+    before = (text or "").strip()
+    after = mascot.clean_scene_for_the_mascot(before, teaching=True)
+
+    beats[beat_index]["mascot_scene"] = after
+    beats[beat_index]["approved"] = False       # a different scene is a different picture
+    _save(lesson)
+
+    if after != before:
+        log.info(f"{lesson_id} line {beat_index + 1}: the guards rewrote the scene")
+    return {"saved": True, "guarded": after != before, "before": before, "after": after}
+
+
 # ==============================================================================
 # REORDER
 # ==============================================================================

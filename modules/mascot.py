@@ -1576,6 +1576,35 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
 # RENDER
 # ==============================================================================
 
+def build_presenter_prompt(scene: str, background: str = "",
+                           teaching: bool = False) -> tuple:
+    """The EXACT strings a presenter still is rendered from: (positive, negative).
+
+    This exists so the dashboard can SHOW you what the model actually gets. It must be the
+    same code the renderer runs — not a re-creation of it. A preview that can drift from
+    reality is the "a comment is not a test" bug wearing a new hat, and this project has
+    already paid for that one: the watermark's docstring said "bottom-right" for months
+    while the code said `(H-h)/2`, and the logo floated at mid-height in every frame.
+
+    So render_scene() calls THIS. There is no second copy.
+
+    A LESSON gets its own style and its own bans. A facts reel is spectacle — it is ALLOWED
+    a giant honey dipper and a grinning cartoon sun, because the picture's only job is to
+    hold attention on a line you already said out loud. A lesson's picture is what a child
+    who cannot read is learning FROM, and every one of those is a defect there.
+    """
+    style = STYLE_TEACHING if teaching else STYLE_PRESENTER
+    if background:
+        # One lesson, one look. The style only asks for "a bold vivid solid color
+        # background", so Qwen picked a NEW colour every shot: the first lesson ran blue,
+        # purple, beige, grey, dark grey — thirteen pictures that watch like clips from
+        # four different videos. A facts reel is one shot and does not care; a lesson is a
+        # film.
+        style = style.replace("bold vivid solid color background", background)
+    negative = NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER
+    return f"{scene}, {style}", negative
+
+
 def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  seed: Optional[int] = None,
                  reference_images: Optional[list] = None,
@@ -1612,24 +1641,7 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         # cannot (Flux garbles small text), so it always gets the overlay.
         baked = bool(headline) and bid == BACKEND_ID and can_bake(headline)
         if presenter:
-            # Waist-up: this still is about to be animated by S2V, which breaks
-            # legs it cannot see how to move.
-            #
-            # A LESSON gets its own style and its own bans. A facts reel is spectacle —
-            # it is ALLOWED a giant honey dipper and a grinning cartoon sun, because the
-            # picture's only job is to hold attention on a line you already said. A
-            # lesson's picture is what a child who cannot read is learning FROM, and
-            # every one of those is a defect there. Facts keeps exactly what it had.
-            style = STYLE_TEACHING if teaching else STYLE_PRESENTER
-            if background:
-                # One lesson, one look. STYLE_PRESENTER only asks for "a bold vivid
-                # solid color background", so Qwen picks a NEW colour every shot: the
-                # first lesson ran blue, purple, beige, grey, dark grey — thirteen
-                # pictures that read as clips from four different videos. A facts reel
-                # is one shot and does not care; a lesson is a film.
-                style = style.replace("bold vivid solid color background", background)
-            prompt = f"{scene}, {style}"
-            negative = NEGATIVE_TEACHING if teaching else NEGATIVE_PRESENTER
+            prompt, negative = build_presenter_prompt(scene, background, teaching)
             baked = False
         elif baked:
             prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"
