@@ -208,6 +208,11 @@ NEGATIVE_PRESENTER = (
     # Modesty. This is a lesson for six-year-olds and the mascot is a small child.
     # A "chef's outfit" came back as a crop top with a bare midriff.
     "crop top, bare midriff, exposed belly, bare stomach, bare chest, undressed, "
+    # A face on an inanimate object. Half these lessons teach what is alive and what is
+    # not, and we drew a smiling cartoon face on the Earth for the line about being
+    # hugged by your mother. A grinning rock teaches a child the wrong answer.
+    "googly eyes on an object, smiling face on a ball, face drawn on a toy, "
+    "anthropomorphic object, cartoon eyes on an inanimate object, "
     # Proportion drift: the character kept coming back with long thin legs and a slim
     # body. The build is fixed; only the costume changes.
     "thin legs, skinny legs, long legs, slender legs, lanky, elongated limbs, "
@@ -921,24 +926,95 @@ def keep_the_mascot(scene: str) -> str:
     return fixed
 
 
-def explainer_scene(fact: str, topic: str = "", context: str = "") -> str:
+# --- Teaching, which is not the same job as entertaining ----------------------
+# _EXPLAINER_SYS is a FACTS prompt. It asks for spectacle: "make it FUN", "surprise the
+# viewer", "physical comedy", "the mascot can leap, hover, zoom, spin". For a fact reel
+# that is right — the picture's job is to hold attention on a thing you already said.
+#
+# In a LESSON the picture's job is to TEACH, and spectacle actively fights it. Told to
+# surprise, the model gave "living things eat, grow, move and have babies" a chef's
+# costume, and gave "you feel happy when mommy or daddy hugs you" a girl hugging a
+# smiling cartoon Earth. That second one is not merely off-topic: this lesson exists to
+# teach that non-living things do not feel, and we drew a FACE on a ball. The picture
+# taught the opposite of the words.
+#
+# So a teaching scene shows what the LINE SAYS. If the line names her mother, a puppy or
+# a doll, that is what is in the frame.
+_TEACHING_SYS = (
+    "You describe ONE picture for ONE line of a lesson read aloud to six-year-olds. "
+    "Answer with JSON only: {\"scene\": \"...\"}\n"
+    "\n"
+    "THE PICTURE MUST SHOW WHAT THE LINE SAYS. This is a lesson, not a joke. A child "
+    "who cannot read is looking at the picture to understand the words. If the picture "
+    "shows something else, the line is wasted.\n"
+    "- If the line names a THING (a doll, a puppy, a rock, a plant, a toy car, a plate "
+    "of food), that thing is IN THE PICTURE and the mascot is handling it.\n"
+    "- If the line names a PERSON (mummy, daddy, a friend), that person is IN THE "
+    "PICTURE with the mascot: 'the mascot character being hugged by her smiling mother'.\n"
+    "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
+    "she is asking about, head tilted, eyebrows raised.\n"
+    "- NEVER put a face, eyes or a smile on an object that is not alive. No smiling "
+    "sun, no happy cloud, no cartoon eyes on a ball or a rock or a toy. Half of these "
+    "lessons are about what is alive and what is not, and a grinning rock teaches a "
+    "child the wrong answer.\n"
+    "- Ordinary clothes unless a costume actually TEACHES something. A chef's hat does "
+    "not explain that living things grow.\n"
+    "- ONE MOMENT, one action. Never write 'then', 'finally' or 'after that' — a still "
+    "picture cannot show a sequence.\n"
+    "- The mascot NEVER becomes something else. She may WEAR things and HOLD things, "
+    "but she is never 'dressed as' an animal or another being. To show an animal, put "
+    "the animal BESIDE her: 'the mascot character kneeling beside a puppy'.\n"
+    "- NEVER touch her face. No 'heart eyes', 'star eyes' or any symbol where an eye "
+    "should be — the artist deletes her eyes and pastes emoji over the sockets. "
+    "Expressions are eyebrows and mouths.\n"
+    "- She stays DRESSED. Never write about her belly, tummy or stomach.\n"
+    "- NEVER name a body part she may not have. No 'paw', 'snout', 'tail', 'fur' — she "
+    "may be a human child, and telling the artist she has paws is how a child ends up "
+    "drawn with mouse ears. Say 'hand', 'holding', 'the character'.\n"
+    "- FULL BODY, FACING THE CAMERA, mouth open mid-sentence — she is talking to the "
+    "child while she does it.\n"
+    "- Warm, kind, encouraging. Never scary, never violent, never sad.\n"
+    "- Under 30 words. Only what is VISIBLE: who is there, what she is doing, what she "
+    "is holding, her expression.\n"
+    "- No background, lighting or camera notes. No text, letters or numbers.\n"
+    "\n"
+    "Line: 'Your puppy Jimmy feels happy when you pet him!'\n"
+    '{"scene": "the mascot character kneeling beside a happy puppy, stroking its back '
+    'with one hand, laughing, facing the camera"}\n'
+    "Line: 'Can you tell me why your doll does not need to eat?'\n"
+    '{"scene": "the mascot character facing the camera holding up a doll in one hand '
+    'and an empty plate in the other, head tilted, eyebrows raised in a question"}'
+)
+
+
+def explainer_scene(fact: str, topic: str = "", context: str = "",
+                    teaching: bool = False) -> str:
     """A costumed, camera-facing mascot scene that ILLUSTRATES one fact.
 
     Unlike scene_prompt (a single funny thumbnail), this is the per-shot presenter
     frame for facts-mascot mode: the mascot dressed for THIS fact, facing camera,
     mouth visible so S2V can animate it speaking the narration. Safety-gated and
     fallback-safe like scene_prompt — never raises.
+
+    `teaching=True` swaps the facts prompt (which asks for spectacle) for the lesson
+    prompt (which asks the picture to show what the line SAYS). See _TEACHING_SYS.
     """
     fb = fallback_scene(fact or topic, context, topic)
     if not (fact or "").strip():
         return fb
+    sys_prompt = _TEACHING_SYS if teaching else _EXPLAINER_SYS
     try:
         from modules.script_generator import _call_llm, _extract_json
         prompt = (f"Topic: {topic or '(general)'}\n"
                   f"The fact to illustrate:\n{fact.strip()[:400]}\n\n"
                   f"Describe the mascot presenter scene for this fact.")
+        if teaching:
+            prompt = (f"Lesson: {topic or '(general)'}\n"
+                      f"The line the mascot speaks, out loud, to the child:\n"
+                      f"{fact.strip()[:400]}\n\n"
+                      f"Describe the ONE picture the child sees while hearing this line.")
         for _ in (1, 2):
-            raw = _call_llm(prompt, _EXPLAINER_SYS, role="creative")
+            raw = _call_llm(prompt, sys_prompt, role="creative")
             got = (_extract_json(raw) or {}).get("scene") or ""
             if not got:
                 # The model answered in prose instead of JSON. The scene is

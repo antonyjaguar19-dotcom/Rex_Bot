@@ -147,7 +147,7 @@ def prepare_lesson(lesson: dict,
         for i, b in enumerate(beats):
             if not b.get("mascot_scene"):
                 b["mascot_scene"] = mascot.explainer_scene(
-                    b["narration"], lesson.get("topic", ""))
+                    b["narration"], lesson.get("topic", ""), teaching=True)
             lw.set_beat_field(lesson_id, i, "mascot_scene", b["mascot_scene"])
     gpu_utils.free_ollama_vram()
 

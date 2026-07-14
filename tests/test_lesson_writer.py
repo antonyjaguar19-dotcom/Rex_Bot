@@ -295,3 +295,52 @@ def test_a_caption_for_a_line_that_does_not_exist_is_ignored():
     dress = {"beats": [{"n": 9, "on_screen": "Ghost", "image_prompt": "x"}]}
     beats = lw._to_beats(lines, dress)
     assert "Ghost" not in [b["on_screen"] for b in beats]
+
+
+# --- The picture must TEACH the line, not entertain past it ---------------------
+# The first real lesson gave "living things eat, grow, move and have babies" a CHEF'S
+# COSTUME, and gave "you feel happy when mummy or daddy hugs you" a girl hugging a
+# smiling cartoon EARTH. Both came from the facts prompt, which asks for spectacle
+# ("make it FUN", "surprise the viewer", "physical comedy"). In a fact reel that is
+# right. In a lesson the picture is what a child who cannot read is learning FROM.
+#
+# The Earth one is the reason this is not a style quibble: this lesson exists to teach
+# that non-living things do not feel, and we drew a FACE on a ball.
+
+def test_a_lesson_asks_for_a_teaching_scene_not_a_facts_scene():
+    import inspect
+    from modules import lesson_pipeline as lp
+    src = inspect.getsource(lp.prepare_lesson)
+    assert "teaching=True" in src, "a lesson must not be drawn with the facts prompt"
+
+
+def test_the_teaching_prompt_forbids_a_face_on_a_dead_object():
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS.lower()
+    assert "never put a face, eyes or a smile on an object that is not alive" in sysp
+    assert "grinning rock" in sysp, "the rule must keep the reason, or it gets deleted"
+    for banned in ("googly eyes on an object", "smiling face on a ball",
+                   "anthropomorphic object"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_the_teaching_prompt_demands_the_picture_show_the_line():
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS
+    assert "THE PICTURE MUST SHOW WHAT THE LINE SAYS" in sysp
+    # a named person must appear, which is what the smiling-Earth shot got wrong
+    assert "mummy" in sysp.lower() and "being hugged by her smiling mother" in sysp
+    # and the spectacle instructions must NOT be in it
+    for spectacle in ("surprise the viewer", "physical comedy", "make it fun"):
+        assert spectacle not in sysp.lower(), f"the lesson prompt still asks for {spectacle!r}"
+
+
+def test_the_teaching_prompt_keeps_every_guard_the_facts_prompt_learned():
+    # A second prompt is a second place for a fixed bug to come back.
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS.lower()
+    assert "never 'dressed as' an animal" in sysp      # species swap
+    assert "mouse ears" in sysp                        # animal anatomy
+    assert "heart eyes" in sysp                        # symbol eyes
+    assert "belly" in sysp                             # modesty
+    assert "cannot show a sequence" in sysp            # the montage
