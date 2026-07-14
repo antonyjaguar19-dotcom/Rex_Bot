@@ -2835,6 +2835,12 @@ def main_page():
             lesson_meta = ui.label("").classes("text-xs opacity-60")
         lesson_script_container = ui.column().classes("w-full gap-1")
 
+        ui.separator().style("margin-top: 14px;")
+        with ui.row().classes("items-center gap-2").style("margin-top: 6px;"):
+            ui.label("📚 Past lessons").classes("text-sm font-bold")
+            lesson_lib_count = ui.label("").classes("text-xs opacity-60")
+        lesson_library_container = ui.column().classes("w-full gap-1")
+
     # ============== MASCOTS (own tab) ==============
     # A mascot is a folder under 02_Agent/assets/mascots/ (see mascot_library).
     # Whichever one is ACTIVE is the character facts mode stars — in every
@@ -4384,6 +4390,79 @@ def main_page():
                 ui.video(_media_url(Path(lesson["video"]))) \
                     .style("max-width: 520px; border-radius: 8px; margin-top: 8px;")
 
+    def render_lesson_library():
+        """Every lesson made, newest first — open it, or throw it away."""
+        from modules import lesson_library as ll
+        try:
+            lessons = ll.list_lessons()
+        except Exception as e:
+            log.warning(f"lesson library unreadable: {e}")
+            lessons = []
+
+        sig = tuple((x["id"], x["stage"], x["size_mb"]) for x in lessons)
+        if not _changed("lesson_library", sig):
+            return
+
+        lesson_lib_count.set_text(
+            f"{len(lessons)} · {sum(x['size_mb'] for x in lessons):.0f} MB"
+            if lessons else "")
+        lesson_library_container.clear()
+        if not lessons:
+            with lesson_library_container:
+                ui.label("_(none yet)_").classes("opacity-60")
+            return
+
+        with lesson_library_container:
+            for x in lessons:
+                with ui.row().classes("w-full items-center gap-2 rex-shot-card") \
+                        .style("padding: 4px 8px;"):
+                    when = x["when"].strftime("%d %b %H:%M") if x["when"] else x["id"]
+                    ui.element("span").classes("rex-badge rex-badge-mint") \
+                        ._props["innerHTML"] = x["stage"]
+                    ui.label(x["title"] or "(untitled)").classes("font-bold text-sm")
+                    ui.label(f"{x['topic']} · {x['beats']} lines · "
+                             f"{x['seconds']:.0f}s · {x['size_mb']} MB · {when}") \
+                        .classes("text-xs opacity-60")
+
+                    def _open(_x=x):
+                        S.lesson_id = _x["id"]
+                        full_refresh()
+                    ui.button("📂 Open", on_click=_open).props("flat dense") \
+                        .style("margin-left: auto;")
+
+                    if x["video"]:
+                        ui.link("⬇ video", _media_url(x["video"])).props("download") \
+                            .classes("text-xs").style("color:#7cf;")
+
+                    def _delete(_x=x):
+                        n, mb = ll.footprint(_x["id"])
+                        with ui.dialog() as dlg, ui.card():
+                            ui.label(f"Delete “{_x['title']}”?").classes("font-bold")
+                            ui.label(f"{n} file(s), {mb} MB — its script, voice, "
+                                     f"pictures, clips and video. The textbook it was "
+                                     f"written from is untouched. This cannot be "
+                                     f"undone.").classes("text-xs opacity-70") \
+                                .style("max-width: 420px;")
+                            with ui.row():
+                                ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                def _yes():
+                                    try:
+                                        got = ll.delete_lesson(_x["id"])
+                                    except Exception as e:
+                                        ui.notify(f"❌ {e}", type="negative")
+                                    else:
+                                        if S.lesson_id == _x["id"]:
+                                            S.lesson_id = ""
+                                        ui.notify(f"🗑️ deleted ({got['files']} files)",
+                                                  type="warning")
+                                    dlg.close()
+                                    full_refresh()
+                                ui.button("Delete", on_click=_yes) \
+                                    .props("flat color=red")
+                        dlg.open()
+                    ui.button("🗑️", on_click=_delete).props("flat dense color=red")
+
     def render_queue():
         try:
             items = pf.list_all()
@@ -4678,6 +4757,7 @@ def main_page():
             render_mascots()
             render_lessons()
             render_lesson_script()
+            render_lesson_library()
             render_queue()
             render_log()
         except RuntimeError as e:

@@ -328,17 +328,25 @@ def render_lesson(lesson_id: str,
     out = la.assemble_lesson(lesson, narration, clips, durations, progress_cb=_p)
 
     # 4. The upload kit: a title, a description and a thumbnail beside the video.
+    #
+    # This was `aspect=ASPECT`, and the parameter is `aspects` — a tuple. It raised
+    # TypeError, the except below swallowed it, and the lesson shipped with no title,
+    # no description and no thumbnail: a warning in a log nobody reads. The kit must
+    # not be able to fail quietly, so a failure is now SAID, in the progress feed the
+    # user is actually watching.
     try:
         context = " ".join(b["narration"] for b in beats)
-        kit = publish_kit.attach(
+        out["kit"] = publish_kit.attach(
             out[ASPECT], fallback_title=lesson["title"], context=context,
             description=f"A lesson on {lesson['topic']}, from "
                         f"{lesson.get('book_title', 'the textbook')}.",
             mode="school lesson (16x9, kid-friendly explainer)",
-            source_image=stills[0], aspect=ASPECT)
-        out["kit"] = kit
+            source_image=stills[0], aspects=(ASPECT,))
+        _p("🏷️ upload kit written (title, description, thumbnail)")
     except Exception as e:
-        log.warning(f"publish kit failed ({e}); the lesson itself is fine")
+        log.exception("publish kit failed")
+        _p(f"⚠️ the lesson rendered, but its upload kit failed ({e}) — no title, "
+           f"description or thumbnail was written.")
 
     lesson = lw.load_lesson(lesson_id)
     lesson["stage"] = "rendered"
