@@ -765,3 +765,26 @@ def test_a_guard_that_misfires_is_worse_than_no_guard():
     # and a genuinely idle scene still gets one
     idle = "the mascot character facing the camera, smiling widely"
     assert "waving one arm high" in mas.never_empty_handed(idle)
+
+
+def test_a_whole_body_action_is_not_idle_hands_either():
+    # _HANDS_BUSY has now misfired TWICE, each time on a scene whose hands were plainly
+    # occupied, and each time it bolted "waving one arm high, the other hand resting at
+    # her side" onto a scene that contradicted it — after which the model dropped a prop
+    # to resolve the contradiction.
+    #   "a plant HELD in her right hand"    -> hold\w* does not match the past tense
+    #   "running with both arms SWINGING"   -> a whole-body action with no object at all
+    #
+    # Err towards LEAVING A SCENE ALONE. A missed idle scene costs a stiff pose; a false
+    # positive costs a prop.
+    for busy in (
+        "the mascot character running across the grass with both arms swinging, shouting",
+        "the mascot character taking a big happy bite from a red apple held in both hands",
+        "the mascot character shaking her head, her left hand open in a small shrug",
+        "the mascot character cradling one single real live puppy in both arms, laughing",
+        "the mascot character digging in the garden, grinning",
+    ):
+        assert mas.never_empty_handed(busy) == busy, f"busy hands were given ANOTHER job: {busy}"
+
+    idle = "the mascot character facing the camera, smiling widely"
+    assert "waving one arm high" in mas.never_empty_handed(idle)

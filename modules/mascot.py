@@ -1154,9 +1154,19 @@ def alive_looks_alive(scene: str) -> str:
 _HANDS_BUSY = re.compile(
     r"\b(?:hold\w*|held|holds|lift\w*|carry\w*|carrie\w*|cradl\w*|clutch\w*|grip\w*|"
     r"grasp\w*|hug\w*|cuddl\w*|stroking|stroke\w*|petting|pat\w*|scratch\w*|wav\w*|"
-    r"wave|point\w*|show\w*|offering|feeding|reach\w*|touch\w*|push\w*|pull\w*|"
-    r"scoop\w*|balanc\w*|cover\w*|clap\w*|counting|in (?:her|both|one) (?:hand|hands|"
-    r"arm|arms)|hands? full)\b", re.I)
+    r"wave|point\w*|show\w*|offering|feeding|feed\w*|reach\w*|touch\w*|push\w*|pull\w*|"
+    r"scoop\w*|balanc\w*|cover\w*|clap\w*|counting|"
+    # ...and the whole-body actions, which are not IDLE either. This pattern has now
+    # misfired twice, each time on a scene whose hands were plainly occupied:
+    #   "a plant HELD in her right hand"  (hold\w* does not match the past tense)
+    #   "running with both arms SWINGING" (a whole-body action, no object at all)
+    # and each time it bolted "waving one arm high, the other hand resting at her side"
+    # onto a scene that contradicted it. The model then dropped a prop to resolve the
+    # contradiction. Err towards LEAVING A SCENE ALONE: the cost of a missed idle scene
+    # is a stiff pose, and the cost of a false positive is a lost prop.
+    r"swing\w*|running|runs|climb\w*|dancing|jumping|leap\w*|throw\w*|catch\w*|"
+    r"digging|planting|watering|eating|biting|drinking|shrug\w*|"
+    r"in (?:her|both|one) (?:hand|hands|arm|arms)|hands? full)\b", re.I)
 
 # _BUSY_DEFAULT must itself satisfy _HANDS_BUSY, or the guard is not idempotent: run it
 # twice and it appends twice. It said "a cheerful wave" (the noun) while the pattern only
