@@ -152,16 +152,18 @@ MIN_BEAT_WORDS = 7
 MAX_BEAT_WORDS = 22
 
 _DRESS_SYS = (
-    "For each spoken line of a children's lesson you write two things.\n"
-    'Output ONLY valid JSON: {"title": "...", "beats": [{"on_screen": "...", '
+    "For each numbered line of a children's lesson you write two things.\n"
+    'Output ONLY valid JSON: {"title": "...", "beats": [{"n": 1, "on_screen": "...", '
     '"image_prompt": "..."}]}\n'
     "Rules:\n"
-    "- ONE entry per line, in the same order. Never change, quote or repeat the lines.\n"
-    "- on_screen: 2-4 words, the idea of that line, for big text on screen. Not a "
+    "- n: the NUMBER of the line this entry is for. Every line gets exactly one entry, "
+    "and the number must match.\n"
+    "- on_screen: 2-4 words, the idea of THAT line, for big text on screen. Not a "
     "sentence.\n"
     "- image_prompt: a friendly cartoon scene a small child would like, showing ONE "
     "action with ONE object, matching that line. No text, letters or numbers in the "
     "image.\n"
+    "- Never change, quote or repeat the lines themselves.\n"
     "- title: 3-6 words, what the whole lesson is called."
 )
 
@@ -284,30 +286,83 @@ def split_into_lines(prose: str) -> list:
                 lines[-1] = f"{lines[-1]} {part}"
             else:
                 lines.append(part)
+
+    # A short line joins its NEIGHBOUR — and the first line has no previous one to join,
+    # so it was left standing alone. Measured: a real lesson opened with "Hey there!",
+    # two words, which then got a whole shot of its own — a still, and eight minutes of
+    # Wan if you ticked it. Merge it forward instead.
+    while (len(lines) > 1 and len(lines[0].split()) < MIN_BEAT_WORDS
+           and len(lines[0].split()) + len(lines[1].split()) <= MAX_BEAT_WORDS):
+        lines[0] = f"{lines[0]} {lines[1]}"
+        del lines[1]
     return lines
 
 
-def _kind_for(i: int, line: str, total: int) -> str:
-    if i == 0:
-        return "intro"
-    if i == total - 1:
-        return "outro"
-    if "?" in line:
-        return "check"
-    return "teach"
+def _kinds_for(lines: list) -> list:
+    """intro … teach … check … outro.
+
+    A lesson has ONE check — the moment it asks the child whether they got it. Marking
+    every line with a "?" as a check gave a real lesson THREE, because a teacher asks
+    rhetorical questions all the way through ("Do you know that everything isn't
+    alive?"). The real check is the LAST question asked, right before the recap.
+    """
+    kinds = ["teach"] * len(lines)
+    kinds[0] = "intro"
+    if len(lines) > 1:
+        kinds[-1] = "outro"
+
+    questions = [i for i in range(1, len(lines) - 1) if "?" in lines[i]]
+    if questions:
+        kinds[questions[-1]] = "check"
+    return kinds
+
+
+def _dress_by_line(lines: list, dress: dict) -> dict:
+    """{line index: {on_screen, image_prompt}} — matched by the line's NUMBER.
+
+    Matching by POSITION silently shifted a real lesson: the model returned one entry
+    fewer than there were lines, and from that point on every caption belonged to the
+    line before it. The mascot said "they move around too" while the screen read
+    "Grow Big". A caption is burned into the video — it cannot be allowed to drift.
+
+    So each entry carries the number of the line it is for, and anything that does not
+    line up is dropped rather than guessed at.
+    """
+    out: dict = {}
+    for entry in (dress or {}).get("beats") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            i = int(entry.get("n", 0)) - 1          # the model counts from 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(lines) and i not in out:
+            out[i] = entry
+    return out
 
 
 def _to_beats(lines: list, dress: dict) -> list:
     """The lesson's own lines + the model's caption and picture for each."""
-    got = (dress or {}).get("beats") or []
+    by_line = _dress_by_line(lines, dress)
+    kinds = _kinds_for(lines)
     beats = []
     for i, line in enumerate(lines):
-        extra = got[i] if i < len(got) and isinstance(got[i], dict) else {}
+        extra = by_line.get(i, {})
+        # A line the model forgot still gets a caption — from its own words. Empty text
+        # on screen is a hole a child sees.
+        on_screen = (extra.get("on_screen") or "").strip()[:40]
+        if not on_screen:
+            on_screen = " ".join(line.split()[:3]).strip(" ,.!?—-").title()
+        image_prompt = (extra.get("image_prompt") or "").strip()
+        if not image_prompt:
+            image_prompt = (f"a friendly cartoon child, {line.rstrip('.?!')}, "
+                            f"bright and simple, no text")
+
         beats.append({
-            "kind": _kind_for(i, line, len(lines)),
+            "kind": kinds[i],
             "narration": line,                 # the lesson's words, untouched
-            "on_screen": (extra.get("on_screen") or "").strip()[:40],
-            "image_prompt": (extra.get("image_prompt") or "").strip(),
+            "on_screen": on_screen,
+            "image_prompt": image_prompt,
             # The tickbox. OFF by default and that is deliberate: ON would mean an
             # ~8-minute Wan render for every beat the moment you pressed Render.
             "animate": False,
@@ -362,21 +417,20 @@ def write_lesson(book_id: str, topic_id: str,
     for attempt in range(1, LLM_ATTEMPTS + 1):
         try:
             dress = _extract_json(_call_llm(ask, _DRESS_SYS, role="structurer")) or {}
-            if len(dress.get("beats") or []) >= len(lines) // 2:
+            # Every line must get its own caption, matched by NUMBER. A missing one is
+            # a silent shift waiting to happen — re-ask rather than paper over it.
+            matched = _dress_by_line(lines, dress)
+            if len(matched) == len(lines):
                 break
+            _p(f"🏷️ {len(matched)} of {len(lines)} lines were captioned "
+               f"(try {attempt}/{LLM_ATTEMPTS})")
         except Exception as e:
             last = e
         _p(f"⚠️ could not caption the lines (try {attempt}/{LLM_ATTEMPTS})")
 
     # A missing caption is a cosmetic loss, not a broken lesson — the words are the
     # lesson, and they are already safe. Fill the gaps and carry on.
-    beats = _to_beats(lines, dress)
-    for b in beats:
-        if not b["on_screen"]:
-            b["on_screen"] = " ".join(b["narration"].split()[:3]).strip(" ,.!?").title()
-        if not b["image_prompt"]:
-            b["image_prompt"] = (f"a friendly cartoon child, {b['narration'].rstrip('.?!')}, "
-                                 f"bright and simple, no text")
+    beats = _to_beats(lines, dress)     # fills any caption the model forgot
     cut_title = (dress.get("title") or "").strip()
 
     spoken = sum(len(b["narration"].split()) for b in beats)

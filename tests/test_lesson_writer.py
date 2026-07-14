@@ -239,3 +239,59 @@ def test_the_script_is_editable_and_the_length_follows(book, monkeypatch):
     with pytest.raises(ValueError):
         lw.set_beat_field(lid, 1, "kind", "teach")     # not an editable field
     assert lw.set_beat_field(lid, 99, "narration", "x") is False
+
+
+# --- the shape of a lesson (found by watching a real one) ----------------------
+
+def test_a_two_word_opener_does_not_get_its_own_shot():
+    """A real lesson opened with "Hey there!" — two words, and a whole shot of its own:
+    a still, and eight minutes of Wan if you ticked it. A short line joins its
+    neighbour, and the FIRST line has no previous one to join, so it was left standing
+    alone."""
+    lines = lw.split_into_lines(
+        "Hey there! Today we learn about living things. They eat and they grow.")
+    assert len(lines[0].split()) >= lw.MIN_BEAT_WORDS
+    assert lines[0].startswith("Hey there!")
+
+
+def test_a_lesson_asks_exactly_one_check_question():
+    """A teacher asks rhetorical questions all the way through ("Do you know that
+    everything isn't alive?"). Marking every "?" as a check gave a real lesson THREE.
+    The check is the LAST question — the one right before the recap."""
+    lines = [
+        "Hello there, today we learn about living things.",
+        "Do you know that everything is not alive?",
+        "Living things eat and grow and move around.",
+        "So why does your doll not eat but your puppy does?",
+        "We learned that living things eat, move and feel.",
+    ]
+    kinds = lw._kinds_for(lines)
+    assert kinds == ["intro", "teach", "teach", "check", "outro"]
+    assert kinds.count("check") == 1
+
+
+def test_a_dropped_caption_does_not_shift_every_caption_after_it():
+    """Measured on a real lesson: the model returned one entry fewer than there were
+    lines, and matching by POSITION shifted everything after it — the mascot said "they
+    move around too" while the screen read "Grow Big". A caption is burned into the
+    video; it cannot be allowed to drift."""
+    lines = ["line one here", "line two here", "line three here", "line four here"]
+    dress = {"beats": [
+        {"n": 1, "on_screen": "One", "image_prompt": "a"},
+        # the model simply forgot line 2
+        {"n": 3, "on_screen": "Three", "image_prompt": "c"},
+        {"n": 4, "on_screen": "Four", "image_prompt": "d"},
+    ]}
+    beats = lw._to_beats(lines, dress)
+
+    assert [b["on_screen"] for b in beats] == ["One", "Line Two Here", "Three", "Four"]
+    # line 2 falls back to its own words — it never inherits line 3's caption
+    assert beats[2]["narration"] == "line three here"
+    assert beats[2]["on_screen"] == "Three"
+
+
+def test_a_caption_for_a_line_that_does_not_exist_is_ignored():
+    lines = ["line one here", "line two here"]
+    dress = {"beats": [{"n": 9, "on_screen": "Ghost", "image_prompt": "x"}]}
+    beats = lw._to_beats(lines, dress)
+    assert "Ghost" not in [b["on_screen"] for b in beats]
