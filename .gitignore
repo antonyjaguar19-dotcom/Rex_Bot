@@ -80,3 +80,8 @@ config_snapshot/*.bak
 # Same for every mascot on the shelf: each may carry its own cloned voice.
 assets/mascot_voice.wav
 assets/mascots/*/voice.*
+
+# Textbooks you upload are copyrighted and huge (33 MB each) — they are INPUT,
+# not source. Keep them on disk, out of the repo.
+assets/Text_books/
+04_Outputs/lessons/
