@@ -262,3 +262,57 @@ def test_the_teaching_prompt_puts_the_prop_in_her_hands():
     assert "in her hands" in sysp
     assert "empty hands" in sysp, "the rule must keep its reason"
     assert "one prop, two at the most" in sysp
+
+
+# --- The T-pose has three roads home, and they all end at the reference photo ------
+# The reference image is a T-pose, so arms-spread is the model's road back to it. We
+# have now watched it take that road three separate ways:
+#   1. an EMPTY scene       — nothing to hold, so she stands like the reference
+#   2. TOO MUCH to hold     — the artist drops the lot and stands her like the reference
+#   3. one thing on each SIDE — she reaches for both, and arms-spread IS the T-pose
+# (1) and (2) are the writer's business and the prompt covers them. (3) is a sentence
+# shape, so it can be caught.
+
+def test_a_prop_on_each_side_is_a_t_pose():
+    # Shipped: "standing between a toy car and a plant, pointing at each in turn" — she
+    # came back with both arms straight out, a toy on each side of her feet.
+    scene = ("the mascot character standing between a toy car and a plant, "
+             "pointing at each in turn, facing the camera")
+    out = mas.clean_scene_for_the_mascot(scene)
+    assert "standing between" not in out
+    assert "standing beside" in out
+    assert "in turn" not in out            # a sequence wearing a disguise
+    assert "toy car" in out and "plant" in out   # both props stay IN the frame
+
+
+def test_arms_spread_wide_becomes_a_real_gesture():
+    for scene in (
+        "the mascot character with both arms out wide, smiling",
+        "the mascot character standing with arms open wide, smiling at the camera",
+        "the mascot character arms spread wide, holding nothing",
+        "the mascot character with wide open arms, laughing",
+    ):
+        out = mas.clean_scene_for_the_mascot(scene)
+        assert "one hand raised" in out, out
+        for banned in ("arms out wide", "arms open wide", "arms spread wide",
+                       "open arms"):
+            assert banned not in out, f"{banned!r} survived: {out!r}"
+
+
+def test_a_guard_never_cuts_away_the_subject():
+    # An early version's clause-scoped delete took "the mascot character" out along with
+    # the offending phrase, and handed the backend a picture with nobody in it.
+    for scene in (
+        "the mascot character with both arms out wide",
+        "the mascot character, arms spread wide, angry scowl",
+        "the mascot character standing between a car and a plant",
+    ):
+        out = mas.clean_scene_for_the_mascot(scene)
+        assert out.lower().startswith("the mascot character"), out
+
+
+def test_a_good_scene_survives_every_guard_intact():
+    # The guards must be a net, not a mangler. This is what a correct scene looks like.
+    scene = ("the mascot character facing the camera holding up a doll in one hand, "
+             "a toy car on the floor beside her, shaking her head with a warm knowing smile")
+    assert mas.clean_scene_for_the_mascot(scene) == scene

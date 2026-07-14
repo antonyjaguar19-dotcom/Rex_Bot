@@ -871,7 +871,12 @@ _SYMBOL_EYES = re.compile(
 # waving happily, finally hopping on one foot", the model tries to draw all four at
 # once and the result is a smear of limbs. Cut at the first sequence word: the scene
 # keeps its first action, which is the one the line is actually about.
-_SEQUENCE = re.compile(r"[,;]?\s*\b(?:then|finally|afterwards|after that|next)\b", re.I)
+_SEQUENCE = re.compile(
+    r"[,;]?\s*\b(?:then|finally|afterwards|after that|next|"
+    # "pointing at each IN TURN" is a sequence wearing a disguise, and it is also how
+    # you get a T-pose: two props, one on each side, and she reaches for both. The
+    # reference photo is a T-pose, and arms-spread is the model's road home to it.
+    r"in turn|one by one|one after another|back and forth)\b", re.I)
 
 # Skin. A "belly expanding comically with each bite" got a six-year-old drawn in a
 # crop top with a bare midriff. This is a children's lesson: the mascot is dressed.
@@ -884,7 +889,7 @@ def keep_the_face(scene: str) -> str:
     if not _SYMBOL_EYES.search(scene or ""):
         return scene
     log.warning("scene replaced the mascot's eyes with a symbol — the face is the identity")
-    return _SYMBOL_EYES.sub("", scene).replace(" ,", ",").strip(" ,")
+    return _tidy(_SYMBOL_EYES.sub("", scene))
 
 
 def one_moment(scene: str) -> str:
@@ -892,7 +897,7 @@ def one_moment(scene: str) -> str:
     m = _SEQUENCE.search(scene or "")
     if not m:
         return scene
-    kept = scene[:m.start()].rstrip(" ,;")
+    kept = _tidy(scene[:m.start()].rstrip(" ,;"))
     log.warning(f"scene described a SEQUENCE; a still shows one moment — kept: {kept[:60]}")
     return kept
 
@@ -910,8 +915,7 @@ def keep_it_dressed(scene: str) -> str:
     if _ANIMAL_NOUN.search(scene or "") or not _SKIN.search(scene or ""):
         return scene
     log.warning("scene bared the mascot's midriff — she stays dressed")
-    out = _SKIN.sub("", scene)
-    return ",".join(c for c in out.split(",") if c.strip())
+    return _tidy(_SKIN.sub("", scene))
 
 
 # Anger, again — and this time the NEGATIVE did not stop it. Line 9 of the first lesson
@@ -941,8 +945,7 @@ def warm_face(scene: str) -> str:
     picture has a face whether or not the prompt asked for one, and on a line about
     what something CANNOT do the model picks the face from the sentiment of the words.
     """
-    out = _CROSS.sub("", scene or "").strip(" ,")
-    out = ",".join(c for c in out.split(",") if c.strip())
+    out = _tidy(_CROSS.sub("", scene or ""))
     if not out:
         return scene
     if not _WARM_WORDS.search(out):
@@ -951,11 +954,61 @@ def warm_face(scene: str) -> str:
     return out
 
 
+# The T-pose has three roads home, and all of them end at the reference photo:
+#   1. an EMPTY scene — nothing to hold, so she stands like the reference (still_12);
+#   2. TOO MUCH to hold — the artist drops the lot and stands her like the reference;
+#   3. one thing on each SIDE — she reaches for both, and arms-spread IS the T-pose
+#      (still_08: "standing between a toy car and a plant, pointing at each in turn").
+#
+# Roads 1 and 2 are the writer's business, and the prompt now covers them. Road 3 is a
+# specific sentence shape, so it can be caught: strip the words that spread her arms.
+# Two shapes, two repairs. "Standing BETWEEN a car and a plant" still wants both props
+# in frame — she just must not reach for both, so she stands BESIDE them. A bare
+# "arms spread wide" wants no props at all and is simply the T-pose spelled out; it
+# becomes a real, asymmetric gesture.
+_STANDING_BETWEEN = re.compile(r"\bstanding between\b", re.I)
+_ARMS_WIDE = re.compile(
+    r",?\s*\b(?:standing |with )?(?:her |both )?arms (?:spread|stretched|held|out|open|"
+    r"wide)(?: wide| out| open)?(?: to (?:the |both )?sides?)?\b"
+    r"|,?\s*\bboth arms (?:out|wide|raised|lifted|open)\b"
+    r"|,?\s*\b(?:wide )?open arms\b", re.I)
+
+# Whatever a guard cuts, the SUBJECT survives. An early version's clause-scoped delete
+# took "the mascot character" out with the offending phrase and handed the backend a
+# scene with nobody in it.
+_SUBJECT = "the mascot character"
+
+
+def one_focus(scene: str) -> str:
+    """Kill the arms-spread construction. A reached-for prop on each side is a T-pose."""
+    s = scene or ""
+    if not (_ARMS_WIDE.search(s) or _STANDING_BETWEEN.search(s)):
+        return scene
+    s = _STANDING_BETWEEN.sub("standing beside", s)
+    s = _ARMS_WIDE.sub(", one hand raised", s)
+    log.warning("scene spread the mascot's arms — that is the reference photo's T-pose")
+    return _tidy(s)
+
+
+def _tidy(scene: str) -> str:
+    """Clean up after a cut, and never lose who the picture is of."""
+    out = ", ".join(c.strip() for c in (scene or "").split(",") if c.strip())
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,")
+    # A cut can leave a preposition hanging onto nothing ("the mascot character with,
+    # one hand raised"). Harmless to a diffusion model, but it reads as a bug in the log
+    # and the log is how anyone ever notices these.
+    out = re.sub(r"\b(?:with|and|holding|beside)\s*,", ",", out)
+    out = re.sub(r",\s*,", ",", out).strip(" ,")
+    if out and _SUBJECT not in out.lower():
+        out = f"{_SUBJECT} {out}"
+    return out
+
+
 def clean_scene_for_the_mascot(scene: str) -> str:
     """Every guard, in one call. Order matters: drop the montage first, so the guards
     below never spend their effort on a clause that is about to be cut anyway."""
-    return warm_face(keep_it_dressed(
-        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene))))))
+    return warm_face(one_focus(keep_it_dressed(
+        keep_the_face(keep_the_body(keep_the_mascot(one_moment(scene)))))))
 
 
 def keep_the_mascot(scene: str) -> str:
@@ -1001,6 +1054,11 @@ _TEACHING_SYS = (
     "scene that asked for a doll AND a toy car AND both arms raised came back with "
     "EMPTY HANDS, standing in the reference photo's own arms-out pose: given too much "
     "to hold, the artist drops the lot and falls back on the reference.\n"
+    "- NEVER put one thing on her left and another on her right and have her point at "
+    "or compare BOTH. That gives her ARMS SPREAD WIDE — which is the pose of the "
+    "reference photo, and the picture becomes a T-pose with props on the floor. To "
+    "compare two things, she HOLDS one up and the other waits: 'holding up a toy car "
+    "in one hand, a potted plant on the table beside her'.\n"
     "- If the line names a PERSON (mummy, daddy, a friend), that person is IN THE "
     "PICTURE with the mascot: 'the mascot character being hugged by her smiling mother'.\n"
     "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
