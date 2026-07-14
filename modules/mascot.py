@@ -179,17 +179,30 @@ STYLE_SUFFIX = (
 # it is DOING. Anything here that names a species, a build or an anatomy is a claim
 # about a mascot we may not have.
 STYLE_PRESENTER = (
-    # PROPORTIONS FIRST — but by REFERENCE, not by description. Qwen will slim the
-    # character into a lanky humanoid if you only describe the costume (the legs came
-    # back thin and long), so the build is restated every time; only the OUTFIT changes.
-    "exactly the same character as the reference image: the same face, the same body "
-    "proportions, the same build, the same species — only the clothes and the props "
-    "change, chibi proportions, big head, small body, "
+    # PROPORTIONS BY REFERENCE, NEVER BY DESCRIPTION.
+    #
+    # This line has now broken the character TWICE, both times because someone (me)
+    # described the body instead of pointing at it:
+    #   "a short chunky cub ... both paws"     -> a human girl grew MOUSE EARS
+    #   "chibi proportions, big head, small body" -> a BOBBLEHEAD, head bigger than torso
+    # The second was my own repair of the first, and the comment sitting directly above
+    # it already said "by REFERENCE, not by description". Read your own comments.
+    #
+    # The reference image HAS the proportions. Any adjective here competes with it, and
+    # the adjective wins — Qwen weights the text prompt over the reference. So: no
+    # adjective. Point at the picture and say "that one, in different clothes".
+    "exactly the same character as the reference image: the same face, the same head "
+    "size, the same body proportions, the same build, the same species — only the "
+    "clothes and the props change, "
     "fully clothed, the shirt covers the whole torso, "
     "full body visible, dynamic playful action pose, exaggerated cartoon body "
     "language, mid-motion, big readable facial expression, mouth open "
-    "mid-sentence, both hands clearly interacting with the prop, "
-    "props held cleanly in front of the body, nothing intersecting, "
+    "mid-sentence, "
+    # GRIP, not proximity. "Held cleanly in front of the body, nothing intersecting"
+    # was read as "keep the prop AWAY from the hand", and the plate of food came back
+    # HOVERING in mid-air beside her. A held object is touching the hand that holds it.
+    "her fingers wrapped firmly around the prop, gripping it, the hand visibly "
+    "closed on the object, the object resting in her palm, "
     "bold vivid solid color background, crisp studio lighting, high contrast, "
     "3d character key art"
 )
@@ -200,6 +213,15 @@ NEGATIVE_PRESENTER = (
     # now bans the parts it used to invite.
     "animal ears on a human, mouse ears, cat ears, whiskers, snout, muzzle, tail, "
     "fur on a human face, paws instead of hands, changed species, different creature, "
+    # BOBBLEHEAD. Telling the model "big head, small body" (my own botched repair of the
+    # cub language) gave her a head bigger than her torso.
+    "bobblehead, oversized head, giant head, head bigger than the body, "
+    "shrunken body, tiny torso, stunted limbs, distorted proportions, "
+    # FLOATING PROPS. "Held cleanly in front of the body, nothing intersecting" was read
+    # as "keep it away from the hand" — the plate of food hovered in mid-air beside her.
+    "floating object, hovering prop, object suspended in mid-air, "
+    "prop not touching the hand, disembodied object, object detached from the hand, "
+    "empty open palm under a floating object, "
     # The face IS the identity. Asked for "heart eyes" the model deleted her eyes and
     # pasted two red emoji over the sockets — that is not an expression, it is a
     # different character. Expressions come from eyebrows and mouths.

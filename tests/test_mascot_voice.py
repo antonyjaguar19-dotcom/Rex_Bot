@@ -153,9 +153,17 @@ def test_presenter_style_locks_proportions_and_frees_the_pose():
     assert "full body visible" in mas.STYLE_PRESENTER
     assert "dynamic playful action pose" in mas.STYLE_PRESENTER
     assert "feet planted" not in mas.STYLE_PRESENTER, "the pose is free again"
-    for kept in ("the same body proportions", "the same species",
-                 "only the clothes and the props", "chibi proportions"):
+    for kept in ("the same body proportions", "the same head size", "the same species",
+                 "only the clothes and the props"):
         assert kept in mas.STYLE_PRESENTER, kept
+    # NEVER describe the build. This test used to DEMAND "chibi proportions" — written
+    # when the mascot was a jaguar cub — and that demand is exactly what made me put
+    # "big head, small body" back after stripping the cub language. The result was a
+    # BOBBLEHEAD: a head bigger than her torso, in all 13 stills of a real lesson.
+    # The reference image HAS the proportions; any adjective here competes with it and
+    # the adjective wins.
+    for described in ("chibi proportions", "big head", "small body", "chunky", "cub"):
+        assert described not in mas.STYLE_PRESENTER,             f"the build is DESCRIBED ({described!r}) instead of pinned to the reference"
     for named in ("cub", "paw", "paws"):
         assert named not in mas.STYLE_PRESENTER.split(),             f"the style tells the artist the mascot has a {named}"
     for banned in ("thin legs", "lanky", "human proportions",
@@ -186,7 +194,8 @@ def test_render_scene_presenter_locks_the_build_and_skips_the_headline(tmp_path,
     mas.render_scene("a scene", tmp_path / "o.png", headline="BEE FACTS",
                      presenter=True)
     assert "full body visible" in seen["prompt"]
-    assert "chibi proportions" in seen["prompt"], "the cub's build is restated"
+    assert "the same body proportions" in seen["prompt"], "the build is pinned to the ref"
+    assert "big head" not in seen["prompt"], "the build must never be DESCRIBED"
     assert "headline text" not in seen["prompt"], "no baked title on a video still"
     assert "hand passing through object" in seen["negative_prompt"]
 

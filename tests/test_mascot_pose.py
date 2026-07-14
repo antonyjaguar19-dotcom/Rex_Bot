@@ -420,3 +420,35 @@ def test_outstretched_arms_are_a_t_pose_too():
         out = mas.clean_scene_for_the_mascot(scene)
         assert "outstretched" not in out, out
         assert "waving one arm high" in out
+
+
+# --- Proportions by reference, never by description ------------------------------
+# This line has now broken the character TWICE, both times because the body was
+# DESCRIBED instead of pointed at:
+#   "a short chunky cub ... both paws"        -> a human girl grew MOUSE EARS
+#   "chibi proportions, big head, small body" -> a BOBBLEHEAD, head bigger than her torso
+# The second was my own repair of the first. The reference image HAS the proportions;
+# any adjective in the prompt competes with it, and the adjective wins.
+
+def test_the_build_is_pinned_to_the_reference_never_described():
+    style = mas.STYLE_PRESENTER.lower()
+    assert "the same head size" in style
+    assert "the same body proportions" in style
+    for described in ("chibi", "big head", "small body", "chunky", "cub", "bobblehead"):
+        assert described not in style, f"the build is described as {described!r}"
+    for banned in ("bobblehead", "oversized head", "head bigger than the body",
+                   "distorted proportions"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_a_held_prop_touches_the_hand_that_holds_it():
+    # "props held cleanly in front of the body, nothing intersecting" was read as KEEP
+    # THE PROP AWAY FROM THE HAND — a plate of food came back HOVERING in mid-air beside
+    # her, with her arm truncated behind it. A held object is touching the hand.
+    style = mas.STYLE_PRESENTER.lower()
+    assert "fingers wrapped firmly around the prop" in style
+    assert "the hand visibly closed on the object" in style
+    assert "nothing intersecting" not in style, "this is what pushed the prop off the hand"
+    for banned in ("floating object", "hovering prop", "prop not touching the hand",
+                   "object suspended in mid-air"):
+        assert banned in mas.NEGATIVE_PRESENTER, banned
