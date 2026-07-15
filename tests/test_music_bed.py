@@ -106,6 +106,66 @@ def test_a_long_bed_is_trimmed_from_the_front_keeping_its_ending(tmp_path):
     assert fasm._probe_duration(out) == pytest.approx(36.0, abs=0.15)
 
 
+# ----------------------------------------------------- leading silence + loop --
+
+def test_a_bed_that_opens_on_silence_is_trimmed_from_the_FRONT_too(tmp_path):
+    """One ACE roll opened on 36s of silence before the music; left in, any window
+    taken from the front was dead air. A bed must start on its first note."""
+    lead, music, track = tmp_path / "l.wav", tmp_path / "m.wav", tmp_path / "quiet_intro.wav"
+    _tone(lead, "anullsrc=r=44100:cl=mono", 12.0)
+    _tone(music, "sine=f=330:r=44100", 25.0)
+    subprocess.run([str(FFMPEG_EXE), "-y", "-loglevel", "error",
+                    "-i", str(lead), "-i", str(music), "-filter_complex",
+                    "[0:a][1:a]concat=n=2:v=0:a=1[o]", "-map", "[o]", str(track)],
+                   capture_output=True, timeout=180)
+    trimmed = fasm.trim_trailing_silence(track)
+    got = fasm._probe_duration(trimmed)
+    assert got == pytest.approx(25.0, abs=1.0), f"kept {got:.1f}s — leading silence survived"
+    # and it now OPENS on its first note, not on silence
+    r = subprocess.run([str(FFMPEG_EXE), "-hide_banner", "-ss", "0", "-t", "1",
+                        "-i", str(trimmed), "-af", "volumedetect", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=120)
+    mean = [ln for ln in r.stderr.splitlines() if "mean_volume" in ln][0]
+    assert float(mean.split("mean_volume:")[1].split("dB")[0]) > -40, "still opens on silence"
+
+
+def _looping_track(path: Path, cell_sec=1.2, reps=25):
+    """A single short cell repeated verbatim — a scratched record, not music."""
+    cell = path.parent / "cell.wav"
+    _tone(cell, "sine=f=440:r=44100", cell_sec)
+    lst = path.parent / "list.txt"
+    lst.write_text("".join(f"file '{cell.as_posix()}'\n" for _ in range(reps)))
+    subprocess.run([str(FFMPEG_EXE), "-y", "-loglevel", "error", "-f", "concat",
+                    "-safe", "0", "-i", str(lst), "-c", "copy", str(path)],
+                   capture_output=True, timeout=180)
+    return path
+
+
+def test_bed_loopiness_tells_a_scratched_record_from_music(tmp_path):
+    loop = _looping_track(tmp_path / "loop.wav")
+    varied = tmp_path / "varied.wav"
+    _tone(varied, "sine=f=220:r=44100:b=1", 30.0)          # frequency sweep = varied
+    loop_score = fasm.bed_loopiness(loop)
+    varied_score = fasm.bed_loopiness(varied)
+    assert loop_score > fasm._LOOP_BAD, f"a repeated cell must read as looping ({loop_score:.2f})"
+    assert varied_score < loop_score, f"varied {varied_score:.2f} !< loop {loop_score:.2f}"
+
+
+def test_a_loopy_tail_is_abandoned_for_a_cleaner_window(tmp_path):
+    """ACE degrades over length: keeping the outro-landing tail kept a 1.2s loop.
+    A clearly cleaner earlier window is used instead."""
+    head, tail, track = tmp_path / "h.wav", tmp_path / "t.wav", tmp_path / "degrading.wav"
+    _tone(head, "sine=f=330:r=44100:b=1", 40.0)            # varied first half
+    _looping_track(tail, reps=34)                          # ~40s of a repeated cell
+    subprocess.run([str(FFMPEG_EXE), "-y", "-loglevel", "error",
+                    "-i", str(head), "-i", str(tail), "-filter_complex",
+                    "[0:a][1:a]concat=n=2:v=0:a=1[o]", "-map", "[o]", str(track)],
+                   capture_output=True, timeout=180)
+    d = fasm._probe_duration(track)
+    off = fasm._choose_music_offset(track, 36.0, d)
+    assert off < (d - 36.0) - 2.0, f"stayed on the loopy tail (offset {off:.1f}s of {d:.1f}s)"
+
+
 # ---------------------------------------------------------------- the audit --
 
 def _reel(path: Path, voice: Path, bed: Path | None, secs=20.0):

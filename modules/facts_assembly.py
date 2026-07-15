@@ -303,16 +303,19 @@ def trim_trailing_silence(music: Path) -> Path:
     """Reduce a generated track to the music it actually contains.
 
     Cuts at the first real gap (everything past it is padding, or the junk ACE
-    leaves after it), then shaves any residual silence off the new end so the
-    piece finishes on its last note.
+    leaves after it), shaves residual silence off the new end so the piece finishes
+    on its last note — and strips any silence off the FRONT too. ACE can open on a
+    long quiet intro (one roll gave 36s of silence before the music); left in, the
+    tail-align that keeps the outro is fine, but any window taken from the front is
+    dead air. A bed must start on its first note, not on its silence.
     """
     out = music.with_name(f"{music.stem}_trimmed.wav")
     body_end = _music_body_end(music)
     cut = ["-t", f"{body_end:.3f}"] if body_end else []
+    _sr = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.1"
     r = subprocess.run(
         [str(FFMPEG_EXE), "-y", "-loglevel", "error", "-i", str(music), *cut,
-         "-af", "areverse,silenceremove=start_periods=1:start_threshold=-50dB:"
-                "start_silence=0.1,areverse",
+         "-af", f"{_sr},areverse,{_sr},areverse",   # front then (reversed) back
          str(out)],
         capture_output=True, text=True, timeout=300)
     if r.returncode != 0 or not out.exists():
@@ -329,6 +332,104 @@ def trim_trailing_silence(music: Path) -> Path:
     return out
 
 
+# A reel-length window that repeats a cell THIS tightly reads as a scratched
+# record, not as music. The threshold has to sit ABOVE real music: measured across
+# shipped beds, healthy cheerful music scores 0.44-0.88 (repetition IS musical), and
+# only ACE's degenerate near-identical loop hits 0.93. So 0.80 was wrong — it would
+# have re-rolled good 0.88 beds. This ONLY catches the pathological loop; it cannot
+# and does not judge whether a bed is "good music" (a random-noise roll scores ~0.53,
+# right in the healthy band — no metric separates that, so bad rolls are the user's
+# call, not the pipeline's).
+_LOOP_BAD = 0.90           # above this the window is a near-identical loop, not music
+_LOOP_MARGIN = 0.15        # ...and only relocate if another window is clearly better
+
+
+def _envelope(music: Path, hz: int = 100):
+    """100 Hz RMS envelope of the whole track, mean-removed. None if unmeasurable."""
+    tmp = TEMP_DIR / f"_loop_{music.stem}.wav"
+    x = _decode_mono(music, tmp)
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if x is None or len(x) < 16000:
+        return None
+    import numpy as np
+    hop = 16000 // hz
+    n = len(x) // hop
+    if n < hz:                                  # under ~1s of audio to score
+        return None
+    env = np.sqrt((x[:n * hop].reshape(n, hop) ** 2).mean(axis=1))
+    return env - env.mean(), hz
+
+
+def _loopiness(env, hz: int, lag_lo: float = 0.4, lag_hi: float = 2.5) -> float:
+    """Peak short-lag autocorrelation of an envelope: how nearly it repeats itself.
+
+    A degraded ACE tail repeats a ~1.2s cell almost exactly (peak ~0.93); varied
+    music does not (~0.13). This is the CHECK that keeping the outro-landing tail
+    silently traded music for a stutter.
+    """
+    import numpy as np
+    if env is None or len(env) < int(lag_hi * hz) + 1:
+        return 0.0
+    e = np.asarray(env, dtype=float)
+    e = e - e.mean()                            # re-center THIS window, not the track
+    if e.std() < 1e-6:
+        return 0.0
+    ac = np.correlate(e, e, "full")[len(e) - 1:]
+    ac = ac / (ac[0] + 1e-9)
+    lo, hi = int(lag_lo * hz), int(lag_hi * hz)
+    return float(ac[lo:hi].max()) if hi <= len(ac) else 0.0
+
+
+def bed_loopiness(music: Path) -> float:
+    """How stuck-in-a-loop a whole trimmed bed is (0=varied, ~0.9=scratched record).
+
+    Used at GENERATION time to reject a take before it is committed: ACE can hand
+    back a track whose only music is a repeating cell, and no window can be chosen
+    out of it — the answer is to re-roll, not to re-window.
+    """
+    got = _envelope(music)
+    if got is None:
+        return 0.0                              # unmeasurable is not proof it loops
+    env, hz = got
+    return _loopiness(env, hz)
+
+
+def _choose_music_offset(music: Path, total_dur: float, d: float) -> float:
+    """Which second of a too-long bed to start at.
+
+    Default = the natural tail (d - total_dur) so ACE's composed [outro] lands on
+    the last frame. But ACE degrades over length: asked for 2x the reel it can let
+    the back half collapse into a loop, and always keeping the END then keeps the
+    WORST music. So the tail is only abandoned when it is genuinely stuck AND an
+    earlier window is clearly cleaner — otherwise the outro wins.
+    """
+    tail = max(0.0, d - total_dur)
+    got = _envelope(music)
+    if got is None:
+        return tail
+    env, hz = got
+    win = int(total_dur * hz)
+    if win >= len(env):
+        return tail
+    tail_score = _loopiness(env[len(env) - win:], hz)
+    if tail_score <= _LOOP_BAD:                 # tail is fine — keep the outro
+        return tail
+    best_off, best_score = tail, tail_score
+    step = max(1, int(2.0 * hz))                # scan every ~2s
+    for i in range(0, len(env) - win + 1, step):
+        s = _loopiness(env[i:i + win], hz)
+        if s < best_score:
+            best_off, best_score = i / hz, s
+    if tail_score - best_score < _LOOP_MARGIN:  # nothing clearly better — keep tail
+        return tail
+    log.info(f"🎵 bed tail loops (score {tail_score:.2f}); using a cleaner window at "
+             f"{best_off:.1f}s (score {best_score:.2f}) with a fade-out instead")
+    return best_off
+
+
 def _align_music_tail(music: Path, total_dur: float) -> Path:
     """Land the music's LAST note on the reel's last frame.
 
@@ -338,7 +439,9 @@ def _align_music_tail(music: Path, total_dur: float) -> Path:
 
     So the END is anchored, not the start: a long track is trimmed from the FRONT
     (keeping its ending), a short one is pushed back with leading silence. Either
-    way the final chord lands with the final word.
+    way the final chord lands with the final word — UNLESS that tail has degraded
+    into a loop (ACE past length), in which case a cleaner earlier window is used
+    and faded out, because a stutter at the end is worse than no natural outro.
     """
     d = _probe_duration(music)
     if abs(d - total_dur) < 0.08:
@@ -346,8 +449,12 @@ def _align_music_tail(music: Path, total_dur: float) -> Path:
 
     out = music.with_name(f"{music.stem}_aligned.wav")
     if d > total_dur:
-        args = ["-ss", f"{d - total_dur:.3f}", "-i", str(music)]
-        af = []
+        off = _choose_music_offset(music, total_dur, d)
+        args = ["-ss", f"{off:.3f}", "-i", str(music)]
+        # A window that is NOT the natural end is faded out so it does not cut
+        # mid-note where ACE's [outro] would have landed.
+        af = [] if abs(off - (d - total_dur)) < 0.05 else [
+            "-af", f"afade=t=out:st={max(0.0, total_dur - 1.0):.3f}:d=1"]
     else:
         # A short bed starts late rather than looping. Replaying its opening to
         # cover the gap is heard for exactly what it is: the same eight bars
@@ -381,8 +488,11 @@ def _decode_mono(src: Path, dst: Path, sr: int = 16000):
         return None
     import wave
     import numpy as np
-    with wave.open(str(dst)) as w:
-        raw = w.readframes(w.getnframes())
+    try:
+        with wave.open(str(dst)) as w:
+            raw = w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError):
+        return None                             # ffmpeg "succeeded" but wrote nothing readable
     return np.frombuffer(raw, dtype="int16").astype("float64") / 32768.0
 
 

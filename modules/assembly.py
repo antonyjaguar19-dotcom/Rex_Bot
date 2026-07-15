@@ -103,7 +103,13 @@ def _probe_duration(path: Path) -> float:
         str(path),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
-    return float(r.stdout.strip())
+    try:
+        return float(r.stdout.strip())
+    except (ValueError, TypeError):
+        # ffprobe prints 'N/A' (or nothing) for a duration-less or near-empty file —
+        # e.g. a bed the silence-trim collapsed to almost nothing. Unknown is 0.0,
+        # not a crash that takes the whole render down.
+        return 0.0
 
 
 def _has_audio(path: Path) -> bool:

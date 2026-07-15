@@ -914,7 +914,12 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         # composed BODY is measured, and if it is short we ask again for longer.
         # (Looping a short bed to fill the reel is not an option: replaying the
         # opening is heard as a stutter, which is how this bug was reported.)
-        best, best_len = None, 0.0
+        # A take is judged on BOTH length and whether it is actually music: ACE can
+        # under-fill (short) OR collapse the whole track into a repeating cell (a
+        # scratched record). Either is a reason to ask again — a looping bed cannot
+        # be windowed out of, only re-rolled. Best take = non-looping first, then
+        # longest, so a clean short beats a long loop.
+        best, best_len, best_ok = None, 0.0, False
         ask = reel * _MUSIC_ASK_HEADROOM
         for attempt in range(1, _MUSIC_TRIES + 1):
             _p(f"🎵 composing the music bed ({mood}, {reel:.0f}s reel, "
@@ -931,15 +936,23 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
                 raise RuntimeError("ACE-Step produced no file")
             track = fasm.trim_trailing_silence(Path(track))
             got = _probe_dur(track)
-            if got > best_len:
-                best, best_len = Path(track), got
-            if got >= reel - 0.5:
+            loop = fasm.bed_loopiness(Path(track))
+            not_loop = loop <= fasm._LOOP_BAD
+            if (not_loop, got) > (best_ok, best_len):
+                best, best_len, best_ok = Path(track), got, not_loop
+            if got >= reel - 0.5 and not_loop:
                 break
-            # It under-filled. Scale the next ask by how badly it fell short.
-            ask = min(_MUSIC_MAX_ASK, ask * max(1.4, (reel / max(got, 1.0)) * 1.15))
-            _p(f"⚠️ only {got:.1f}s of music for a {reel:.1f}s reel — asking again, longer")
+            why = "loops like a scratched record" if not not_loop else \
+                  f"only {got:.1f}s of music for a {reel:.1f}s reel"
+            _p(f"⚠️ the bed {why} — asking ACE-Step again")
+            # Under-fill: ask longer. A loop: ask the same length again (a fresh roll).
+            if got < reel - 0.5:
+                ask = min(_MUSIC_MAX_ASK, ask * max(1.4, (reel / max(got, 1.0)) * 1.15))
 
-        if best_len < reel - 0.5:
+        if not best_ok:
+            _p(f"⚠️ every take of the bed loops — shipping the least-repetitive one "
+               f"({best.name}); consider a different music mood")
+        elif best_len < reel - 0.5:
             _p(f"⚠️ the bed is {best_len:.1f}s for a {reel:.1f}s reel — it will start "
                f"late so its ending still lands on the last frame (never looped)")
         _p(f"🎵 music bed: {best.name} ({best_len:.1f}s, ends on an outro)")
@@ -951,7 +964,7 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         from modules import music_generator as mg, gpu_memory
         gpu_memory.evict_all()
         track = mg.generate_music(
-            mood=mood, duration_sec=dur, script_id=facts_id,
+            mood=mood, duration_sec=reel, script_id=facts_id,
             progress_cb=lambda m: log.info(f"music: {m}"),
         )
         if not track:
