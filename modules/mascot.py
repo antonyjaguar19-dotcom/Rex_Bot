@@ -369,6 +369,16 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     # straight through — a shop dummy, not a candid child.
     "stiff mannequin pose, rigid symmetrical posture, doll-like stiffness, posed like a "
     "shop mannequin, standing straight and rigid, arms straight down stiffly, "
+    # HUMAN-ANIMAL BLENDING. With the girl's reference AND a puppy's reference in the same
+    # shot, Qwen bled features across: the GIRL grew dog ears, the DOG grew human hands.
+    # The child is fully human, the animal is fully an animal.
+    "a human child with dog ears, a girl with animal ears, a child with a snout or muzzle, "
+    "a child with a tail, a dog with human hands, an animal with human hands or fingers, "
+    "an animal with human arms, human and animal anatomy mixed, hybrid human-animal, "
+    # TOY versions of a LIVING example. A lesson's living thing must read as ALIVE, so a
+    # plush/plastic horse for the line about real horses teaches the exact opposite.
+    "a toy animal, a toy horse, a stuffed animal used as a living example, a plastic animal "
+    "presented as alive, a wind-up animal, "
     # ANGER. A "playful frown" came back as a small girl SCOWLING in real anger. The
     # teacher in a lesson for six-year-olds is never cross with them.
     "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
@@ -1530,12 +1540,22 @@ _TEACHING_SYS = (
     "THE PICTURE MUST SHOW WHAT THE LINE SAYS. This is a lesson, not a joke. A child "
     "who cannot read is looking at the picture to understand the words. If the picture "
     "shows something else, the line is wasted.\n"
-    "- If the line names a THING (a doll, a puppy, a rock, a plant, a toy car, a plate "
-    "of food), that thing is IN THE PICTURE and IN HER HANDS. Say it plainly — 'holding "
+    "- If the line names a small NON-LIVING THING (a doll, a rock, a plant in a pot, a toy "
+    "car, a plate), that thing is IN THE PICTURE and IN HER HANDS. Say it plainly — 'holding "
     "a doll in one hand', 'lifting the rock up' — and name ONE prop, two at the most. A "
     "scene that asked for a doll AND a toy car AND both arms raised came back with "
     "EMPTY HANDS, standing in the reference photo's own arms-out pose: given too much "
     "to hold, the artist drops the lot and falls back on the reference.\n"
+    "- A LIVING ANIMAL IS NEVER A HELD PROP AND NEVER A TOY. The puppy is this lesson's "
+    "living example: show it ALIVE and BESIDE her — sitting, wagging, licking her hand, "
+    "trotting next to her — never lifted in her hand like an object, never a plush or "
+    "plastic toy version. For a line about another animal (a horse running), show a REAL "
+    "LIVE animal in the scene, e.g. a real horse trotting in the field behind her, and have "
+    "HER do the action (running). Do NOT invent random creatures — no insects, no ants, no "
+    "exotic birds; keep the living example the puppy.\n"
+    "- THE MASCOT CHILD IS ALWAYS THE MAIN SUBJECT, clearly and fully in the picture. Never "
+    "describe a scene of only the props or only the animal — she is always there, front and "
+    "centre, doing something.\n"
     "- NEVER put one thing on her left and another on her right and have her point at "
     "or compare BOTH. That gives her ARMS SPREAD WIDE — which is the pose of the "
     "reference photo, and the picture becomes a T-pose with props on the floor. To "
