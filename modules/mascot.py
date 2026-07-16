@@ -379,6 +379,11 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     # plush/plastic horse for the line about real horses teaches the exact opposite.
     "a toy animal, a toy horse, a stuffed animal used as a living example, a plastic animal "
     "presented as alive, a wind-up animal, "
+    # PHANTOM OBJECTS. A gesturing hand grew a random toy the scene never asked for, and it
+    # came mangled: a disembodied doll head, a faced ball, a smear of colour over her face.
+    "a random toy in her hands, a phantom object, a disembodied doll head, a severed head, "
+    "a floating head, a doll head with no body, a smear of colour over her face, "
+    "a painted face, face paint, an object stuck to her face, "
     # ANGER. A "playful frown" came back as a small girl SCOWLING in real anger. The
     # teacher in a lesson for six-year-olds is never cross with them.
     "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
@@ -1266,6 +1271,35 @@ def never_empty_handed(scene: str) -> str:
     return _tidy(f"{s.rstrip(' ,')}, {pose}")
 
 
+# Nouns that legitimately go IN HER HANDS in a lesson. If a scene names one, a held object is
+# expected; if it names NONE, any object Qwen puts in her hands is a HALLUCINATION — and it
+# arrives mangled (a disembodied doll head, a faced ball, a colour smear). Measured: every
+# hallucinated-prop shot (5, 6, 7) was a scene with no held prop, just a hand GESTURE, and
+# Qwen filled the free hand. The animals (puppy, horse) are NOT here — they are shown BESIDE
+# her, never held.
+_HELD_PROP = re.compile(
+    r"\b(?:doll|block|brick|toy|ball|rock|stone|pebble|plant|flower|seedling|sapling|"
+    r"apple|banana|fruit|plate|food|cup|mug|bowl|spoon|book|crayon|leaf|figurine|teddy|"
+    r"car|truck|cube|box|balloon)\b", re.I)
+
+
+def no_phantom_object(scene: str) -> str:
+    """A prop-less scene must SAY her hands are empty, or Qwen fills them with a random toy.
+
+    When the scene names no held prop, spell out that her hands hold nothing — the gesture
+    (waving, counting, pointing) is the whole action. This is the counterpart to
+    never_empty_handed: that one stops IDLE hands falling into the reference T-pose, this one
+    stops GESTURING hands sprouting a phantom object.
+    """
+    s = scene or ""
+    if _HELD_PROP.search(s):
+        return scene                       # a prop is named — a held object is wanted
+    if re.search(r"\b(?:empty|open)\b.{0,20}\bhand", s, re.I):
+        return scene                       # already says the hands are empty
+    return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, holding no toy, doll or "
+                 f"object of any kind")
+
+
 # SCALE. Nothing in the prompt said how BIG a prop was, so "holding up a grey rock" came
 # back as a BOULDER — bigger than her torso, hugged with both arms. That also ate the
 # SECOND prop the scene asked for (a plant), because both her arms were full of the
@@ -1496,8 +1530,8 @@ def clean_scene_for_the_mascot(scene: str, teaching: bool = False,
         never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
             keep_the_mascot(one_moment(scene))))))))
     if teaching:
-        out = props_fit_in_a_hand(alive_looks_alive(warm_face(
-            her_clothes_do_not_change(out))))
+        out = no_phantom_object(props_fit_in_a_hand(alive_looks_alive(warm_face(
+            her_clothes_do_not_change(out)))))
     if keep_people:
         return out
     return other_people_are_other_people(out)

@@ -398,6 +398,25 @@ def test_idle_pose_varies_it_is_not_one_stiff_wave_every_shot():
         assert mas.never_empty_handed(busy) == busy, f"busy hands were meddled with: {busy}"
 
 
+def test_a_prop_less_scene_says_the_hands_are_empty():
+    # The hallucinated-prop shots (a disembodied doll head, a faced ball) were all scenes with
+    # NO held prop — just a gesture — so Qwen filled the free hand. Say the hands are empty.
+    out = mas.no_phantom_object("the mascot character running beside a real live horse, waving")
+    assert "empty" in out and "holding no toy" in out
+    assert mas.no_phantom_object(out) == out                     # idempotent
+
+    # a scene that DOES name a held prop is left alone (a held object is wanted there)
+    held = "the mascot character holding up a bright plastic toy building block, smiling"
+    assert mas.no_phantom_object(held) == held
+    # and it fires inside the teaching chain, but not the facts chain
+    lesson = mas.clean_scene_for_the_mascot(
+        "the mascot character pointing at a bird on a branch", teaching=True)
+    assert "empty" in lesson
+    facts = mas.clean_scene_for_the_mascot(
+        "the mascot character pointing at a bird on a branch", teaching=False)
+    assert "holding no toy" not in facts
+
+
 def test_never_empty_handed_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
         "the mascot character standing beside a plant and a puppy, facing the camera")
