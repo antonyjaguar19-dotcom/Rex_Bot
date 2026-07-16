@@ -1318,7 +1318,7 @@ def no_phantom_object(scene: str) -> str:
     # a doll and fed the block reference in — so a running-and-moving shot grew an off-topic
     # block. Say the hands are empty WITHOUT naming any prop noun.
     return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, not holding anything, "
-                 f"both palms relaxed and clearly empty")
+                 f"no fruit and no apple, both palms relaxed and clearly empty")
 
 
 # A live animal must never be DANGLED from one hand (jeffy 2026-07-16). If she holds it, both
@@ -1935,6 +1935,15 @@ def build_presenter_prompt(scene: str, background: str = "",
     clause = FRAMING_CLAUSE.get((framing or "").strip().lower())
     if clause and _FULL_BODY_CLAUSE in style:
         style = style.replace(_FULL_BODY_CLAUSE, clause)
+
+    # PHANTOM APPLE. Qwen's prior is "a child holds a small round red apple" and it filled the
+    # free hand with one across shots that never named it (a running shot, a plant shot, a
+    # doll shot). Ban it — but ONLY when THIS scene does not name a fruit, so the one shot that
+    # legitimately shows an apple keeps it. Conditional, scene-aware (jeffy 2026-07-16).
+    if teaching and not re.search(r"\b(?:apple|fruit|banana|orange|berry|berries|grape)\b",
+                                  scene, re.I):
+        negative = (negative + ", a red apple, a round red fruit, a piece of fruit in her "
+                    "hand, a phantom apple, an apple that the scene did not ask for")
 
     return f"{scene}, {style}", negative
 

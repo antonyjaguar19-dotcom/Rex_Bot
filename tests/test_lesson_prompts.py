@@ -217,3 +217,15 @@ def _with_mum(lesson):
         lesson["beats"][0]["mascot_scene"] = \
             "the mascot character being hugged by her mother, laughing"
     return lesson
+
+
+def test_a_phantom_apple_is_banned_unless_the_scene_names_a_fruit():
+    # Qwen fills a free hand with a red apple across shots that never named one. Ban it —
+    # but only when THIS scene has no fruit, so the apple-eating shot keeps its apple.
+    import modules.mascot as mas
+    _, neg_running = mas.build_presenter_prompt(
+        "the mascot character running, hands empty", "garden", teaching=True)
+    assert "a red apple" in neg_running                     # banned on a no-fruit shot
+    _, neg_apple = mas.build_presenter_prompt(
+        "the mascot character holding up an apple", "garden", teaching=True)
+    assert "a red apple" not in neg_apple                   # the apple shot keeps its apple
