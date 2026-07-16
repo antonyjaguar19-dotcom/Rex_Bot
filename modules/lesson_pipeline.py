@@ -514,12 +514,14 @@ def conform_props(lesson_id: str,
             sp = stills_dir / f"still_{i:02d}.png"
             if not sp.exists():
                 continue
-            descs = "; ".join(f"the {o['noun']} is {o['desc']}"
-                              for o in objs if o.get("key") in named)
+            descs = "; ".join(
+                f"the {o['noun']} is {o['desc']}, a plain solid colour with no marks"
+                for o in objs if o.get("key") in named)
             prompt = (
                 "everything in the reference image stays exactly the same — the child, her "
                 "face, her hair, her clothes, the background, and any other person are all "
-                f"unchanged. The ONLY change is: {descs}. Nothing inanimate has a face.")
+                f"unchanged. The ONLY change is: {descs}. Nothing inanimate has a face, and "
+                "no dots or marks that could look like eyes or a face.")
             r = kx.generate(prompt=prompt, output_path=sp, aspect_ratio="16:9",
                             seed=8000 + i, reference_image=sp)
             if getattr(r, "success", False) and sp.exists():
