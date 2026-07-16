@@ -186,7 +186,7 @@ def test_two_references_get_two_identities():
     # ...and replaced by one that says WHOSE
     assert "FIRST reference image" in two and "SECOND reference image" in two
     assert "Neither one takes the other's face, hair, clothes or build" in two
-    assert "the grown-up is a head and shoulders taller" in two
+    assert "twice the child's height" in two          # adult-vs-child scale is spelled out
 
     # the ways two references actually went wrong are banned
     for banned in ("the child wearing the adult's clothes", "swapped hair",
