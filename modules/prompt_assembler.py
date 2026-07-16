@@ -46,7 +46,12 @@ NO_CHARACTER_BEATS = {"atmosphere"}
 # ==============================================================================
 
 # shot_type → concrete spatial framing the diffusion model understands.
+# Framing vocabulary. The NAMES are the shared shot grammar (modules/shot_grammar.FRAMINGS);
+# the CLAUSES are this pipeline's own painting-language and stay here. establishing + montage
+# were added so a storyboard can open on a scene-setting plate and cut a montage of items.
 SHOT_TYPE_FRAMING = {
+    "establishing": ("the whole scene and setting is laid out and visible, characters small "
+                     "within it, viewed from far back — a scene-setting plate"),
     "wide": ("the whole location is visible and any character occupies less "
              "than a third of the frame height, viewed from a distance"),
     "medium": ("the character is seen from the waist up or full body, "
@@ -54,6 +59,8 @@ SHOT_TYPE_FRAMING = {
     "closeup": ("the character's face fills most of the frame"),
     "insert": ("the hands (or paws or beak) and the object they touch fill "
                "the frame; the face is partly or fully out of frame"),
+    "montage": ("several small items arranged together in one frame, a grid of examples, "
+                "no single subject dominating"),
 }
 
 

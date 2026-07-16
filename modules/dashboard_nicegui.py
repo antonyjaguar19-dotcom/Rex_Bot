@@ -4638,6 +4638,10 @@ def main_page():
                 ui.label(f"seed {p['seed']}  ·  {p['steps']} steps  ·  cfg {p['cfg']}  ·  "
                          f"refs: {', '.join(p['refs'])}  ·  {who}") \
                     .classes("text-xs opacity-60")
+                # The recurring objects this shot keeps identical (pinned once, referenced).
+                if p.get("objects"):
+                    ui.label(f"🧸 kept consistent: {', '.join(p['objects'])}") \
+                        .classes("text-xs opacity-60")
 
     def render_lesson_script():
         """The written lesson, line by line. Every line is EDITABLE — this is the gate
@@ -4659,6 +4663,9 @@ def main_page():
                (lesson or {}).get("video", ""),
                tuple((b["narration"], b["on_screen"], b.get("animate"),
                       b.get("approved"), b.get("still", ""),
+                      # the camera framing — so the header grouping and the [framing] tag
+                      # repaint the moment you change one
+                      b.get("framing", ""),
                       # where this beat STARTED — or the "↺ Reset order" button would not
                       # appear when you move a shot, nor vanish when you put it back
                       b.get("orig"),
@@ -4706,7 +4713,21 @@ def main_page():
                     + (f"  🔒 {len(left)} picture(s) still to confirm" if left
                        else "  ✅ every picture confirmed"))
 
+            # The lesson as a storyboard: shots grouped into "Sequence N: Introduction",
+            # the topic block, "Recap", "Subscribe". Computed from each beat's kind, so it
+            # follows a reorder. See lesson_writer.sequences.
+            from modules.mascot import LESSON_FRAMINGS
+            _seq_head = {}
+            for _n, _grp in enumerate(lw.sequences(lesson), start=1):
+                _seq_head[_grp["shots"][0]] = (_n, _grp["title"])
+
             for i, b in enumerate(lesson["beats"]):
+                if i in _seq_head:
+                    _n, _title = _seq_head[i]
+                    ui.label(f"Sequence {_n}: {_title}") \
+                        .classes("text-sm font-bold") \
+                        .style("color:#7cf; margin-top: 10px;")
+
                 with ui.row().classes("w-full items-center gap-2"):
                     ui.label(f"{i+1:>2}").classes("text-xs opacity-50") \
                         .style("width: 22px;")
@@ -4730,6 +4751,22 @@ def main_page():
 
                     ui.element("span").classes("rex-badge rex-badge-mint") \
                         ._props["innerHTML"] = b["kind"]
+
+                    # The camera framing for this shot — establishing/wide/medium/closeup.
+                    # Changing it clears the picture's tick (a different framing is a
+                    # different picture — see lesson_writer.set_beat_field).
+                    fr = ui.select(list(LESSON_FRAMINGS),
+                                   value=b.get("framing", "medium")) \
+                        .props("outlined dark dense options-dense") \
+                        .style("width: 128px;") \
+                        .tooltip("How near the camera is: establishing (far), wide, "
+                                 "medium, or close-up. It changes the picture that is "
+                                 "drawn, not just the label.")
+
+                    def _save_framing(_=None, _i=i, _f=fr):
+                        lw.set_beat_field(S.lesson_id, _i, "framing", _f.value)
+                        full_refresh()
+                    fr.on_value_change(_save_framing)
 
                     line = ui.input(value=b["narration"]) \
                         .props("outlined dark dense").classes("flex-1") \

@@ -120,6 +120,10 @@ _PROSE_SYS = (
     "- Words a six-year-old knows. One idea per sentence. Short sentences.\n"
     "- Never use a word the book does not use without explaining it in the same breath.\n"
     "- Teach what the book teaches. Do not bring in facts the book never mentions.\n"
+    "- If the book gives a LIST — the ways a thing is alive, the parts of a plant, the "
+    "senses, the steps — teach EVERY item on it. Leaving one out hands the child half a "
+    "definition. The dull item still counts: 'living things breathe' matters as much as "
+    "'living things eat', even though breathing has no fun example.\n"
     "- Warm and encouraging. Speak TO the child ('you', 'your'), never about them.\n"
     "- No numbers, statistics or long names. This is a six-year-old.\n"
     "- Do NOT mention the textbook, the page, the pictures, or the exercises. The child "
@@ -154,7 +158,7 @@ MAX_BEAT_WORDS = 22
 _DRESS_SYS = (
     "For each numbered line of a children's lesson you write two things.\n"
     'Output ONLY valid JSON: {"title": "...", "beats": [{"n": 1, "on_screen": "...", '
-    '"image_prompt": "..."}]}\n'
+    '"image_prompt": "..."}], "objects": [{"noun": "...", "desc": "..."}]}\n'
     "Rules:\n"
     "- n: the NUMBER of the line this entry is for. Every line gets exactly one entry, "
     "and the number must match.\n"
@@ -164,7 +168,16 @@ _DRESS_SYS = (
     "action with ONE object, matching that line. No text, letters or numbers in the "
     "image.\n"
     "- Never change, quote or repeat the lines themselves.\n"
-    "- title: 3-6 words, what the whole lesson is called."
+    "- title: 3-6 words, what the whole lesson is called.\n"
+    "- objects: the concrete THINGS this lesson keeps coming back to across several lines "
+    "— the doll and the puppy in a lesson about what is alive, the plant in a lesson about "
+    "growing. For EACH, give a single common noun ('doll', 'puppy') and ONE vivid fixed "
+    "description of exactly what it looks like, so the SAME one can be drawn every time it "
+    "appears: 'a soft cuddly cloth rag doll with a friendly embroidered smile, round felt "
+    "eyes and floppy cream arms'. Make every object CUTE, soft and friendly for a small "
+    "child — never scary or creepy (no sharp black button eyes, no stitched-shut mouth). "
+    "Only things that actually appear in the lines, at most three. A one-off prop mentioned "
+    "in a single line is NOT one of these."
 )
 
 
@@ -189,12 +202,18 @@ def _source_for(book_id: str, topic_id: str) -> tuple:
     return text[:MAX_SOURCE_CHARS], words, topic, book
 
 
+def _prose_ask(topic: dict, source: str, budget: int) -> str:
+    """The instruction the prose writer is given. Shared by the first draft and by the
+    coverage re-roll, so a re-roll asks for the same lesson — just without the gap."""
+    return (f"Topic: {topic['title']}\n"
+            f"What the child's textbook says about it:\n---\n{source}\n---"
+            f"{_PICTURE_NOTE}\n\n"
+            f"Teach this topic to a six-year-old, out loud, in about {budget} words.")
+
+
 def _write_prose(topic: dict, source: str, budget: int, _p) -> str:
     """Stage 1: the lesson, as a teacher would say it. Prose, no structure."""
-    ask = (f"Topic: {topic['title']}\n"
-           f"What the child's textbook says about it:\n---\n{source}\n---"
-           f"{_PICTURE_NOTE}\n\n"
-           f"Teach this topic to a six-year-old, out loud, in about {budget} words.")
+    ask = _prose_ask(topic, source, budget)
 
     best, best_gap, last = "", 10**9, None
     for attempt in range(1, LLM_ATTEMPTS + 1):
@@ -232,6 +251,102 @@ def _write_prose(topic: dict, source: str, budget: int, _p) -> str:
             f"Nothing was saved.")
     _p(f"✍️ lesson written — {len(best.split())} words (asked {budget})")
     return best
+
+
+# ==============================================================================
+# COVERAGE — did the lesson keep everything the book teaches?
+# ==============================================================================
+#
+# The length loop above optimises WORDS, not completeness, and to hit a word budget the
+# model drops the least vivid idea. On the real Class-1 book, "Living and Non-living
+# Things", the page lists SIX ways a thing is alive — eat, grow, move, have young ones,
+# BREATHE, feel — and breathing is the one with no cheerful child's-day example, so it
+# went. The lesson taught five of six, its own recap claimed to have taught the whole
+# definition, and nothing errored: the child then meets "Does it breathe?" on the book's
+# own self-test, untaught.
+#
+# The prompt now ASKS for the whole list (a rule in _PROSE_SYS). This is the CHECK — the
+# same doctrine the fact-memory and the subscribe outro are built on: a model told "keep
+# everything" still silently drops one, so the prompt is the mechanism and the check is
+# the feature.
+
+COVERAGE_ATTEMPTS = 2
+
+_COVERAGE_SYS = (
+    "You check whether a lesson written for a six-year-old left out anything important "
+    "the textbook teaches.\n"
+    "You are given (a) what the book says about a topic and (b) the lesson written from "
+    "it. Find KEY THINGS the book clearly teaches about this topic that the lesson does "
+    "not teach AT ALL.\n"
+    'Answer with JSON only: {"missing": ["...", "..."]}\n'
+    "- A thing is MISSING only if the lesson never teaches it in ANY words. If the "
+    "lesson says the same thing differently — the book says 'have young ones', the "
+    "lesson says 'have babies' — it is NOT missing.\n"
+    "- Only list things the BOOK itself teaches. Never invent a fact the book does not "
+    "mention.\n"
+    "- When the book gives a LIST — the ways living things are alive, the parts of a "
+    "plant, the senses — every item on it matters, and a dropped item is missing.\n"
+    "- Each entry is 1-3 words: the thing itself ('breathe', 'roots'), not a sentence.\n"
+    '- Nothing left out? Answer {"missing": []}.'
+)
+
+
+def _missing_key_ideas(source: str, prose: str, _p) -> list:
+    """Things the book teaches that the lesson dropped ENTIRELY.
+
+    Guarded against the checker itself: an item is kept only if its word is ACTUALLY in
+    the book and ACTUALLY absent from the lesson. That stops a hallucinated requirement
+    ('photosynthesis' on a page that never says it) from re-rolling forever, and folds
+    away a synonym the lesson already taught (the substring match forgives feel/feels)."""
+    try:
+        raw = _call_llm(
+            f"What the book says:\n---\n{source}\n---\n\n"
+            f"The lesson written from it:\n---\n{prose}\n---\n\n"
+            f"List anything important the lesson leaves out.",
+            _COVERAGE_SYS, role="structurer")
+        items = (_extract_json(raw) or {}).get("missing") or []
+    except Exception as e:
+        _p(f"⚠️ could not check the lesson for gaps ({e})")
+        return []
+
+    src_low, prose_low = source.lower(), prose.lower()
+    kept = []
+    for it in items:
+        head = re.sub(r"[^a-z]", "", str(it).lower().split()[0]) if str(it).strip() else ""
+        if len(head) >= 3 and head in src_low and head not in prose_low:
+            kept.append(str(it).strip())
+    return kept
+
+
+def _close_gaps(topic: dict, source: str, prose: str, budget: int, _p) -> str:
+    """Re-roll the lesson until it teaches everything the book does — or say what it
+    still misses. Never raises: a lesson with a gap is worse than one without, but a
+    lesson that could not be re-rolled is not worse than no lesson."""
+    for _ in range(COVERAGE_ATTEMPTS):
+        missing = _missing_key_ideas(source, prose, _p)
+        if not missing:
+            return prose
+        joined = ", ".join(missing)
+        _p(f"🔎 the lesson left out: {joined} — the book teaches it; re-rolling")
+        add = (f"\n\nYour last lesson left out something the book teaches: {joined}. "
+               f"Write the lesson again, still about {budget} words, and this time teach "
+               f"{joined} too — each as one small idea with an example a child knows.")
+        try:
+            got = _clean_prose(_call_llm(_prose_ask(topic, source, budget) + add,
+                                         _PROSE_SYS, role="creative"))
+        except Exception as e:
+            _p(f"⚠️ could not re-roll for the gap ({e}); teaching what we have")
+            return prose
+        if got:
+            prose = got
+
+    left = _missing_key_ideas(source, prose, _p)
+    if left:
+        # No silent downgrade. A lesson short of the book's own list ships with a warning
+        # on screen, not quietly.
+        _p(f"⚠️ this lesson may still not cover: {', '.join(left)} — the book says more "
+           f"about it than the lesson does. Check it, or add a beat for it by hand.")
+    return prose
 
 
 _HEADING = re.compile(r"^\s*(#+|\d+[.)]|[-*•])\s*", re.M)
@@ -321,6 +436,54 @@ def _kinds_for(lines: list) -> list:
 
 
 # ==============================================================================
+# CAMERA FRAMING — a lesson is a shot list, not thirteen identical frames
+# ==============================================================================
+#
+# Every lesson beat used to render as the SAME picture: full-body, camera-facing "mascot
+# presents". Now each beat carries a framing — establishing / wide / medium / closeup —
+# that changes the actual camera distance at render time (mascot.FRAMING_CLAUSE, injected
+# by mascot.build_presenter_prompt). This is the storyboard grammar the kids pipeline has
+# always had (prompt_assembler.SHOT_TYPE_FRAMING) and lesson mode never did.
+#
+# Assigned by KIND, then de-duplicated so two neighbours never share a framing (the same
+# rule kids mode enforces in script_generator). closeup and establishing are left alone —
+# they are already rare and load-bearing (the FACE beat, the bookend) — so only the
+# medium/wide workhorses are nudged when they repeat.
+
+# The one framing each kind wants. See mascot.FRAMING_CLAUSE for the safety reasoning:
+# closeup is reserved for the question beat (the face is the shot, hands out of frame, so
+# no T-pose risk); establishing is the bookend only (it is the one framing that risks both
+# idle hands and identity-at-distance).
+_FRAMING_BY_KIND = {
+    "intro": "establishing",
+    "teach": "medium",
+    "example": "wide",
+    "check": "closeup",
+    "recap": "wide",
+    "outro": "medium",
+}
+_DEFAULT_FRAMING = "medium"
+
+# The two workhorse framings, nudged apart when they repeat. closeup/establishing are never
+# touched (rare and deliberate), so a run of them is left as written.
+_NUDGE = {"medium": "wide", "wide": "medium"}
+
+
+def _framing_for(kinds: list) -> list:
+    """A camera framing per beat: assigned by kind, then no two neighbours the same.
+
+    Mechanical and deterministic — the same shape as _kinds_for. A beat whose kind is not
+    in the map falls back to `medium`, which is the old implicit default (mascot injects it
+    as a swap for the full-body clause, so an unknown kind renders as it does today).
+
+    The lesson's own maps, run through the shared shot grammar so the vocabulary and the
+    de-dup rule live in one place (modules/shot_grammar); behaviour is byte-for-byte the
+    same as before the lift."""
+    from modules import shot_grammar
+    return shot_grammar.framing_for(kinds, _FRAMING_BY_KIND, _DEFAULT_FRAMING, _NUDGE)
+
+
+# ==============================================================================
 # THE OUTRO
 # ==============================================================================
 
@@ -380,6 +543,7 @@ def ensure_outro(lesson_id: str) -> bool:
     line = subscribe_outro(topic)
     beats.append({
         "kind": "outro",
+        "framing": _FRAMING_BY_KIND["outro"],
         "narration": line,
         "on_screen": "Subscribe!",
         "image_prompt": "",
@@ -398,6 +562,63 @@ def ensure_outro(lesson_id: str) -> bool:
     _save(lesson)
     log.info(f"{lesson_id}: ends on — {line}")
     return True
+
+
+def ensure_framing(lesson_id: str) -> bool:
+    """Give every beat a camera framing. Idempotent, so a lesson written before framing
+    existed (e.g. 20260714_113840) gains one the next time it is prepared, without being
+    rewritten — and a framing you edited by hand is left exactly as you set it.
+
+    Derives from each beat's own `kind`, through the same de-duplicating _framing_for, so a
+    backfilled lesson gets the same varied shot list a fresh one would."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    if not beats or all(b.get("framing") for b in beats):
+        return False                        # nothing missing — every beat already framed
+    framings = _framing_for([b.get("kind", "teach") for b in beats])
+    filled = 0
+    for b, f in zip(beats, framings):
+        if not b.get("framing"):
+            b["framing"] = f
+            filled += 1
+    _save(lesson)
+    log.info(f"{lesson_id}: framing backfilled onto {filled} beat(s)")
+    return True
+
+
+# ==============================================================================
+# SEQUENCES — the lesson as a storyboard, grouped like "Sequence 1: Introduction"
+# ==============================================================================
+#
+# Organizational, and deliberately CHEAP: no LLM pass (same doctrine as the coverage and
+# outro checks — a model asked to segment a lesson is one more silent failure). Sequences
+# are computed on the fly from each beat's `kind`, so nothing is stored on disk and a
+# reorder — which already moves `kind` with the beat — regroups correctly on the next read.
+_SEQUENCE_TITLES = {
+    "intro": "Introduction",
+    "recap": "Recap",
+    "outro": "Subscribe",
+}
+
+
+def sequence_title_for(kind: str, topic: str) -> str:
+    """The sequence a beat of this kind belongs to. The teaching kinds (teach/example/
+    check) all fall under the lesson's own topic, so they read as one block."""
+    return _SEQUENCE_TITLES.get(kind, (topic or "The Lesson").strip() or "The Lesson")
+
+
+def sequences(lesson: dict) -> list:
+    """The lesson grouped into named sequences for a storyboard readout.
+
+    Returns [{"title": str, "shots": [beat_index, ...]}], newest-first order preserved.
+    Consecutive beats with the same sequence title merge into one group."""
+    from modules import shot_grammar
+    topic = (lesson.get("topic") or lesson.get("title") or "The Lesson").strip()
+    return shot_grammar.sequences(
+        lesson.get("beats", []),
+        lambda b: sequence_title_for(b.get("kind", "teach"), topic))
 
 
 def _dress_by_line(lines: list, dress: dict) -> dict:
@@ -428,6 +649,7 @@ def _to_beats(lines: list, dress: dict) -> list:
     """The lesson's own lines + the model's caption and picture for each."""
     by_line = _dress_by_line(lines, dress)
     kinds = _kinds_for(lines)
+    framings = _framing_for(kinds)
     beats = []
     for i, line in enumerate(lines):
         extra = by_line.get(i, {})
@@ -443,6 +665,10 @@ def _to_beats(lines: list, dress: dict) -> list:
 
         beats.append({
             "kind": kinds[i],
+            # The camera distance this shot renders at (mascot.FRAMING_CLAUSE). Assigned by
+            # kind, de-duplicated so neighbours differ. Editable, and read back with a
+            # `medium` default so a lesson written before this existed renders unchanged.
+            "framing": framings[i],
             "narration": line,                 # the lesson's words, untouched
             "on_screen": on_screen,
             "image_prompt": image_prompt,
@@ -460,6 +686,73 @@ def _to_beats(lines: list, dress: dict) -> list:
         })
 
     return beats
+
+
+# ==============================================================================
+# RECURRING OBJECTS — the things the lesson keeps coming back to
+# ==============================================================================
+#
+# "Living vs Non-living" is built on ONE doll and ONE puppy. If the doll is a plush rabbit
+# in shot 2 and a peg doll in shot 8, the contrast the whole lesson rests on is gone. So the
+# lesson pins its recurring objects and keeps them the same shot to shot (modules/
+# lesson_objects). The writer PROPOSES them in _DRESS; this is the CHECK — the prompt is the
+# mechanism, the check is the feature, exactly like _missing_key_ideas and the fact memory.
+
+MAX_LESSON_OBJECTS = 2      # Qwen-Edit affords 2 extra refs; a contrast is usually a pair
+MIN_OBJECT_BEATS = 2        # named in one line only = a one-off prop, not a through-line
+
+
+def _obj_slug(noun: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (noun or "").lower()).strip("-")
+
+
+# The canonical LOOK for the two objects a "living vs non-living" lesson rests on, forced
+# here rather than left to the model, so the PINNED reference is right: a doll is drawn as a
+# faceless building block (human-shaped dolls captured the mascot's face or read like a
+# horror-film doll — jeffy 2026-07-16), and the puppy is one fixed breed so it is the SAME
+# puppy every shot. The prompt proposes, this is the CHECK — same doctrine as the >=2-beat
+# rule below. Single source of truth: mascot.FACELESS_TOY_DESC / LABRADOR_PUPPY_DESC.
+_TOY_NOUNS = re.compile(r"\b(?:doll|dolly|teddy|puppet|figurine|toy|plush|stuffed)\b", re.I)
+_PUPPY_NOUNS = re.compile(r"\b(?:puppy|pup|doggy|dog)\b", re.I)
+
+
+def _canonical_desc(noun: str, desc: str) -> str:
+    from modules import mascot
+    if _TOY_NOUNS.search(noun or ""):
+        return mascot.FACELESS_TOY_DESC
+    if _PUPPY_NOUNS.search(noun or ""):
+        return mascot.LABRADOR_PUPPY_DESC
+    return desc
+
+
+def _recurring_objects(dress: dict, lines: list) -> list:
+    """The objects worth pinning: proposed by the model, then CHECKED against the lesson's
+    own words. Keep only a noun that really appears in >=2 lines (drops one-offs and anything
+    the model invented), rank by how often it recurs, cap the list. Each becomes
+    {key, noun, desc, aliases} for lesson_objects."""
+    from modules.facts_memory import _singular
+    line_tokens = [{_singular(w) for w in re.findall(r"[a-z]+", ln.lower())} for ln in lines]
+
+    scored, seen = [], set()
+    for it in (dress or {}).get("objects") or []:
+        if not isinstance(it, dict):
+            continue
+        noun = (it.get("noun") or "").strip().lower()
+        desc = (it.get("desc") or "").strip()
+        if not noun or not desc:
+            continue
+        head = _singular(re.sub(r"[^a-z]", "", noun.split()[-1]))   # the matchable word
+        if len(head) < 3 or head in seen:
+            continue
+        count = sum(1 for toks in line_tokens if head in toks)      # THE CHECK
+        if count < MIN_OBJECT_BEATS:
+            continue
+        seen.add(head)
+        aliases = [head] if head != noun else []
+        scored.append((count, {"key": _obj_slug(noun), "noun": noun,
+                               "desc": _canonical_desc(noun, desc), "aliases": aliases}))
+    scored.sort(key=lambda x: -x[0])
+    return [o for _, o in scored[:MAX_LESSON_OBJECTS]]
 
 
 def write_lesson(book_id: str, topic_id: str,
@@ -487,6 +780,11 @@ def write_lesson(book_id: str, topic_id: str,
        f"in ~{beats_wanted} beats")
 
     prose = _write_prose(topic, source, budget, _p)
+
+    # Did the lesson keep everything the book teaches? The length loop optimises words,
+    # not completeness, and drops the least vivid idea to hit a budget (breathing, which
+    # has no fun example, was the one lost on the real book). Re-roll naming the gap.
+    prose = _close_gaps(topic, source, prose, budget, _p)
 
     # Cut the lesson into lines MECHANICALLY. The model does not get to touch the
     # narration again: asked to cut without rewriting it dropped a third of the
@@ -523,6 +821,13 @@ def write_lesson(book_id: str, topic_id: str,
     beats = _to_beats(lines, dress)     # fills any caption the model forgot
     cut_title = (dress.get("title") or "").strip()
 
+    # The recurring objects this lesson is built on — pinned so the doll (and the puppy) look
+    # the SAME in every shot. Proposed by the model, kept only if really named in >=2 lines.
+    objects = _recurring_objects(dress, lines)
+    if objects:
+        _p("🧸 recurring objects to keep consistent: "
+           + ", ".join(o["noun"] for o in objects))
+
     spoken = sum(len(b["narration"].split()) for b in beats)
     est = spoken / WORDS_PER_SEC + PAD_PER_BEAT * len(beats)
     if abs(est - target_seconds) > target_seconds * 0.3:
@@ -546,6 +851,7 @@ def write_lesson(book_id: str, topic_id: str,
         "estimated_seconds": round(est, 1),
         "word_count": spoken,
         "beats": beats,
+        "objects": objects,       # recurring props to keep identical (lesson_objects)
         "_prose": prose,          # keep it: a re-cut should not re-invent the lesson
         "stage": "written",
         "_generated_at": now.isoformat(timespec="seconds"),
@@ -575,7 +881,7 @@ def _save(lesson: dict) -> None:
 
 
 EDITABLE_BEAT_FIELDS = ("narration", "on_screen", "image_prompt", "mascot_scene",
-                        "motion_prompt")
+                        "motion_prompt", "framing")
 
 
 def set_beat_field(lesson_id: str, beat_index: int, field: str, text: str) -> bool:
@@ -589,7 +895,19 @@ def set_beat_field(lesson_id: str, beat_index: int, field: str, text: str) -> bo
     beats = lesson.get("beats", [])
     if not (0 <= beat_index < len(beats)):
         return False
-    beats[beat_index][field] = (text or "").strip()
+
+    value = (text or "").strip()
+    if field == "framing":
+        # A framing is a fixed vocabulary, not free text — validate it, or a typo would
+        # render as the old full-body default with nothing to say why (a silent downgrade).
+        from modules.mascot import LESSON_FRAMINGS
+        value = value.lower()
+        if value not in LESSON_FRAMINGS:
+            raise ValueError(f"framing must be one of {LESSON_FRAMINGS}")
+        # A different framing is a different picture — un-confirm it, the way set_scene does.
+        beats[beat_index]["approved"] = False
+
+    beats[beat_index][field] = value
     if field == "narration":
         lesson["word_count"] = sum(len(b["narration"].split()) for b in beats)
         lesson["estimated_seconds"] = round(

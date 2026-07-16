@@ -191,9 +191,86 @@ and the lesson shipped with no title/description/thumbnail.
 - The launcher killed the old BOT but not the old LAUNCHER, whose crash-loop respawned it
   10s later → **two live bots**. `launch_clawbot.ps1` now kills sibling launchers first.
 
+### The lesson must teach the WHOLE list, not most of it (2026-07-15) — needs restart
+Supervising a real lesson, Jeffy found "Living vs Not Living" taught **5 of the book's 6**
+properties. Book page 6: *"Living things eat, grow, move and have young ones. They also
+breathe and feel."* — the lesson dropped **BREATHE**, and its recap still claimed the whole
+definition. The word-budget loop optimises WORDS not completeness, so the model drops the
+least vivid idea (breathing has no fun example). Fix in `lesson_writer.py`, lesson-only:
+`_PROSE_SYS` now asks for every item on a list (the mechanism), and `_missing_key_ideas()`
++ `_close_gaps()` are the CHECK — re-read the finished lesson against the source, re-roll
+naming the gap (`COVERAGE_ATTEMPTS=2`), WARN loudly if still short (no silent downgrade).
+Guarded against the checker inventing a requirement (word must be in the book, absent from
+the lesson; substring folds young-ones/babies). 3 tests; **864 green**. Same doctrine as
+[[facts-memory-and-library]] and the subscribe outro — the prompt is not the feature, the
+CHECK is. Existing lesson `20260714_113840` predates the fix; regenerate it after restart.
+
+### LTX-2.3 IA2V experiment (2026-07-15) — NOT wired in; hold until asked
+Jeffy's LTX image+audio→video workflow (`05_Config/workflows/IA2V_LTX2.3.json`) run on real
+lesson shots. **Fits the 16 GB card** (27 GB model streams via offload, no OOM), ~7-12 min
+per 7s clip (≈ Wan S2V per second), but gives 24fps, single-pass 9-11s clips (no chaining)
+and **native joint lip-synced audio**. **THE CATCH: lip-sync needs MEDIUM/CLOSE framing** —
+a full-body wide shot gives the mouth ~35px and the lips barely move. Reframing shot 3 to a
+medium close-up fixed it. Lesson stills are all WIDE, so a real feature must frame talking
+beats close. Full detail + how to resume: [[ltx23-ia2v-evaluation]].
+
+### Camera framing — a lesson is a shot list now (2026-07-15, needs restart)
+Adopted a HF storyboard's shape (Sequence 1: Introduction / Shot 1: establishing …). Every
+lesson beat used to render as the SAME frame — full-body, camera-facing "mascot presents",
+thirteen identical shots that watch flat (and waste the LTX lip-sync note above: a wide shot
+= ~35px mouth). Each beat now carries a **framing** (establishing/wide/medium/closeup) that
+CHANGES THE PICTURE, plus deterministic **Sequences** for the storyboard readout. Mascot
+stays in every shot — no mascot-less plates (Jeffy's call).
+- **The swap, not a second clause** (`mascot.build_presenter_prompt`): framing REPLACES the
+  `full body visible` clause — "her face fills the frame" and "full body" cannot both be
+  true. `mascot.FRAMING_CLAUSE` (+ `LESSON_FRAMINGS`); the kids grammar
+  `prompt_assembler.SHOT_TYPE_FRAMING` is the pattern, unimported by lesson mode. Threaded
+  through `render_scene(framing=)`, `explainer_scene(framing=)` (a `_FRAMING_STEER` line for
+  closeup/establishing only — medium/wide already match `_TEACHING_SYS`, untouched).
+- **Assigned by kind, then de-duped** (`lesson_writer._framing_for`): intro→establishing,
+  teach→medium, example→wide, check→closeup, recap→wide, outro→medium; no two WORKHORSE
+  neighbours (medium↔wide) share — closeup/establishing left alone (rare, load-bearing).
+  Stamped in `_to_beats` + `ensure_outro`; `ensure_framing` back-fills old lessons
+  idempotently (a hand-set framing is never overwritten). **`medium`/no-framing = today's
+  picture** → zero migration, but regenerate `20260714_113840` for the real varied shots.
+- **Safety**: the T-pose/idle-hands bug is a FULL-BODY phenomenon; a closeup crops the hands
+  out → SAFER for identity. Establishing (small+far) is the one risky framing → intro/recap
+  bookends only, still through `never_empty_handed`.
+- **Sequences** (`lesson_writer.sequences`): deterministic from `kind` (Introduction / topic
+  / Recap / Subscribe), computed on read (nothing stored, follows a reorder). No LLM pass —
+  same doctrine as the coverage/outro checks.
+- Editable: `framing` in `EDITABLE_BEAT_FIELDS`, validated ∈ `LESSON_FRAMINGS`, clears
+  `approved` (different framing = different picture). Dashboard reveal shows Sequence headers
+  + a per-shot framing dropdown. Reveal byte-parity kept (`prompts_for` passes framing;
+  test_lesson_prompts rebuilds with it). **879 tests green.** Restart to load .py edits.
+- **Qwen-Edit IGNORES the framing clause — DELIVER it by cropping** (`modules/shot_framing.py`).
+  E2E on the real book + nakshu proved the swap reaches the prompt but every framing still
+  rendered ~full-body: Qwen-Image-Edit anchors to the FULL-BODY reference photo. Fix = crop
+  the rendered still to a monotonic zoom ladder (establishing full → wide 0.88 → medium 0.74
+  waist-up → closeup 0.52 head+shoulders), 16:9 kept, top-centre anchored, re-fit; wired into
+  `lesson_pipeline._draw_one`, runs once. Confirmed on a fresh 15-shot render: closeup is a
+  real face shot (lip-sync ready). Plus a face-occlusion guard (`_TEACHING_SYS` +
+  `NEGATIVE_TEACHING`) — "box of chicks" had put the box over her face. **884 tests green.**
+  Harness: `run_lesson_e2e.py`.
+- **Prop consistency — the recurring object stays itself (DONE + verified).** The doll (not-
+  living) and puppy (living) used to be a different toy every shot, breaking the one contrast
+  the lesson rests on. Fix mirrors `cast.py` for props: `modules/lesson_objects.py`. The writer
+  proposes recurring objects in `_DRESS`; the CHECK keeps only nouns named in **≥2 beats**
+  (drops one-offs/invented), cap 2, stored `lesson["objects"]`. Each is (a) DESCRIPTION-LOCKED
+  — one canonical desc injected verbatim wherever named (free floor) — and (b) **pinned**:
+  drawn ONCE in isolation (`lesson_objects.pin`, cached `lessons/<id>/objects/<key>.png`) and
+  handed to Qwen-Edit as an extra reference on shots that name it (`_scene_and_refs`). **3-ref
+  budget = PERSON WINS** (mascot → person → props; a colliding 2nd prop → desc-lock). A ref'd
+  object is pointed at, not described (cast doctrine); render_scene gained explicit
+  `two_people` so an object ref never trips the two-people clause. **E2E verified
+  (`20260716_000517`): the doll is the SAME rag doll across all its shots, the puppy the same
+  puppy, and a mother-hug shot rendered a distinct adult (person-wins, no twin).** 893 tests
+  (`test_lesson_objects.py`). Reveal shows "🧸 kept consistent: …".
+
 ## 3F. FACTS MODE — **FROZEN 2026-07-13**. Spec: `02_Agent/FACTS_MODE.md`. Don't tune it without being asked.
 Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice, Wan 720p shots, read-along captions, music bed, thumbnail held as the first frame, under 40s. Frozen settings + reasons live in **`FACTS_MODE.md`**; `config_snapshot/` mirrors `05_Config` (which is outside git). 577 tests green. Commits: 6623667, 5e6d99c, 30582d6, ad1c8bf, d4d9fd0, c787651.
 - **Music bed (3 shipped bugs, all silent).** ACE-Step under-fills — asked 49s it wrote 29s of music + 10s of digital silence + 8s of junk. Fixes: ask **2x** and *measure the composed body*, re-ask longer if short (`_MUSIC_ASK_HEADROOM=2.0`, `_MUSIC_TRIES=2`); cut the bed at its **music body** (`_music_body_end`, first gap ≥1.5s under −45dB after ≥8s of music) not its tail — trimming the tail left the hole mid-track and `_align_music_tail` (which fits a long track by cutting from the FRONT to keep the outro) then kept the dead air; **never loop** a short bed (replaying its opening = the same 8 bars twice, heard instantly) — it starts late instead.
+- **Music bed — the scratched-record loop (2026-07-15, needs restart).** Brain reel `20260715_081821` shipped to YouTube with a 1.2s loop. ACE rolled **36s of silence then 40s of a repeating cell** — the only music WAS the loop. `_align_music_tail` keeps the END (to land the outro), and ACE degrades over length, so it kept the worst, loopiest tail; `trim_trailing_silence` only stripped the tail, so the 36s intro survived and any front window was dead air. Fixes (all in `facts_assembly` + `_music_bed`): trim BOTH ends; `bed_loopiness()` = peak 0.4–2.5s autocorr of the RMS envelope **re-centered per window**; `_choose_music_offset` abandons a loopy tail for a clearly-cleaner earlier window (+fade) only when tail>`_LOOP_BAD` AND margin>0.15 else outro wins; `_music_bed` **re-rolls** a near-identical-loop take. Also killed two latents: MusicGen fallback `duration_sec=dur` (NameError → fallback always dead) → `reel`; `assembly._probe_duration` `float('N/A')` crash on a trim-collapsed file → 0.0. **Loopiness only catches the pathological loop, NOT musicality** — shipped cheerful beds score 0.44–0.88 (repetition IS musical), a RANDOM-noise roll ~0.53, the scratched loop 0.93; so `_LOOP_BAD=0.90` (0.80 would re-roll good 0.88 beds), and a bad-but-not-looping roll is the user's call. **Reliable fix for a bad roll = reuse a proven bed** (`songs/facts_bed_<id>_trimmed.wav` all survive) + audio-only re-mux — brain reel shipped with the bee reel's bed. 867 tests.
 - **`fasm.audit_music_bed()`** — subtracts the narration back out of the **finished file**; what remains IS the bed. Logs `bed verified … no dropouts` or `THE MUSIC DROPS OUT`, to dashboard + Discord. Every music bug looked right at every intermediate step and was wrong in the file.
 - **No silent downgrade** — `facts_pipeline.preflight()` proves the backend answers BEFORE the story is written; mascot mode ON now RAISES instead of quietly rendering abstract backdrops (a dead ComfyUI used to cost a 40-min render of the wrong film).
 - **Poster frame replaceable** — `prepend_still(replace=True)` rebuilds from a pristine copy in `final/_posterless/`; a re-rolled thumbnail now reaches the VIDEO (it used to rewrite only the .jpg, leaving the reel opening on the poster you just rejected). `publish_kit._refresh_poster_frame` does it for every aspect.

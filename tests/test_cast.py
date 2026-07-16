@@ -288,7 +288,9 @@ def test_naming_someone_you_have_no_picture_of_leaves_them_out_of_the_SHOT(mid, 
                          "the mascot character playing with her aunty in the garden"}]}
     scene_sent, refs, relation = lp._scene_and_refs(lesson, 0, mid)
 
-    assert refs is None and relation is None
+    # The mascot alone — no second reference for a person we cannot draw. (refs is now the
+    # explicit [mascot] rather than None, since object refs share this list.)
+    assert refs and len(refs) == 1 and relation is None
     assert "aunty" not in scene_sent.lower(), "she would have come back as a twin"
 
 

@@ -52,9 +52,11 @@ def test_there_is_only_one_prompt_builder():
     src = inspect.getsource(mas.render_scene)
     assert "build_presenter_prompt(" in src
     assert "STYLE_TEACHING if teaching" not in src, "render_scene has its own copy again"
-    # ...and it tells the builder when there are TWO references, or every identity clause
-    # ("the same face as THE reference image") stays ambiguous and Qwen mixes the two.
-    assert "two_people=two_people" in src
+    # ...and it tells the builder when there are TWO PEOPLE, or every identity clause
+    # ("the same face as THE reference image") stays ambiguous and Qwen mixes the two. It is
+    # `tp` — the caller's explicit flag, NOT the ref count, so a pinned object reference does
+    # not wrongly trip the two-people clause.
+    assert "two_people=tp" in src
 
 
 def test_the_revealed_prompt_is_byte_for_byte_what_qwen_gets(lesson):
@@ -65,7 +67,11 @@ def test_the_revealed_prompt_is_byte_for_byte_what_qwen_gets(lesson):
     from modules import mascot_library as ml
     scene_sent, _, _ = lp._scene_and_refs(got, 0, ml.get_active_id())
     backdrop = lp.setting_for(got["topic"])
-    positive, negative = mas.build_presenter_prompt(scene_sent, backdrop, teaching=True)
+    # ...including this shot's camera framing, which swaps the full-body clause. prompts_for
+    # reads it off the beat with a `medium` default, so the reference build must too.
+    positive, negative = mas.build_presenter_prompt(
+        scene_sent, backdrop, teaching=True,
+        framing=got["beats"][0].get("framing", "medium"))
 
     assert p["image_positive"] == positive
     assert p["image_negative"] == negative
@@ -87,7 +93,7 @@ def test_the_style_and_the_negative_really_are_in_there(lesson):
     assert "bobblehead" in neg
     assert "floating object" in neg
     assert "twins" in neg                               # the mother
-    assert "headless doll" in neg
+    assert "a face on the toy" in neg                   # the faceless-block toy (2026-07-16)
 
 
 def test_the_numbers_come_from_the_backend_not_from_a_retype(lesson):

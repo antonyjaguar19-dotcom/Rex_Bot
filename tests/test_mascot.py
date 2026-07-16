@@ -401,7 +401,9 @@ def test_render_scene_sends_the_front_ref_to_qwen(assets, tmp_path, monkeypatch)
     assert len(seen["reference_images"]) == 3     # explicit multi-ref still works
 
 
-def test_uso_fallback_gets_only_one_reference(assets, tmp_path, monkeypatch):
+def test_uso_gets_all_references(assets, tmp_path, monkeypatch):
+    # USO does UNO multi-subject, so it now gets the FULL reference list (mascot + a second
+    # person + props), not just the first — that is the whole reason a lesson can use it.
     for n in mas.MASCOT_ANGLE_NAMES:
         Image.new("RGB", (64, 64)).save(assets / n)
 
@@ -421,8 +423,9 @@ def test_uso_fallback_gets_only_one_reference(assets, tmp_path, monkeypatch):
     monkeypatch.setattr(mas, "backend_healthy", lambda: (True, "ok"))
 
     mas.render_scene("scene", tmp_path / "o.png", seed=1)
-    assert "reference_images" not in seen     # USO is single-reference only
-    assert seen["reference_image"].name == "mascot_front.png"
+    assert "reference_images" in seen          # USO takes the whole list now
+    assert len(seen["reference_images"]) == 1
+    assert seen["reference_images"][0].replace("\\", "/").endswith("mascot_front.png")
 
 
 def test_angle_set_alone_is_a_valid_install(assets):

@@ -239,6 +239,39 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     "head, bright cheerful daylight"
 )
 
+# --- Camera framing (LESSON-ONLY) --------------------------------------------
+# A lesson used to render thirteen IDENTICAL frames — full-body, camera-facing, "mascot
+# presents" every time (the "full body visible" clause below, and _TEACHING_SYS's "FULL
+# BODY, FACING THE CAMERA"). That watches flat, and the LTX-2.3 lip-sync experiment proved
+# it wastes the talking beats: a wide shot gives the mouth ~35px and the lips barely move,
+# lip-sync needs MEDIUM/CLOSE framing (agent memory ltx23-ia2v-evaluation).
+#
+# So a lesson beat now carries a FRAMING, and it REPLACES the full-body clause at render
+# time (see build_presenter_prompt) — it does not sit beside it, because "full body
+# visible" and "her face fills the frame" cannot both be true. The wording is translated
+# painting-language, the same spirit as prompt_assembler.SHOT_TYPE_FRAMING (the kids
+# pipeline's framing grammar, which lesson mode does not import).
+#
+# `medium` is the old implicit default: a beat with no framing renders EXACTLY as before.
+#
+# SAFETY: the T-pose / idle-hands bug (never_empty_handed, _TEACHING_SYS "HER HANDS ARE
+# ALWAYS BUSY") is a FULL-BODY phenomenon — a closeup crops the hands out of frame, so it
+# is SAFER for identity, not riskier. `establishing` (mascot small, far) is the one framing
+# that risks both idle hands and identity-at-distance, so it is assigned sparingly (intro/
+# recap bookends only) and still runs through never_empty_handed.
+LESSON_FRAMINGS = ("establishing", "wide", "medium", "closeup")
+FRAMING_CLAUSE = {
+    "establishing": ("the mascot stands small within the whole scene, the setting open "
+                     "and visible all around her, viewed from a distance"),
+    "wide": ("the mascot's full body is visible with room around her, seen head to toe"),
+    "medium": ("the mascot is seen from the waist up, filling about half the frame"),
+    "closeup": ("the mascot's face and shoulders fill the frame, her expression large "
+                "and clear, hands need not be in frame"),
+}
+# The exact clause every presenter style opens the body-shot with. Named once so the swap
+# in build_presenter_prompt cannot drift from the constant it targets.
+_FULL_BODY_CLAUSE = "full body visible"
+
 NEGATIVE_PRESENTER = (
     # Species drift: told the character had "paws" and a "cub" build, Qwen gave a human
     # child MOUSE EARS. The style prompt no longer claims a species — and the negative
@@ -265,21 +298,16 @@ NEGATIVE_PRESENTER = (
     # identity and it must be clean.
     "asymmetric eyes, lazy eye, misaligned pupils, uneven eyes, wonky eye, "
     "one eye larger than the other, cross-eyed, "
-    # THE LIVING DOLL. A doll is human-SHAPED, so it is the likeliest thing in any scene
-    # to capture the reference — "holding up a doll" returned a LIVING CHILD with the
-    # mascot's own face, dangling by the wrist, in a lesson about how toys are NOT alive.
-    "doll with a human face, realistic child instead of a doll, living doll, "
+    # THE NON-LIVING TOY is a faceless building block now (jeffy, 2026-07-16). A
+    # human-shaped doll captured the reference — "holding up a doll" returned a LIVING
+    # CHILD with the mascot's face — and a stitched-face rag doll read like a horror-film
+    # doll. A block has no face to turn creepy and no human shape to copy, so the only bans
+    # left are: keep a FACE OFF the toy, and keep the toy from becoming a child. (The old
+    # "faceless / featureless" bans are GONE — a faceless block is exactly what we want.)
+    "doll with a human face, a face on the toy, eyes on the toy block, a smiling toy, "
+    "cartoon eyes on a toy, realistic child instead of a toy, living doll, "
     "a real child held by the arm, child dangling, child in distress, "
-    # ...and the OPPOSITE, which is what "limp and lifeless, stitched button eyes" got:
-    # a HEADLESS cloth sack with buttons sewn onto its torso, and then a blank white
-    # faceless figure. Both read as a voodoo doll. A rag doll has a head and a smile.
-    "headless doll, doll with no head, faceless doll, blank white doll, featureless doll, "
-    "eyes on the torso, voodoo doll, creepy doll, sinister toy, "
-    # ...and the over-correction of THAT: naming only "a round stitched head, yarn hair
-    # and a stitched smile" got a DISEMBODIED HEAD — a knitted ball with a face, no body
-    # at all, in two shots out of three. The model draws exactly what you name.
-    "disembodied head, doll head with no body, severed head, a ball with a face, "
-    "floating head, "
+    "creepy doll, sinister toy, voodoo doll, "
     # BOBBLEHEAD. Telling the model "big head, small body" (my own botched repair of the
     # cub language) gave her a head bigger than her torso.
     "bobblehead, oversized head, giant head, head bigger than the body, "
@@ -343,7 +371,11 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     "props perched on fingertips, "
     # BUBBLES. Qwen fills a thought bubble with a garbled picture-within-a-picture; it
     # reads as a rendering fault, not a device.
-    "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture"
+    "thought bubble, speech bubble, comic balloon, inset picture, picture-in-picture, "
+    # FACE COVERED BY THE PROP. "holding up a box of chicks" put the box over her face — a
+    # presenter with no face. The face is the identity and the lesson.
+    "object covering the face, prop in front of the face, face hidden behind object, "
+    "holding an object over the face, box over the face"
 )
 
 # NOTE: the FALLBACK backend (USO) takes no negative prompt. Its workflow wires
@@ -1251,11 +1283,19 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
                    r"(\s+(?:named|called)\s+\w+)?", re.I)
 # The name goes straight after "rag doll", not on the end — "obviously a lifeless toy
 # and not a person named Ammu" reads as the mascot naming a corpse.
-_DOLL_HEAD = "a cheerful rag doll"
-# Short, and it names the WHOLE toy. Both halves matter and each was learned the hard
-# way: 25 words DILUTED and the doll was dropped for a second puppy; naming only the head
-# got a disembodied head, a knitted ball with a face.
-_DOLL_TAIL = " with a stitched smile, yarn hair, a dress, and cloth arms and legs"
+# The non-living toy is a FACELESS, NON-HUMANOID object now (jeffy, 2026-07-16). Every
+# earlier version was a doll — human-shaped — and a doll is exactly the reference's shape,
+# so it captured the mascot's face and came back a LIVING CHILD; given a stitched face
+# instead, it read like a horror-film doll. A plastic building block has NO face to turn
+# creepy and NO human shape to copy, and it is unmistakably a lifeless object. The word in
+# the narration is still "doll"; the PICTURE is a block.
+FACELESS_TOY_DESC = ("a bright plastic toy building block, a smooth solid brick with "
+                     "rounded studs on top, no face, no eyes and no limbs")
+# The living example is locked to ONE breed so it is the SAME puppy in every shot.
+LABRADOR_PUPPY_DESC = ("a golden Labrador retriever puppy, soft tan-yellow fur, floppy "
+                       "ears, a black nose and dark round eyes")
+_DOLL_HEAD = "a bright plastic toy building block"
+_DOLL_TAIL = ", a smooth solid brick with rounded studs on top and no face"
 
 # Who counts as "a second person". This list is NOT hand-maintained: it is built from
 # modules/cast.py, which is where the family actually lives.
@@ -1476,11 +1516,13 @@ _TEACHING_SYS = (
     "hair'. The artist is given ONE reference photo (the mascot) and copies it onto "
     "every human it draws: 'being hugged by her smiling mother' came back as TWO "
     "IDENTICAL MASCOTS hugging.\n"
-    "- A DOLL IS A TOY, AND YOU MUST SAY WHAT IT IS MADE OF. A doll is human-shaped, so "
-    "it is the FIRST thing the artist copies the reference photo onto: 'holding up a "
-    "doll named Ammu' came back as a LIVING CHILD with the mascot's own face, held "
-    "dangling by the wrist — in a lesson about how toys are NOT alive. Always write 'a "
-    "limp cloth rag doll with stitched button eyes, floppy and lifeless'.\n"
+    "- THE NON-LIVING TOY IS A FACELESS BUILDING BLOCK, NEVER A DOLL WITH A FACE. A "
+    "human-shaped doll is the FIRST thing the artist copies the reference photo onto "
+    "('holding up a doll named Ammu' came back as a LIVING CHILD with the mascot's own "
+    "face) and a stitched-face rag doll looks like a horror-film doll. Draw the not-living "
+    "thing as 'a bright plastic toy building block, a smooth solid brick with no face and "
+    "no limbs' — unmistakably an object, not a little person. The narration may say "
+    "'doll'; the PICTURE is a block.\n"
     "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
     "she is asking about, head tilted, eyebrows raised.\n"
     "- NEVER put a face, eyes or a smile on an object that is not alive. No smiling "
@@ -1488,11 +1530,12 @@ _TEACHING_SYS = (
     "lessons are about what is alive and what is not, and a grinning rock teaches a "
     "child the wrong answer.\n"
     "- When the line CONTRASTS a living thing with a lifeless one, the two must be "
-    "UNMISTAKABLY different in the picture. Say 'a REAL LIVE puppy, wagging and "
-    "blinking' and 'a cloth rag doll, limp and still'. A scene that asked for 'a doll "
-    "in one hand and a puppy in the other' came back holding TWO PLUSH TOY DOGS — both "
-    "read as toys, and the one contrast the whole line is built on was gone. The living "
-    "thing is ALIVE and MOVING; the toy is obviously a toy.\n"
+    "UNMISTAKABLY different in the picture. Say 'a REAL LIVE golden Labrador puppy, "
+    "wagging and blinking' and 'a faceless plastic toy building block, still and solid'. "
+    "A scene that asked for 'a doll in one hand and a puppy in the other' came back "
+    "holding TWO PLUSH TOY DOGS — both read as toys, and the one contrast the whole line "
+    "is built on was gone. The living thing is ALIVE and MOVING; the toy is an obvious "
+    "lifeless object.\n"
     "- NEVER MENTION HER CLOTHES AT ALL. She wears her own everyday clothes in every "
     "shot of the lesson, and they do not change — this is one girl, on one day, in one "
     "film. A lesson whose character is in a pinafore in shot 1 and a skirt in shot 3 "
@@ -1524,6 +1567,10 @@ _TEACHING_SYS = (
     "always holding, lifting, stroking, hugging, offering or showing something.\n"
     "- FULL BODY, FACING THE CAMERA, mouth open mid-sentence — she is talking to the "
     "child while she does it.\n"
+    "- HER FACE IS NEVER COVERED. She holds the prop at chest height or out to one side, "
+    "never raised in front of her face — 'holding up a box of chicks' came back with the "
+    "box over her face, a presenter with no face. The prop is below her chin; her face is "
+    "always fully visible.\n"
     "- ALWAYS END WITH HER FACE, and it is ALWAYS warm — smiling, laughing, delighted, "
     "curious, wide-eyed with wonder. The picture has a face whether you ask for one or "
     "not, and if you do not say, the artist picks it from the MOOD OF THE WORDS: on the "
@@ -1546,8 +1593,22 @@ _TEACHING_SYS = (
 )
 
 
+# How each framing is described to the SCENE writer, so the words it returns match the shot
+# the renderer will compose. Only the two framings that RELAX the default full-body/busy-
+# hands doctrine need a line: medium/wide already match _TEACHING_SYS as written, so they
+# say nothing (an empty steer). _TEACHING_SYS itself is untouched.
+_FRAMING_STEER = {
+    "closeup": ("\n\nThis shot is a CLOSE-UP of her face as she speaks. Her expression is "
+                "the whole picture — hands and props may be out of frame. Describe her "
+                "face and what she is reacting to, not her whole body."),
+    "establishing": ("\n\nThis shot is a WIDE establishing shot — she is small within the "
+                     "whole place. Still give her hands something to do."),
+}
+
+
 def explainer_scene(fact: str, topic: str = "", context: str = "",
-                    teaching: bool = False) -> str:
+                    teaching: bool = False, framing: str = "",
+                    object_nouns: Optional[list] = None) -> str:
     """A costumed, camera-facing mascot scene that ILLUSTRATES one fact.
 
     Unlike scene_prompt (a single funny thumbnail), this is the per-shot presenter
@@ -1568,10 +1629,21 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
                   f"The fact to illustrate:\n{fact.strip()[:400]}\n\n"
                   f"Describe the mascot presenter scene for this fact.")
         if teaching:
+            # Name the recurring objects by their PLAIN noun ('a doll', 'a puppy') so the
+            # pin-detector finds them and the same pinned picture is referenced every shot.
+            # "a stuffed animal" instead of "a doll" would slip past the match and drift.
+            nouns = [n for n in (object_nouns or []) if n]
+            obj_line = ""
+            if nouns:
+                obj_line = ("\n\nIf this line is about " + " or ".join(nouns) +
+                            ", call it exactly that plain word ('a " + nouns[0] +
+                            "'), not a fancier name — it is the same one every shot.")
             prompt = (f"Lesson: {topic or '(general)'}\n"
                       f"The line the mascot speaks, out loud, to the child:\n"
                       f"{fact.strip()[:400]}\n\n"
-                      f"Describe the ONE picture the child sees while hearing this line.")
+                      f"Describe the ONE picture the child sees while hearing this line."
+                      f"{_FRAMING_STEER.get((framing or '').strip().lower(), '')}"
+                      f"{obj_line}")
         for _ in (1, 2):
             raw = _call_llm(prompt, sys_prompt, role="creative")
             got = (_extract_json(raw) or {}).get("scene") or ""
@@ -1658,7 +1730,8 @@ NEGATIVE_TWO_PEOPLE = (
 
 def build_presenter_prompt(scene: str, background: str = "",
                            teaching: bool = False,
-                           two_people: bool = False) -> tuple:
+                           two_people: bool = False,
+                           framing: str = "") -> tuple:
     """The EXACT strings a presenter still is rendered from: (positive, negative).
 
     This exists so the dashboard can SHOW you what the model actually gets. It must be the
@@ -1694,6 +1767,15 @@ def build_presenter_prompt(scene: str, background: str = "",
         # four different videos. A facts reel is one shot and does not care; a lesson is a
         # film.
         style = style.replace("bold vivid solid color background", background)
+
+    # FRAMING replaces the full-body clause — see the FRAMING_CLAUSE note. A closeup and an
+    # establishing shot both contradict "full body visible", so the clause is swapped out,
+    # not added to. Empty/unknown/`medium` framing leaves the style untouched -> today's
+    # picture. Same clause-swap mechanic as the background replace directly above.
+    clause = FRAMING_CLAUSE.get((framing or "").strip().lower())
+    if clause and _FULL_BODY_CLAUSE in style:
+        style = style.replace(_FULL_BODY_CLAUSE, clause)
+
     return f"{scene}, {style}", negative
 
 
@@ -1704,7 +1786,10 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
                  presenter: bool = False,
                  full_quality: bool = False,
                  background: str = "",
-                 teaching: bool = False) -> Optional[Path]:
+                 teaching: bool = False,
+                 framing: str = "",
+                 two_people: Optional[bool] = None,
+                 prefer_backend: Optional[str] = None) -> Optional[Path]:
     """Render `scene` with the mascot as the identity reference.
 
     `reference_images` (up to 3, e.g. front + three-quarter + side) is honoured
@@ -1737,9 +1822,14 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
             # says "THE reference image" — singular, written when there was only one. Hand
             # Qwen a second and it resolves the ambiguity by MIXING: the child came back in
             # her mother's kurta, both with the same brown hair, neither face its own.
-            two_people = bool(reference_images) and len(reference_images) > 1
+            # Whether there is a second PERSON in the frame — NOT merely a second reference.
+            # A pinned OBJECT reference (the doll) is also a ref, but it is not a person, and
+            # the two-people identity clause would wrongly fire on it. The caller says so
+            # explicitly; only fall back to the ref-count heuristic when it does not.
+            tp = (two_people if two_people is not None
+                  else bool(reference_images) and len(reference_images) > 1)
             prompt, negative = build_presenter_prompt(
-                scene, background, teaching, two_people=two_people)
+                scene, background, teaching, two_people=tp, framing=framing)
             baked = False
         elif baked:
             prompt = f"{scene}, {STYLE_BAKED}, {bake_clause(headline, aspect)}"
@@ -1751,7 +1841,13 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         # One front reference by default — see mascot_refs() for the measurement.
         refs = reference_images or mascot_refs()
 
-        if bid == BACKEND_ID:
+        # The caller can FORCE a backend (lessons pick USO for multi-subject shots: mascot +
+        # a second person + props, all held from separate references with no 3-slot cap).
+        # Otherwise use whichever backend is healthy (Qwen-Edit, else the USO fallback).
+        force = (prefer_backend or "").strip().lower()
+        use_qwen = (bid == BACKEND_ID) if force not in ("uso", "qwen") else (force == "qwen")
+
+        if use_qwen:
             from modules.image_backends import comfyui_qwen_edit as qwen
             result = qwen.generate(
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
@@ -1784,11 +1880,15 @@ def render_scene(scene: str, out_png: Path, aspect: str = "9x16",
         else:
             # The USO Backend CLASS reads lora_strength from models.json and
             # ignores the argument, so call its module-level generate().
+            # ALL references, not just the first: USO does UNO multi-subject (each ref keeps
+            # its own identity latent), which is the whole reason a lesson uses it — the
+            # mascot AND the second person AND a prop each hold from their own picture. Passing
+            # only refs[0] threw the mother and the prop away.
             from modules.image_backends import comfyui_uso as uso
             result = uso.generate(
                 prompt=prompt, output_path=out_png, aspect_ratio=target,
                 seed=seed, lora_strength=POSE_LORA_STRENGTH,
-                reference_image=refs[0] if refs else ref,
+                reference_images=[str(p) for p in refs] or ([str(ref)] if ref else None),
             )
 
         if not getattr(result, "success", False):

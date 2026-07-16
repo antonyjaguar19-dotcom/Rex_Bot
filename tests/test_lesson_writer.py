@@ -48,6 +48,27 @@ def book():
     return bid
 
 
+@pytest.fixture
+def living_book():
+    """A book whose page LISTS the six ways a thing is alive — so 'breathe' is really in
+    the source, which is what the coverage guard checks against."""
+    bid = "20260714_100000"
+    d = lb.BOOKS_DIR / bid
+    d.mkdir(parents=True)
+    body = ("Living things eat, grow, move and have young ones. They also breathe and "
+            "feel. A cat eats its food and grows bigger. A bird moves from place to "
+            "place. Living things breathe air in and out. Living things feel happy and "
+            "sad, just like you do. ") * 4
+    pages = [{"n": 1, "text": body, "chars": len(body), "source": "vision"}]
+    (d / "pages.json").write_text(json.dumps({"pages": pages}), encoding="utf-8")
+    (d / "book.json").write_text(json.dumps({
+        "book_id": bid, "_id": bid, "title": "Class 1 EVS", "n_pages": 1,
+        "topics": [{"id": "t01", "title": "Living and Non-living Things",
+                    "first_page": 1, "last_page": 1, "summary": ""}],
+    }), encoding="utf-8")
+    return bid
+
+
 def _llm(prose: str, beats: list = None):
     """Stub both stages: the prose call, then the captioning call.
 
@@ -144,6 +165,8 @@ def test_a_short_draft_is_re_rolled_and_told_which_way_it_missed(book, monkeypat
     seen = []
 
     def fake(prompt, system, role="structurer", **kw):
+        if "missing" in system:        # the coverage CHECK
+            return json.dumps({"missing": []})
         if "on-screen words" in prompt:
             return json.dumps({"title": "T", "beats": []})
         seen.append(prompt)
@@ -275,6 +298,103 @@ def test_a_lesson_asks_exactly_one_check_question():
     assert kinds == ["intro", "teach", "teach", "check", "recap"]
     assert kinds.count("check") == 1
     assert "outro" not in kinds
+
+
+def test_a_written_lesson_gives_every_beat_a_camera_framing(book, monkeypatch):
+    """A lesson is a shot list now: every beat carries a framing (establishing/wide/medium/
+    closeup), assigned by kind and de-duplicated so neighbours differ. Without one, every
+    shot renders as the old identical full-body frame."""
+    from modules import mascot as mas
+    monkeypatch.setattr(lw, "_call_llm", _llm(PROSE, BEATS))
+    beats = lw.write_lesson(book, "t01")["beats"]
+
+    assert all(b["framing"] in mas.LESSON_FRAMINGS for b in beats)
+    assert beats[0]["framing"] == "establishing"        # the intro sets the scene
+    fr = [b["framing"] for b in beats]
+    # no two WORKHORSE neighbours share a framing (closeup/establishing are left as-is)
+    assert all(not (fr[i] == fr[i + 1] and fr[i] in ("medium", "wide"))
+               for i in range(len(fr) - 1))
+
+
+# --- coverage: the lesson teaches the WHOLE list, not most of it ----------------
+#
+# The defect this guards against shipped on the real Class-1 book: the page lists six
+# ways a thing is alive — eat, grow, move, have young ones, BREATHE, feel — and the
+# lesson taught five. Breathing has no cheerful child's-day example, so the word-budget
+# loop dropped it. Nothing errored; the recap even claimed the full definition. The
+# prompt now asks for the whole list, but the prompt is not the fix — the CHECK is.
+
+def test_a_dropped_item_from_the_books_list_is_caught_and_re_rolled(living_book, monkeypatch):
+    thin = ("Living things eat, grow, and move around. You eat your snacks and grow "
+            "bigger. You run and play. Living things feel happy too. Your puppy feels "
+            "happy when you pet him. So living things eat, grow, move and feel.")
+    full = thin + " Living things also breathe. You breathe air in and out all day."
+
+    prose_calls = []
+
+    def fake(prompt, system, role="structurer", **kw):
+        if "missing" in system:          # the coverage CHECK
+            # breathe is missing until the re-roll puts it in
+            body = prompt.split("The lesson written from it")[1]
+            return json.dumps({"missing": [] if "breathe" in body else ["breathe"]})
+        if "on-screen words" in prompt:
+            return json.dumps({"title": "Living Things",
+                               "beats": [{"on_screen": "Alive", "image_prompt": "a pup"}
+                                         for _ in range(40)]})
+        prose_calls.append(prompt)
+        # first draft is thin; the gap re-roll (it names "breathe") returns the full one
+        return full if "left out something the book teaches" in prompt else thin
+
+    monkeypatch.setattr(lw, "_call_llm", fake)
+    lesson = lw.write_lesson(living_book, "t01", target_seconds=90)
+
+    spoken = " ".join(b["narration"] for b in lesson["beats"]).lower()
+    assert "breathe" in spoken, "the dropped item never made it back into the lesson"
+    # it re-rolled the prose to close the gap — it did not just ship five of six
+    assert any("left out something the book teaches" in p for p in prose_calls)
+
+
+def test_the_coverage_check_cannot_invent_a_requirement(monkeypatch):
+    """A checker that hallucinated a missing item the book never mentions would re-roll
+    forever. Only a word ACTUALLY in the source and ACTUALLY absent from the lesson
+    counts."""
+    # the checker names photosynthesis (not in the book) and breathe (already taught)
+    monkeypatch.setattr(lw, "_call_llm",
+                        lambda p, s, role="structurer", **k:
+                        json.dumps({"missing": ["photosynthesis", "breathe"]}))
+    got = lw._missing_key_ideas(
+        source="Living things eat, grow, move, breathe and feel.",
+        prose="Living things eat, grow, move, breathe and feel.",
+        _p=lambda m: None)
+    assert got == [], "a word not in the book, or already in the lesson, is not a gap"
+
+
+def test_a_coverage_gap_that_cannot_be_fixed_warns_and_does_not_block(living_book, monkeypatch):
+    """No silent downgrade — but a lesson that could not be re-rolled complete is not
+    worse than no lesson. It ships with a warning, not an exception."""
+    said = []
+    # a full-length draft that lists five of six ways a thing is alive and never gains
+    # the sixth — long enough to be a real lesson, so it SHIPS (with a warning)
+    five = ("Living things eat their food to stay strong and healthy. You eat your "
+            "yummy snacks at lunchtime. Living things grow bigger and bigger every "
+            "day. You grow a little taller every single year. Living things move from "
+            "one place to another place. You run and jump and play with all your "
+            "friends. Living things feel happy and they feel sad. Your puppy feels "
+            "very happy when you gently pet him. So living things eat, grow, move "
+            "around, and feel things too. Remember that living things eat and grow and "
+            "move and feel every single day.")
+
+    def fake(prompt, system, role="structurer", **kw):
+        if "missing" in system:
+            return json.dumps({"missing": ["breathe"]})     # never satisfied
+        if "on-screen words" in prompt:
+            return json.dumps({"title": "T", "beats": []})
+        return five                                         # draft never gains breathe
+
+    monkeypatch.setattr(lw, "_call_llm", fake)
+    lesson = lw.write_lesson(living_book, "t01", target_seconds=90, progress_cb=said.append)
+    assert lesson["stage"] == "written"                      # it still shipped
+    assert any("may still not cover" in m and "breathe" in m for m in said)
 
 
 def test_a_dropped_caption_does_not_shift_every_caption_after_it():

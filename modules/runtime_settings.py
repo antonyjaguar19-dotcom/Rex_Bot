@@ -752,7 +752,26 @@ def set_facts_music_mood(mood: str) -> None:
     if mood not in VALID_MOODS:
         raise ValueError(f"mood must be one of {VALID_MOODS}")
     data = _load(); data["facts_music_mood"] = mood; _save(data)
-    log.info(f"Facts music mood: {mood}")
+
+
+# Which image backend LESSON stills render on. "uso" = Flux.1-dev + USO (UNO multi-subject:
+# mascot + a second person + props all held from separate references — no 3-slot cap, so a
+# mother-and-child shot keeps two distinct identities). "qwen" = Qwen-Edit (Apache-2.0,
+# commercial, 3 refs). Default USO per Jeffy 2026-07-16 for multi-character consistency;
+# flip back with set_lesson_image_backend("qwen"). NOTE: USO is NON-COMMERCIAL.
+_LESSON_BACKENDS = ("uso", "qwen")
+
+
+def get_lesson_image_backend() -> str:
+    v = (_load().get("lesson_image_backend") or "uso").strip().lower()
+    return v if v in _LESSON_BACKENDS else "uso"
+
+
+def set_lesson_image_backend(backend: str) -> None:
+    backend = (backend or "").strip().lower()
+    if backend not in _LESSON_BACKENDS:
+        raise ValueError(f"lesson image backend must be one of {_LESSON_BACKENDS}")
+    data = _load(); data["lesson_image_backend"] = backend; _save(data)
 
 
 # Shorts custom thumbnails are not offered in every region (Jeffy's included), and

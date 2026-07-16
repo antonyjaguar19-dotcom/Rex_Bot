@@ -194,34 +194,60 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
     Only when the scene actually names someone: a spare reference is another thing for Qwen
     to copy into a picture that did not ask for it.
     """
-    scene_text = lesson["beats"][i].get("mascot_scene", "")
-    relation, second = cast.ref_for(scene_text, mid)
+    from modules import lesson_objects as lo
+    MAX_REFS = 3        # Qwen-Edit image1..image3 (comfyui_qwen_edit.MAX_REFS)
 
+    orig_scene = lesson["beats"][i].get("mascot_scene", "")
+    scene_text = orig_scene
+    lesson_id = lesson.get("lesson_id")
+    objects = lo.objects_for(lesson)
+
+    # SLOT 1 — the mascot, always.
+    refs = [str(r) for r in mascot.mascot_refs(max_refs=1)]
+
+    # scene_text is still the original here (nothing has mutated it yet), so this reads the
+    # person off the same words the objects are detected from below.
+    relation, second = cast.ref_for(scene_text, mid)
     if second:
-        refs = [str(r) for r in mascot.mascot_refs(max_refs=1)] + [str(second)]
+        # SLOT 2 — a named person. PERSON WINS the budget: a person keeps its slot ahead of
+        # any prop, because a mislaid person becomes a TWIN and a mislaid prop only drifts.
+        refs.append(str(second))
         # Two references and no explanation is an invitation to blend them. Say which is
         # which — that is what the proving render did, and it came back with two correct,
         # separate people first try.
         scene_text = cast.name_the_refs(scene_text, mid, relation)
         _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
-        return scene_text, refs, relation
+    else:
+        # NAMED, BUT WE HAVE NO PICTURE OF THEM. Qwen would paint the mascot's own identity
+        # onto her — a TWIN. She comes out of the PICTURE; the words on disk are untouched.
+        named = cast.role_in(orig_scene, mid)
+        if named:
+            scene_text = mascot.other_people_are_other_people(scene_text)
+            _p(f"⚠️ line {i+1} names a {named}, but this mascot has no picture of them — "
+               f"leaving them out of the shot (they would come back as a twin). Add one on "
+               f"the Mascots tab and redraw.")
 
-    # NAMED, BUT WE HAVE NO PICTURE OF THEM.
-    #
-    # The scene says "her aunty" and this mascot has no aunty. Qwen has nothing to draw her
-    # FROM, so it would paint the mascot's own identity onto her — a TWIN, which is the bug
-    # the whole cast system exists to kill. She comes out of the picture.
-    #
-    # But only out of the PICTURE. The words on disk are untouched: give this mascot an
-    # aunty on the Mascots tab and the very next redraw has her in it, with no editing.
-    named = cast.role_in(scene_text, mid)
-    if named:
-        scene_text = mascot.other_people_are_other_people(scene_text)
-        _p(f"⚠️ line {i+1} names a {named}, but this mascot has no picture of them — "
-           f"leaving them out of the shot (they would come back as a twin). Add one on "
-           f"the Mascots tab and redraw.")
+    # THE RECURRING OBJECTS this shot names — a reference each while the slots last (so the
+    # doll is the SAME doll every shot), the rest on the description-lock. Detected on the
+    # ORIGINAL scene, before the family sentence was prepended.
+    if objects:
+        ref_specs, desc_keys = [], []
+        for key in lo.detect(orig_scene, objects):
+            img = lo.image(lesson_id, key)
+            label = next((o["noun"] for o in objects if o["key"] == key), key)
+            if img and len(refs) < MAX_REFS:
+                refs.append(str(img))
+                ref_specs.append((label, len(refs)))     # its 1-based slot in the ref list
+            else:
+                desc_keys.append(key)                    # no slot (or no pin) -> desc-lock
+        if ref_specs:
+            scene_text = lo.name_object_refs(scene_text, ref_specs)
+            _p(f"🧸 line {i+1}: {', '.join(l for l, _ in ref_specs)} kept identical by "
+               f"reference")
+        if desc_keys:
+            scene_text = lo.lock_descriptions(scene_text, desc_keys, objects)
 
-    return scene_text, None, None
+    return scene_text, refs, relation
 
 
 def _seed_for(lesson: dict, i: int) -> int:
@@ -246,12 +272,28 @@ def _draw_one(lesson: dict, i: int, backdrop: str, mid: str, out: Path,
     A lesson's prop IS the teaching — a plate of vegetables has to look like vegetables,
     not candy — so a lesson pays the extra minute a shot. A facts reel does not.
     """
-    scene_text, refs, _ = _scene_and_refs(lesson, i, mid, _p)
-    return mascot.render_scene(
+    scene_text, refs, relation = _scene_and_refs(lesson, i, mid, _p)
+    framing = lesson["beats"][i].get("framing", "medium")
+    from modules import runtime_settings as rs
+    got = mascot.render_scene(
         scene_text, out, aspect=ASPECT,
         seed=_seed_for(lesson, i),
         presenter=True, full_quality=True,
-        reference_images=refs, background=backdrop, teaching=True)
+        reference_images=refs, background=backdrop, teaching=True,
+        framing=framing,
+        # a SECOND PERSON, not merely a second reference: an object ref must not trip the
+        # two-people identity clause.
+        two_people=bool(relation),
+        # lessons render on USO by default (multi-subject: mascot + person + props); flip
+        # with rs.set_lesson_image_backend("qwen").
+        prefer_backend=rs.get_lesson_image_backend())
+    if got:
+        # DELIVER the framing. Qwen-Edit anchors to the full-body reference and ignores the
+        # prompt's framing clause (measured: a closeup came back full-body), so the camera
+        # distance is a deterministic crop of the render — see shot_framing. Runs once, here.
+        from modules import shot_framing as sf
+        sf.crop_to_framing(got, framing)
+    return got
 
 
 def prompts_for(lesson_id: str, i: int) -> dict:
@@ -276,13 +318,18 @@ def prompts_for(lesson_id: str, i: int) -> dict:
     mid = _ml.get_active_id()
     backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
     scene_text, refs, relation = _scene_and_refs(lesson, i, mid)
-    # Same signal render_scene uses: two references means two identities to keep apart.
+    framing = b.get("framing", "medium")
+    # A SECOND PERSON keeps the identity clause apart — an object reference does not count.
+    # The framing swaps the full-body clause for this shot's camera distance.
     positive, negative = mascot.build_presenter_prompt(
         scene_text, backdrop, teaching=True,
-        two_people=bool(refs) and len(refs) > 1)
+        two_people=bool(relation),
+        framing=framing)
 
+    from modules import lesson_objects as _lo
     return {
         "scene": b.get("mascot_scene", ""),      # what you edit
+        "framing": framing,                      # this shot's camera distance
         "scene_sent": scene_text,                # what the model is told (+ the family line)
         "image_positive": positive,              # ...plus the style. THIS is what Qwen gets.
         "image_negative": negative,
@@ -294,6 +341,8 @@ def prompts_for(lesson_id: str, i: int) -> dict:
         "backdrop": backdrop,
         "relation": relation,
         "refs": [Path(r).name for r in (refs or mascot.mascot_refs(max_refs=1))],
+        # the recurring objects this shot names (pinned to stay identical shot to shot)
+        "objects": _lo.detect(b.get("mascot_scene", ""), _lo.objects_for(lesson)),
     }
 
 
@@ -330,11 +379,14 @@ def redraw_still(lesson_id: str, i: int,
     sp = LESSONS_DIR / lesson_id / "stills" / f"still_{i:02d}.png"
 
     _p(f"🖼️ redrawing picture {i+1}…")
-    gpu_memory.acquire(gpu_memory.QWEN_EDIT)
+    from modules import runtime_settings as _rs
+    _label = (gpu_memory.FLUX_USO if _rs.get_lesson_image_backend() == "uso"
+              else gpu_memory.QWEN_EDIT)
+    gpu_memory.acquire(_label)
     try:
         got = _draw_one(lesson, i, backdrop, mid, sp, _p)
     finally:
-        gpu_memory.release(gpu_memory.QWEN_EDIT)
+        gpu_memory.release(_label)
     if not got:
         _p(f"❌ picture {i+1} could not be drawn")
         return False
@@ -343,6 +395,63 @@ def redraw_still(lesson_id: str, i: int,
     lw.set_beat_approved(lesson_id, i, False)   # a NEW picture has not been looked at
     _p(f"✅ picture {i+1} redrawn — confirm it when you have looked")
     return True
+
+
+def run_visual_qc(lesson_id: str, max_rounds: int = 2,
+                  progress_cb: Optional[Callable[[str], None]] = None) -> dict:
+    """LOOK at every rendered still with the QC vision model and re-draw the ones it flags.
+
+    A separate PASS, not per-render, because VRAM: the 21 GB QC model (qwen2.5vl:32b) cannot
+    share a 16 GB card with ComfyUI's image model. So ComfyUI is freed before the QC model
+    loads, and the QC model is freed before any re-draw. Capped at `max_rounds` re-rolls; a
+    shot still flagged after that is SURFACED for a human, never looped forever. Best-effort:
+    if the QC model is not available the pass is skipped, and QC never blocks a render.
+
+    Returns {skipped?|rounds, flagged:[i,...], why?}.
+    """
+    def _p(msg: str):
+        log.info(msg)
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
+    from modules import image_qc
+    ok, why = image_qc.available()
+    if not ok:
+        _p(f"👁️ visual QC skipped — {why}")
+        return {"skipped": True, "why": why, "flagged": []}
+
+    stills_dir = LESSONS_DIR / lesson_id / "stills"
+    n = len(lw.load_lesson(lesson_id).get("beats", []))
+    flagged: list = []
+    for rnd in range(max_rounds + 1):
+        gpu_utils.free_comfyui_vram()               # give the 21 GB QC model the card
+        flagged = []
+        for i in range(n):
+            sp = stills_dir / f"still_{i:02d}.png"
+            if not sp.exists():
+                continue
+            v = image_qc.qc_still(sp, "teaching")
+            if v.get("ok", True):
+                _p(f"✅ shot {i+1}/{n}: passed visual QC")
+            else:
+                keys = ", ".join(f["key"] for f in v.get("fails", []))
+                _p(f"⚠️ shot {i+1}/{n}: visual QC flagged {keys}")
+                flagged.append(i)
+        if not flagged:
+            _p(f"👁️ all {n} shots passed visual QC")
+            return {"rounds": rnd, "flagged": []}
+        if rnd == max_rounds:
+            _p(f"👁️ {len(flagged)} shot(s) still flagged after {max_rounds} re-roll(s): "
+               f"{[i + 1 for i in flagged]} — surfacing for you to judge")
+            return {"rounds": rnd, "flagged": flagged}
+        gpu_utils.free_ollama_vram()                # free the QC model before re-drawing
+        _p(f"👁️ re-rolling {len(flagged)} flagged shot(s): {[i + 1 for i in flagged]}")
+        for i in flagged:
+            redraw_still(lesson_id, i, progress_cb)
+    return {"rounds": max_rounds, "flagged": flagged}
 
 
 # ==============================================================================
@@ -382,6 +491,13 @@ def prepare_lesson(lesson: dict,
         lesson = lw.load_lesson(lesson_id)
         _p(f"👋 the lesson now ends on: {lesson['beats'][-1]['narration']}")
 
+    # Every beat needs a camera framing (establishing/wide/medium/closeup). A lesson written
+    # before framing existed has none; back-fill it from each beat's kind, idempotently, and
+    # never over a framing set by hand.
+    if lw.ensure_framing(lesson_id):
+        lesson = lw.load_lesson(lesson_id)
+        _p("🎥 gave each shot a camera framing")
+
     beats = lesson.get("beats", [])
     if not beats:
         raise LessonRenderError("this lesson has no beats")
@@ -400,12 +516,15 @@ def prepare_lesson(lesson: dict,
             b["mascot_scene"] = ""
         lesson["still_take"] = int(lesson.get("still_take", 0)) + 1
 
+    from modules import lesson_objects as _lo
+    _obj_nouns = [o.get("noun") for o in _lo.objects_for(lesson)]
     _p(f"🎭 writing {len(beats)} scenes for {mascot.active_mascot_name()}…")
     with gpu_memory.llm():
         for i, b in enumerate(beats):
             if not b.get("mascot_scene"):
                 b["mascot_scene"] = mascot.explainer_scene(
-                    b["narration"], lesson.get("topic", ""), teaching=True)
+                    b["narration"], lesson.get("topic", ""), teaching=True,
+                    framing=b.get("framing", "medium"), object_nouns=_obj_nouns)
             lw.set_beat_field(lesson_id, i, "mascot_scene", b["mascot_scene"])
     gpu_utils.free_ollama_vram()
 
@@ -460,9 +579,27 @@ def prepare_lesson(lesson: dict,
     mid = _ml.get_active_id()
     _p(f"🎬 this lesson is set in {backdrop}")
 
-    gpu_memory.acquire(gpu_memory.QWEN_EDIT)
+    from modules import runtime_settings as _rs
+    _draw_label = (gpu_memory.FLUX_USO if _rs.get_lesson_image_backend() == "uso"
+                   else gpu_memory.QWEN_EDIT)
+    gpu_memory.acquire(_draw_label)
     stills = []
     try:
+        # PIN the recurring objects first, while the image model is warm. The doll and puppy
+        # are each drawn ONCE, in isolation, and every shot that names them references the
+        # same picture — so the not-living example and the living one stay themselves across
+        # the lesson (they used to be a different toy every shot). A pin that fails leaves
+        # that object on the description-lock; never fatal.
+        from modules import lesson_objects as lo
+        objs = lo.objects_for(lesson)
+        if objs:
+            _p(f"🧸 pinning {len(objs)} recurring object(s) so they stay the same every "
+               f"shot…")
+            for o in objs:
+                pinned = lo.pin(lesson_id, o)
+                _p(f"   • {o['noun']}: "
+                   + ("pinned" if pinned else "could not pin — describing it instead"))
+
         for i, b in enumerate(beats):
             sp = stills_dir / f"still_{i:02d}.png"
             got = _draw_one(lesson, i, backdrop, mid, sp, _p)
@@ -476,7 +613,7 @@ def prepare_lesson(lesson: dict,
             if (i + 1) % 3 == 0 or i == len(beats) - 1:
                 _p(f"🖼️ {i+1}/{len(beats)} pictures drawn")
     finally:
-        gpu_memory.release(gpu_memory.QWEN_EDIT)
+        gpu_memory.release(_draw_label)
 
     lesson = lw.load_lesson(lesson_id) or lesson
     for i, b in enumerate(lesson["beats"]):

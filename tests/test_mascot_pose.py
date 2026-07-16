@@ -570,27 +570,20 @@ def test_render_scene_picks_the_right_style_for_the_mode():
 # thing in any scene to capture it.
 
 def test_a_doll_must_look_like_a_toy_not_a_child():
+    # The non-living toy is a FACELESS BUILDING BLOCK now (jeffy 2026-07-16). A human-shaped
+    # doll captured the mascot's face (a living child) or, given a stitched face, read like a
+    # horror-film doll. A block has no face to turn creepy and no human shape to copy.
     scene = "the mascot character holding up a doll named Ammu in one hand"
     out = mas.toys_look_like_toys(scene)
-    assert "rag doll" in out
-    # A HEAD and a SMILE. "stitched button eyes, limp and lifeless" described the ABSENCE
-    # of a person, and Qwen drew exactly that: a HEADLESS cloth sack with buttons sewn on
-    # its torso, and then a blank white faceless figure. Both read as a voodoo doll.
-    # Describe the toy you want, not the absence of a child.
-    assert "stitched smile" in out
-    assert "arms and legs" in out
+    assert "building block" in out
+    assert "no face" in out
     assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
-    # SHORT. The first version was 25 words ("a limp cloth rag doll with stitched button
-    # eyes and floppy stuffed limbs, obviously a lifeless toy and not a person") and a
-    # long descriptor DILUTES: the model dropped the doll entirely and drew a SECOND
-    # PUPPY in its place. The negative carries what the scene no longer has to spell out.
-    assert len(out.split()) < 30, f"the doll descriptor is diluting the scene: {out}"
+    # SHORT. A long descriptor DILUTES and the prop vanishes (once replaced by a 2nd puppy).
+    assert len(out.split()) < 32, f"the toy descriptor is diluting the scene: {out}"
 
-    for banned in ("doll with a human face", "living doll", "a real child held by the arm",
-                   "child in distress", "realistic child instead of a doll",
-                   # ...and the opposite, which is what the first fix produced:
-                   "headless doll", "faceless doll", "blank white doll", "creepy doll",
-                   "eyes on the torso", "voodoo doll"):
+    for banned in ("doll with a human face", "a face on the toy", "living doll",
+                   "a real child held by the arm", "child in distress",
+                   "realistic child instead of a toy", "creepy doll", "voodoo doll"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
 
@@ -628,7 +621,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
         assert "parent" not in out.lower(), "no reference, so they would be a twin"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
-        assert "rag doll" in out and "stitched smile" in out
+        assert "building block" in out and "no face" in out
 
 
 def test_a_scene_with_no_doll_and_no_people_is_untouched():
@@ -714,7 +707,9 @@ def test_a_guard_never_names_a_thing_twice():
     both = "the mascot character holding a doll in one hand and a puppy in the other"
     out = mas.clean_scene_for_the_mascot(both, teaching=True)
     assert _times_named(out, "puppy") == 1, f"the puppy is named twice: {out}"
-    assert _times_named(out, "doll") == 1, f"the doll is named twice: {out}"
+    # the doll is rewritten to a faceless building block (once, not twice)
+    assert _times_named(out, "block") == 1, f"the toy is named twice: {out}"
+    assert _times_named(out, "doll") == 0, f"the doll should be drawn as a block: {out}"
     assert "real live puppy" in out          # still marked ALIVE, just once
 
     # (the mother is drawable now — a cast reference — so she STAYS. See test_cast.py.
@@ -805,22 +800,15 @@ def test_a_whole_body_action_is_not_idle_hands_either():
     assert "waving one arm high" in mas.never_empty_handed(idle)
 
 
-def test_the_doll_is_a_WHOLE_doll():
-    # Third attempt at this one prop, and each failure taught the same lesson: THE MODEL
-    # DRAWS EXACTLY WHAT YOU NAME.
-    #   "stitched button eyes, limp and lifeless"   -> a HEADLESS cloth sack, buttons on
-    #                                                  its torso. Then a blank white
-    #                                                  faceless figure. Voodoo dolls.
-    #   "a round stitched head, yarn hair, a smile" -> a DISEMBODIED HEAD. A knitted ball
-    #                                                  with a face, in 2 shots out of 3.
-    # Name the whole toy, head to toe, and keep it short — 25 words diluted so badly the
-    # doll was dropped from the picture entirely and replaced with a second puppy.
+def test_the_doll_is_a_faceless_block():
+    # The long history of this prop (rag doll -> living child; stitched face -> horror-film
+    # doll; "faceless" -> voodoo/disembodied head) all came from ONE root cause: a doll is
+    # HUMAN-SHAPED. Drawing the not-living thing as a non-humanoid building block removes the
+    # shape the model kept copying the reference onto (jeffy 2026-07-16).
     out = mas.toys_look_like_toys("the mascot character holding up a doll, smiling")
-    assert "rag doll" in out
-    assert "stitched smile" in out
-    assert "arms and legs" in out, "name the BODY or you get a head on its own"
-    assert len(out.split()) < 26, f"a long descriptor dilutes and the prop vanishes: {out}"
+    assert "building block" in out
+    assert "no face" in out
+    assert len(out.split()) < 28, f"a long descriptor dilutes and the prop vanishes: {out}"
 
-    for banned in ("disembodied head", "doll head with no body", "a ball with a face",
-                   "headless doll", "faceless doll", "creepy doll"):
+    for banned in ("a face on the toy", "creepy doll", "living doll", "voodoo doll"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
