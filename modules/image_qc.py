@@ -20,11 +20,12 @@ from typing import Optional
 
 log = logging.getLogger("claw_bot.image_qc")
 
-# Reverted 32b -> 7b (jeffy, 2026-07-16): the 32b passed every shot with no re-rolls — it
-# earned nothing over the model already on disk. 7b is the previously-used vision model
-# (lesson_book scans). The CLOSED yes/no checklist + bias-to-pass keeps a weaker model from
-# the open-ended hallucinating that got an earlier 7b QC pass removed.
-QC_MODEL = "qwen2.5vl:7b"
+# 7b -> 32b (jeffy, 2026-07-16, round two): the 7b passed reels with a FACE ON A BALL and a
+# hallucinated doll-with-a-face — the two worst defects in a lesson — because a weak VLM
+# answers "pass" to a subtle yes/no it cannot actually see. The whole point of QC here is to
+# CATCH those and auto-re-roll, so it needs the stronger model. (The 32b "earned nothing"
+# earlier only because that render happened to be clean.)
+QC_MODEL = "qwen2.5vl:32b"
 QC_SERVER = "http://127.0.0.1:11434"
 
 # Each check = (key, the yes/no question). Written so that "yes" means BROKEN, and the model
@@ -40,11 +41,15 @@ _CHECKS_TEACHING = [
      "snarling, crying, blank/featureless, and with normal eyes (no hearts or stars for "
      "eyes)?"),
     ("no_face_on_objects",
-     "Are ALL non-living things (toys, blocks, rocks, the sun, the earth, clouds, plates) "
-     "WITHOUT any eyes, mouth or face drawn on them?"),
-    ("toy_is_faceless_block",
-     "If a toy or doll is present, is it a plain FACELESS object such as a building block "
-     "or ball — NOT a doll with a stitched or human face, and NOT a real living child?"),
+     "Look at EVERY non-living object (toy, block, ball, rock, plate, the sun, a cloud). "
+     "Does every one of them have a BLANK surface with NO eyes, NO mouth, NO smile and NO "
+     "cartoon face of any kind? Answer fail if ANY object has a face or googly eyes on it."),
+    ("no_doll_with_a_face",
+     "Is the child NOT holding a doll, figure or plush toy that has a face, eyes or hair? "
+     "(A plain faceless building block is fine; a doll with a face is a fail.)"),
+    ("no_hallucinated_prop",
+     "Is she holding ONLY things a teaching scene would sensibly show (a block, a plant, an "
+     "apple, or nothing), with NO random extra toy, doll or object that does not belong?"),
     ("hands_busy",
      "Are her arms and hands doing something natural (holding, pointing, gesturing) rather "
      "than spread straight out sideways in a stiff T-pose?"),
