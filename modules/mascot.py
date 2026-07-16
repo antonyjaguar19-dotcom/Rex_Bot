@@ -191,8 +191,8 @@ STYLE_PRESENTER = (
     # The reference image HAS the proportions. Any adjective here competes with it, and
     # the adjective wins — Qwen weights the text prompt over the reference. So: no
     # adjective. Point at the picture and say "that one, in different clothes".
-    "exactly the same character as the reference image: the same face, the same head "
-    "size, the same body proportions, the same build, the same species — only the "
+    "exactly the same character as the reference image: the same face, the same hair and "
+    "hairstyle, the same head size, the same body proportions, the same build, the same species — only the "
     "clothes and the props change, "  # facts: a costume per fact IS the joke
 
     "fully clothed, the shirt covers the whole torso, "
@@ -305,6 +305,11 @@ NEGATIVE_PRESENTER = (
     # identity and it must be clean.
     "asymmetric eyes, lazy eye, misaligned pupils, uneven eyes, wonky eye, "
     "one eye larger than the other, cross-eyed, "
+    # HANDS. Fingers came out fused, melted and dissolving (shot 8). The single most common
+    # diffusion artifact, and worth naming in full.
+    "malformed hands, deformed hands, distorted hands, mangled hands, blurry hands, "
+    "melted fingers, dissolved fingers, fused fingers, extra fingers, missing fingers, "
+    "too many fingers, too few fingers, bent broken fingers, misshapen fingers, "
     # THE NON-LIVING TOY is a faceless building block now (jeffy, 2026-07-16). A
     # human-shaped doll captured the reference — "holding up a doll" returned a LIVING
     # CHILD with the mascot's face — and a stitched-face rag doll read like a horror-film
@@ -1792,14 +1797,14 @@ _TWO_PEOPLE_IDENTITY = (
 # The identity sentences the SINGLE-reference style opens with. Replaced wholesale when a
 # second person is in the shot.
 _ONE_PERSON_IDENTITY_TEACHING = (
-    "exactly the same character as the reference image: the same face, the same head "
-    "size, the same body proportions, the same build, the same species — she is wearing "
-    "EXACTLY THE SAME CLOTHES as in the reference image — the same top, the same skirt, "
-    "the same shoes, unchanged in every shot; only the PROPS change, "
+    "exactly the same character as the reference image: the same face, the same hair and "
+    "hairstyle, the same head size, the same body proportions, the same build, the same "
+    "species — she is wearing EXACTLY THE SAME CLOTHES as in the reference image — the same "
+    "top, the same skirt, the same shoes, unchanged in every shot; only the PROPS change, "
 )
 _ONE_PERSON_IDENTITY = (
-    "exactly the same character as the reference image: the same face, the same head "
-    "size, the same body proportions, the same build, the same species — only the "
+    "exactly the same character as the reference image: the same face, the same hair and "
+    "hairstyle, the same head size, the same body proportions, the same build, the same species — only the "
     "clothes and the props change, "
 )
 
