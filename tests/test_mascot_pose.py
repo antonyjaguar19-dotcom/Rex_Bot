@@ -367,14 +367,26 @@ def test_alive_looks_alive_runs_in_the_full_guard():
 # The rule is not about props, or sides, or counts. Idle hands go home to the reference
 # photo, and the reference photo is a T-pose.
 
+def _has_busy_pose(s):
+    return bool(mas._HANDS_BUSY.search(s) or mas._HANDS_BUSY_EXTRA.search(s))
+
+
 def test_the_mascot_is_never_empty_handed():
     idle = ("the mascot character standing beside a plant, a puppy, and her friend, "
             "facing the camera, smiling")
     out = mas.never_empty_handed(idle)
-    assert "waving one arm high" in out
-    assert "the other hand resting at her side" in out   # ASYMMETRIC, so not a T-pose
+    assert out != idle and _has_busy_pose(out)           # idle hands got a job
+    assert "arms spread wide" not in out and "t-pose" not in out.lower()
     # and the repair must satisfy the guard's own test, or it appends on every pass
     assert mas.never_empty_handed(out) == out
+
+
+def test_idle_pose_varies_it_is_not_one_stiff_wave_every_shot():
+    # ONE fixed pose on every idle scene made the mascot a mannequin doing the same hello
+    # in shot after shot. Different scenes must get different, natural poses.
+    scenes = [f"the mascot character standing in scene number {n}, smiling" for n in range(8)]
+    poses = {mas.never_empty_handed(s)[len(s):] for s in scenes}
+    assert len(poses) > 1, "every idle scene got the identical pose — a mannequin"
 
     for busy in (
         "the mascot character kneeling beside a puppy, stroking its back, laughing",
@@ -389,7 +401,7 @@ def test_the_mascot_is_never_empty_handed():
 def test_never_empty_handed_runs_in_the_full_guard():
     out = mas.clean_scene_for_the_mascot(
         "the mascot character standing beside a plant and a puppy, facing the camera")
-    assert "waving one arm high" in out
+    assert _has_busy_pose(out)
 
 
 def test_the_writer_is_told_the_rule_that_matters_most():
@@ -424,7 +436,7 @@ def test_outstretched_arms_are_a_t_pose_too():
                   "the mascot character, outstretched arms, grinning at the camera"):
         out = mas.clean_scene_for_the_mascot(scene)
         assert "outstretched" not in out, out
-        assert "waving one arm high" in out
+        assert _has_busy_pose(out)
 
 
 # --- Proportions by reference, never by description ------------------------------
@@ -774,7 +786,7 @@ def test_a_guard_that_misfires_is_worse_than_no_guard():
 
     # and a genuinely idle scene still gets one
     idle = "the mascot character facing the camera, smiling widely"
-    assert "waving one arm high" in mas.never_empty_handed(idle)
+    assert _has_busy_pose(mas.never_empty_handed(idle))
 
 
 def test_a_whole_body_action_is_not_idle_hands_either():
@@ -797,7 +809,7 @@ def test_a_whole_body_action_is_not_idle_hands_either():
         assert mas.never_empty_handed(busy) == busy, f"busy hands were given ANOTHER job: {busy}"
 
     idle = "the mascot character facing the camera, smiling widely"
-    assert "waving one arm high" in mas.never_empty_handed(idle)
+    assert _has_busy_pose(mas.never_empty_handed(idle))
 
 
 def test_the_doll_is_a_faceless_block():

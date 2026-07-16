@@ -237,6 +237,13 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     ", the character is sharp and fully separated from the background, the setting is "
     "soft and gently out of focus behind her, uncluttered, nothing growing out of her "
     "head, bright cheerful daylight"
+    # NATURAL, not a mannequin. The identity reference is a stiff, symmetrical standing pose,
+    # and Qwen copied that stiffness into shot after shot — a shop-window dummy, not a child
+    # (jeffy, 2026-07-16). Ask, out loud, for a candid relaxed pose so the sampler pulls away
+    # from the reference's stance.
+    ", her pose is natural, relaxed and candid — a real child caught mid-moment, weight "
+    "shifted onto one leg, shoulders loose, a lively spontaneous expression, never a stiff "
+    "symmetrical mannequin standing straight at the camera"
 )
 
 # --- Camera framing (LESSON-ONLY) --------------------------------------------
@@ -358,6 +365,10 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     # hugged by your mother. A grinning rock teaches a child the wrong answer.
     ", googly eyes on an object, smiling face on a ball, face drawn on a toy, "
     "anthropomorphic object, cartoon eyes on an inanimate object, "
+    # STIFF MANNEQUIN. The reference is a rigid symmetrical standing pose and it copied
+    # straight through — a shop dummy, not a candid child.
+    "stiff mannequin pose, rigid symmetrical posture, doll-like stiffness, posed like a "
+    "shop mannequin, standing straight and rigid, arms straight down stiffly, "
     # ANGER. A "playful frown" came back as a small girl SCOWLING in real anger. The
     # teacher in a lesson for six-year-olds is never cross with them.
     "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
@@ -1210,19 +1221,39 @@ _HANDS_BUSY = re.compile(
     r"digging|planting|watering|eating|biting|drinking|shrug\w*|"
     r"in (?:her|both|one) (?:hand|hands|arm|arms)|hands? full)\b", re.I)
 
-# _BUSY_DEFAULT must itself satisfy _HANDS_BUSY, or the guard is not idempotent: run it
-# twice and it appends twice. It said "a cheerful wave" (the noun) while the pattern only
-# knew "waving" (the verb), so a scene came out of the guard still looking idle.
-_BUSY_DEFAULT = ("waving one arm high in a cheerful hello, the other hand resting at "
-                 "her side")
+# Each pose must itself satisfy _HANDS_BUSY, or the guard is not idempotent: run it twice
+# and it appends twice. (It once said "a cheerful wave" — the noun — while the pattern only
+# knew "waving", so a scene came out still looking idle.)
+#
+# ONE fixed pose ("waving one arm high, the other hand resting at her side") was appended to
+# EVERY idle scene, so the mascot did the exact same stiff wave in shot after shot — a
+# mannequin, the same posed hello thirteen times (jeffy, 2026-07-16). A varied, natural,
+# CANDID set is chosen per scene instead, so idle hands get a job without freezing into one
+# pose. Every entry uses a verb the busy-pattern matches (wav/point/clap/show/reach/gestur/
+# count) so it stays idempotent.
+_BUSY_POSES = (
+    "one hand waving a relaxed hello, the other loose at her side, weight on one leg",
+    "pointing playfully off to one side, her other hand resting on her hip",
+    "clapping her hands together with easy delight, leaning in",
+    "showing an open upturned palm as if sharing something, shoulders relaxed",
+    "reaching one hand toward the camera in a warm invite, mid-step",
+    "counting lightly on her fingers, head tilted, an easy grin",
+    "gesturing loosely with both open hands as she talks, casual stance",
+    "one hand waving low and friendly, the other tucked behind her, glancing aside",
+)
+# "gesturing" is not in the base pattern; add it so the varied set stays idempotent.
+_HANDS_BUSY_EXTRA = re.compile(r"\bgestur\w*\b", re.I)
 
 
 def never_empty_handed(scene: str) -> str:
-    """Idle hands go home to the reference photo, and the reference photo is a T-pose."""
-    if _HANDS_BUSY.search(scene or ""):
+    """Idle hands go home to the reference photo, and the reference photo is a T-pose. Give
+    them a NATURAL, varied job — never the same stiff pose twice."""
+    s = scene or ""
+    if _HANDS_BUSY.search(s) or _HANDS_BUSY_EXTRA.search(s):
         return scene
-    log.info("scene left the mascot's hands empty — giving her something to do with them")
-    return _tidy(f"{(scene or '').rstrip(' ,')}, {_BUSY_DEFAULT}")
+    pose = _BUSY_POSES[hash(s) % len(_BUSY_POSES)]      # deterministic, varied per scene
+    log.info("scene left the mascot's hands empty — giving her a natural, varied pose")
+    return _tidy(f"{s.rstrip(' ,')}, {pose}")
 
 
 # SCALE. Nothing in the prompt said how BIG a prop was, so "holding up a grey rock" came

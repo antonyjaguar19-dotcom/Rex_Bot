@@ -515,13 +515,15 @@ def conform_props(lesson_id: str,
             if not sp.exists():
                 continue
             descs = "; ".join(
-                f"the {o['noun']} is {o['desc']}, a plain solid colour with no marks"
+                f"the {o['noun']} looks like {o['desc']}, a plain solid colour with no marks"
                 for o in objs if o.get("key") in named)
             prompt = (
                 "everything in the reference image stays exactly the same — the child, her "
-                "face, her hair, her clothes, the background, and any other person are all "
-                f"unchanged. The ONLY change is: {descs}. Nothing inanimate has a face, and "
-                "no dots or marks that could look like eyes or a face.")
+                "face, her hair, her clothes, her pose, the background, and any other person "
+                "are all unchanged. Keep each prop in the SAME position, the SAME size and "
+                "the SAME angle as in the reference; only its SURFACE APPEARANCE changes so "
+                f"that: {descs}. Nothing inanimate has a face, and no dots or marks that "
+                "could look like eyes or a face.")
             r = kx.generate(prompt=prompt, output_path=sp, aspect_ratio="16:9",
                             seed=8000 + i, reference_image=sp)
             if getattr(r, "success", False) and sp.exists():
