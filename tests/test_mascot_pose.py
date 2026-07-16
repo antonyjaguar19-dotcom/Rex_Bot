@@ -398,6 +398,25 @@ def test_idle_pose_varies_it_is_not_one_stiff_wave_every_shot():
         assert mas.never_empty_handed(busy) == busy, f"busy hands were meddled with: {busy}"
 
 
+def test_a_live_animal_is_never_dangled_from_one_hand():
+    # jeffy: a puppy held in one hand looks like an object. Cradle it in both arms, or put it
+    # on the ground when a toy shares the frame.
+    solo = mas.hold_animals_right(
+        "the mascot character holding up a real live golden Labrador puppy in one hand, smiling")
+    assert "both arms" in solo and "one hand" not in solo
+    assert mas.hold_animals_right(solo) == solo               # idempotent
+
+    # a toy in the same frame -> the puppy goes on the GROUND, she keeps the toy
+    both = mas.hold_animals_right(
+        "the mascot character holding a puppy in one hand and a yellow block in the other")
+    assert "on the ground" in both
+    assert "block" in both                                    # the toy stays
+
+    # an animal already BESIDE her is left alone
+    beside = "the mascot character standing beside a real live puppy sitting on the grass"
+    assert mas.hold_animals_right(beside) == beside
+
+
 def test_a_prop_less_scene_says_the_hands_are_empty():
     # The hallucinated-prop shots (a disembodied doll head, a faced ball) were all scenes with
     # NO held prop — just a gesture — so Qwen filled the free hand. Say the hands are empty.

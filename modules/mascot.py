@@ -1310,12 +1310,46 @@ def no_phantom_object(scene: str) -> str:
         return scene                       # a prop is named — a held object is wanted
     if re.search(r"not holding anything|hands? empty|empty and open|clearly empty", s, re.I):
         return scene                       # already says the hands are empty (idempotent)
+    if re.search(r"\bcradl\w*|both arms\b", s, re.I):
+        return scene                       # her arms are cradling an animal — not empty
     # WORDING MATTERS: this clause is scanned by lesson_objects.detect, which feeds the pin
     # references. Naming "toy/doll/block/puppy" here made the detector think the shot WANTED
     # a doll and fed the block reference in — so a running-and-moving shot grew an off-topic
     # block. Say the hands are empty WITHOUT naming any prop noun.
     return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, not holding anything, "
                  f"both palms relaxed and clearly empty")
+
+
+# A live animal must never be DANGLED from one hand (jeffy 2026-07-16). If she holds it, both
+# arms cradle it; and when a toy shares the frame, the animal goes on the GROUND and she holds
+# the toy. The writer keeps writing "holding up a puppy in one hand" despite the prompt, so
+# this is the CHECK that rewrites it.
+# "... a [up to 4 adjectives] puppy in one/her/the-other hand" — the one-handed-animal signal.
+# Capped word count + no commas so it cannot swallow the block's multi-clause description; an
+# optional leading verb is consumed so the replacement does not dangle. "both hands/arms" is
+# NOT matched — a cradle is already correct.
+_ONE_HANDED_ANIMAL = re.compile(
+    r"(?:holding\s+up\s+|holding\s+|lifting\s+up\s+|lifting\s+|cradling\s+|carrying\s+)?"
+    r"(?:a|an|one|the|her|his)\s+((?:\w+\s+){0,4}(?:puppy|pup|dog|doggy|kitten|cat|bird))"
+    r"\s+in\s+(?:one|her|his|the\s+other)(?:\s+(?:hand|arm)s?)?", re.I)
+_ANIMAL_TOY = re.compile(r"\b(?:doll|block|brick|toy|ball|cube|teddy|figurine)\b", re.I)
+
+
+def hold_animals_right(scene: str) -> str:
+    """A living animal is never held in one hand. If a toy is in the same frame, the animal
+    goes ON THE GROUND and she holds the toy; otherwise she cradles the animal in BOTH arms."""
+    s = scene or ""
+    m = _ONE_HANDED_ANIMAL.search(s)
+    if not m:
+        return scene
+    animal = m.group(1).strip()                             # e.g. "real live golden Labrador puppy"
+    rest = s[:m.start()] + s[m.end():]
+    if _ANIMAL_TOY.search(rest):                            # a toy shares the frame
+        repl = f"the {animal} sitting on the ground beside her"
+    else:
+        repl = f"cradling the {animal} gently in both arms against her chest"
+    log.info("scene held a live animal in one hand — cradling it in both arms / on the ground")
+    return _tidy(s[:m.start()] + repl + s[m.end():])
 
 
 # SCALE. Nothing in the prompt said how BIG a prop was, so "holding up a grey rock" came
@@ -1548,8 +1582,8 @@ def clean_scene_for_the_mascot(scene: str, teaching: bool = False,
         never_empty_handed(one_focus(keep_it_dressed(keep_the_face(keep_the_body(
             keep_the_mascot(one_moment(scene))))))))
     if teaching:
-        out = no_phantom_object(props_fit_in_a_hand(alive_looks_alive(warm_face(
-            her_clothes_do_not_change(out)))))
+        out = no_phantom_object(hold_animals_right(props_fit_in_a_hand(alive_looks_alive(
+            warm_face(her_clothes_do_not_change(out))))))
     if keep_people:
         return out
     return other_people_are_other_people(out)
@@ -1607,13 +1641,17 @@ _TEACHING_SYS = (
     "scene that asked for a doll AND a toy car AND both arms raised came back with "
     "EMPTY HANDS, standing in the reference photo's own arms-out pose: given too much "
     "to hold, the artist drops the lot and falls back on the reference.\n"
-    "- A LIVING ANIMAL IS NEVER A HELD PROP AND NEVER A TOY. The puppy is this lesson's "
-    "living example: show it ALIVE and BESIDE her — sitting, wagging, licking her hand, "
-    "trotting next to her — never lifted in her hand like an object, never a plush or "
-    "plastic toy version. For a line about another animal (a horse running), show a REAL "
-    "LIVE animal in the scene, e.g. a real horse trotting in the field behind her, and have "
-    "HER do the action (running). Do NOT invent random creatures — no insects, no ants, no "
-    "exotic birds; keep the living example the puppy.\n"
+    "- A LIVING ANIMAL IS NEVER DANGLED FROM ONE HAND AND NEVER A TOY. Best: show the puppy "
+    "ALIVE and BESIDE her on the ground — sitting, wagging, licking her hand, trotting next "
+    "to her. If she DOES hold the puppy, she CRADLES it in BOTH arms against her chest, never "
+    "lifted by one hand like an object. Never a plush or plastic toy version. For a line "
+    "about another animal (a horse running), show a REAL LIVE animal in the scene (a horse "
+    "trotting behind her) and have HER do the action. Do NOT invent random creatures — no "
+    "insects, no ants, no exotic birds; keep the living example the puppy.\n"
+    "- WHEN ONE LINE SHOWS BOTH A TOY AND A LIVE ANIMAL (the block and the puppy together), "
+    "put the PUPPY ON THE GROUND beside her and have her HOLD THE TOY in her hands, and set a "
+    "WIDE shot that frames both her-with-the-toy and the puppy on the ground. NEVER a puppy "
+    "in one hand and a toy in the other.\n"
     "- THE MASCOT CHILD IS ALWAYS THE MAIN SUBJECT, clearly and fully in the picture. Never "
     "describe a scene of only the props or only the animal — she is always there, front and "
     "centre, doing something.\n"
