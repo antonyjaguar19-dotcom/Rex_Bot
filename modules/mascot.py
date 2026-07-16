@@ -1382,8 +1382,8 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
 # instead, it read like a horror-film doll. A plastic building block has NO face to turn
 # creepy and NO human shape to copy, and it is unmistakably a lifeless object. The word in
 # the narration is still "doll"; the PICTURE is a block.
-FACELESS_TOY_DESC = ("a bright plastic toy building block, a smooth solid brick with "
-                     "rounded studs on top, no face, no eyes and no limbs")
+FACELESS_TOY_DESC = ("a bright YELLOW plastic toy building block, a smooth solid yellow "
+                     "brick with rounded studs on top, no face, no eyes and no limbs")
 # The living example is locked to ONE breed so it is the SAME puppy in every shot.
 LABRADOR_PUPPY_DESC = ("a golden Labrador retriever puppy, soft tan-yellow fur, floppy "
                        "ears, a black nose and dark round eyes")
