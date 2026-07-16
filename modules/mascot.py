@@ -229,8 +229,9 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     # back as a BOULDER bigger than her torso, hugged with both arms — which also ate the
     # SECOND prop the scene asked for, because both her arms were full of the first.
     # A lesson's prop is a child's toy: it fits in her hand. A facts reel's need not.
-    ", the props are toys a child can hold — roughly the size of her head, "
-    "clearly held in her hands, never bigger than her body and never doll-house tiny"
+    ", the props are small toys a child can hold — about the size of an apple, small enough "
+    "to sit in her palm, clearly held in her hand, never bigger than her head and never "
+    "doll-house tiny"
     # The flat colour card made every shot look like a void. A real place is better
     # television AND better teaching — but the child and the prop are the lesson, so the
     # setting stays soft and behind her, and the captions have to stay readable over it.
@@ -1330,7 +1331,8 @@ def no_phantom_object(scene: str) -> str:
 # NOT matched — a cradle is already correct.
 _ONE_HANDED_ANIMAL = re.compile(
     r"(?:holding\s+up\s+|holding\s+|lifting\s+up\s+|lifting\s+|cradling\s+|carrying\s+)?"
-    r"(?:a|an|one|the|her|his)\s+((?:\w+\s+){0,4}(?:puppy|pup|dog|doggy|kitten|cat|bird))"
+    r"(?:a|an|the|her|his)\s+"
+    r"((?:(?!\bhand\b|\band\b|\bin\b|\bwith\b)\w+\s+){0,4}(?:puppy|pup|dog|doggy|kitten|cat|bird))"
     r"\s+in\s+(?:one|her|his|the\s+other)(?:\s+(?:hand|arm)s?)?", re.I)
 _ANIMAL_TOY = re.compile(r"\b(?:doll|block|brick|toy|ball|cube|teddy|figurine)\b", re.I)
 
@@ -1342,12 +1344,12 @@ def hold_animals_right(scene: str) -> str:
     m = _ONE_HANDED_ANIMAL.search(s)
     if not m:
         return scene
-    animal = m.group(1).strip()                             # e.g. "real live golden Labrador puppy"
+    animal = re.sub(r"^\s*(?:a\s+)?real\s+live\s+", "", m.group(1).strip(), flags=re.I)
     rest = s[:m.start()] + s[m.end():]
     if _ANIMAL_TOY.search(rest):                            # a toy shares the frame
-        repl = f"the {animal} sitting on the ground beside her"
+        repl = f"a real live {animal} sitting on the ground beside her"
     else:
-        repl = f"cradling the {animal} gently in both arms against her chest"
+        repl = f"cradling a real live {animal} gently in both arms against her chest"
     log.info("scene held a live animal in one hand — cradling it in both arms / on the ground")
     return _tidy(s[:m.start()] + repl + s[m.end():])
 
@@ -1416,13 +1418,13 @@ _DOLL = re.compile(r"\b(?:a|an|the|one|her|his)\s+(?:\w+\s+){0,2}"
 # instead, it read like a horror-film doll. A plastic building block has NO face to turn
 # creepy and NO human shape to copy, and it is unmistakably a lifeless object. The word in
 # the narration is still "doll"; the PICTURE is a block.
-FACELESS_TOY_DESC = ("a bright YELLOW plastic toy building block, a smooth solid yellow "
-                     "brick with rounded studs on top, no face, no eyes and no limbs")
+FACELESS_TOY_DESC = ("a small bright blue rubber play ball, round and smooth, small enough "
+                     "to sit in the palm of her hand, no face, no eyes and no limbs")
 # The living example is locked to ONE breed so it is the SAME puppy in every shot.
 LABRADOR_PUPPY_DESC = ("a golden Labrador retriever puppy, soft tan-yellow fur, floppy "
                        "ears, a black nose and dark round eyes")
-_DOLL_HEAD = "a bright plastic toy building block"
-_DOLL_TAIL = ", a smooth solid brick with rounded studs on top and no face"
+_DOLL_HEAD = "a small bright blue rubber play ball"
+_DOLL_TAIL = ", round and smooth, small enough to sit in her palm, with no face"
 
 # Who counts as "a second person". This list is NOT hand-maintained: it is built from
 # modules/cast.py, which is where the family actually lives.
@@ -1666,13 +1668,13 @@ _TEACHING_SYS = (
     "hair'. The artist is given ONE reference photo (the mascot) and copies it onto "
     "every human it draws: 'being hugged by her smiling mother' came back as TWO "
     "IDENTICAL MASCOTS hugging.\n"
-    "- THE NON-LIVING TOY IS A FACELESS BUILDING BLOCK, NEVER A DOLL WITH A FACE. A "
-    "human-shaped doll is the FIRST thing the artist copies the reference photo onto "
-    "('holding up a doll named Ammu' came back as a LIVING CHILD with the mascot's own "
-    "face) and a stitched-face rag doll looks like a horror-film doll. Draw the not-living "
-    "thing as 'a bright plastic toy building block, a smooth solid brick with no face and "
-    "no limbs' — unmistakably an object, not a little person. The narration may say "
-    "'doll'; the PICTURE is a block.\n"
+    "- THE NON-LIVING TOY IS A SMALL FACELESS BALL, NEVER A DOLL WITH A FACE. A human-shaped "
+    "doll is the FIRST thing the artist copies the reference photo onto ('holding up a doll "
+    "named Ammu' came back as a LIVING CHILD with the mascot's own face) and a stitched-face "
+    "rag doll looks like a horror-film doll. Draw the not-living thing as 'a small bright blue "
+    "rubber ball, round and smooth, small enough to sit in her palm, no face and no limbs' — "
+    "unmistakably a small object, not a little person. The narration may say 'doll'; the "
+    "PICTURE is a small ball.\n"
     "- If the line asks a QUESTION, show the mascot ASKING it — holding up the thing "
     "she is asking about, head tilted, eyebrows raised.\n"
     "- NEVER put a face, eyes or a smile on an object that is not alive. No smiling "
@@ -1681,7 +1683,7 @@ _TEACHING_SYS = (
     "child the wrong answer.\n"
     "- When the line CONTRASTS a living thing with a lifeless one, the two must be "
     "UNMISTAKABLY different in the picture. Say 'a REAL LIVE golden Labrador puppy, "
-    "wagging and blinking' and 'a faceless plastic toy building block, still and solid'. "
+    "wagging and blinking' and 'a small faceless blue rubber ball, still and solid'. "
     "A scene that asked for 'a doll in one hand and a puppy in the other' came back "
     "holding TWO PLUSH TOY DOGS — both read as toys, and the one contrast the whole line "
     "is built on was gone. The living thing is ALIVE and MOVING; the toy is an obvious "

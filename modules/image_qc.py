@@ -46,10 +46,10 @@ _CHECKS_TEACHING = [
      "cartoon face of any kind? Answer fail if ANY object has a face or googly eyes on it."),
     ("no_doll_with_a_face",
      "Is the child NOT holding a doll, figure or plush toy that has a face, eyes or hair? "
-     "(A plain faceless building block is fine; a doll with a face is a fail.)"),
+     "(A small plain faceless ball is fine; a doll with a face is a fail.)"),
     ("no_hallucinated_prop",
-     "Is she holding ONLY things a teaching scene would sensibly show (a block, a plant, an "
-     "apple, or nothing), with NO random extra toy, doll or object that does not belong?"),
+     "Is she holding ONLY things a teaching scene would sensibly show (a small ball, a plant, "
+     "an apple, or nothing), with NO random extra toy, doll or object that does not belong?"),
     ("hands_busy",
      "Are her arms and hands doing something natural (holding, pointing, gesturing) rather "
      "than spread straight out sideways in a stiff T-pose?"),

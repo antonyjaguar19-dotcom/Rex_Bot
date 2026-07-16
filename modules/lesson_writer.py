@@ -749,10 +749,10 @@ def _recurring_objects(dress: dict, lines: list) -> list:
             continue
         seen.add(head)
         # Visual aliases: the NARRATION word ('doll') and the PICTURE word can differ. A doll
-        # is drawn as a faceless building block, so the mascot_scene says 'block', not 'doll'
-        # — and detection (which feeds the pin reference AND the Kontext prop-conform) keys on
-        # the scene. Without 'block' as an alias, the doll is never matched in its own shots.
-        extra = ["block"] if _TOY_NOUNS.search(noun) else (
+        # is drawn as a small faceless BALL, so the mascot_scene says 'ball', not 'doll' — and
+        # detection (which feeds the pin reference AND the Kontext prop-conform) keys on the
+        # scene. Without 'ball' as an alias, the doll is never matched in its own shots.
+        extra = ["ball", "toy"] if _TOY_NOUNS.search(noun) else (
             ["puppy", "dog"] if _PUPPY_NOUNS.search(noun) else [])
         aliases = sorted(set(([head] if head != noun else []) + extra))
         scored.append((count, {"key": _obj_slug(noun), "noun": noun,

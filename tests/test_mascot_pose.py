@@ -536,8 +536,8 @@ def test_a_prop_fits_in_a_hand():
                    "prop hugged with both arms",
                    "miniature prop", "doll-house sized toy", "finger-sized animal"):
         assert banned in mas.NEGATIVE_TEACHING, banned
-    assert "the props are toys a child can hold" in mas.STYLE_TEACHING
-    assert "roughly the size of her head" in mas.STYLE_TEACHING
+    assert "the props are small toys a child can hold" in mas.STYLE_TEACHING
+    assert "the size of an apple" in mas.STYLE_TEACHING          # small, palm-sized
 
 
 def test_a_living_creature_is_not_shrunk_into_a_toy():
@@ -555,8 +555,8 @@ def test_a_living_creature_is_not_shrunk_into_a_toy():
 # lesson gets an overlay and facts keeps exactly what it had.
 
 def test_the_lesson_tunes_its_own_prompt_and_facts_is_untouched():
-    assert "the props are toys a child can hold" in mas.STYLE_TEACHING
-    assert "the props are toys a child can hold" not in mas.STYLE_PRESENTER, \
+    assert "the props are small toys a child can hold" in mas.STYLE_TEACHING
+    assert "the props are small toys a child can hold" not in mas.STYLE_PRESENTER, \
         "a facts reel's giant honey dipper IS the joke"
 
     for lesson_only in ("angry", "scowling", "anthropomorphic object", "giant prop",
@@ -628,7 +628,7 @@ def test_a_doll_must_look_like_a_toy_not_a_child():
     # horror-film doll. A block has no face to turn creepy and no human shape to copy.
     scene = "the mascot character holding up a doll named Ammu in one hand"
     out = mas.toys_look_like_toys(scene)
-    assert "building block" in out
+    assert "ball" in out
     assert "no face" in out
     assert "named Ammu" in out, "the doll's name must survive — the child knows it by name"
     # SHORT. A long descriptor DILUTES and the prop vanishes (once replaced by a 2nd puppy).
@@ -674,7 +674,7 @@ def test_the_bleed_guards_are_universal_not_lesson_only():
         assert "parent" not in out.lower(), "no reference, so they would be a twin"
         out = mas.clean_scene_for_the_mascot(
             "the mascot character holding a doll", teaching=teaching)
-        assert "building block" in out and "no face" in out
+        assert "ball" in out and "no face" in out
 
 
 def test_a_scene_with_no_doll_and_no_people_is_untouched():
@@ -760,10 +760,10 @@ def test_a_guard_never_names_a_thing_twice():
     both = "the mascot character holding a doll in one hand and a puppy in the other"
     out = mas.clean_scene_for_the_mascot(both, teaching=True)
     assert _times_named(out, "puppy") == 1, f"the puppy is named twice: {out}"
-    # the doll is rewritten to a faceless building block (once, not twice)
-    assert _times_named(out, "block") == 1, f"the toy is named twice: {out}"
-    assert _times_named(out, "doll") == 0, f"the doll should be drawn as a block: {out}"
-    assert "real live puppy" in out          # still marked ALIVE, just once
+    # the doll is rewritten to a small faceless ball (once, not twice)
+    assert _times_named(out, "ball") == 1, f"the toy is named twice: {out}"
+    assert _times_named(out, "doll") == 0, f"the doll should be drawn as a ball: {out}"
+    assert "real live puppy" in out          # still marked ALIVE (puppy now on the ground)
 
     # (the mother is drawable now — a cast reference — so she STAYS. See test_cast.py.
     # Someone with no reference is still removed.)
@@ -853,13 +853,13 @@ def test_a_whole_body_action_is_not_idle_hands_either():
     assert _has_busy_pose(mas.never_empty_handed(idle))
 
 
-def test_the_doll_is_a_faceless_block():
+def test_the_doll_is_a_faceless_ball():
     # The long history of this prop (rag doll -> living child; stitched face -> horror-film
     # doll; "faceless" -> voodoo/disembodied head) all came from ONE root cause: a doll is
-    # HUMAN-SHAPED. Drawing the not-living thing as a non-humanoid building block removes the
-    # shape the model kept copying the reference onto (jeffy 2026-07-16).
+    # HUMAN-SHAPED. Drawing the not-living thing as a small non-humanoid ball removes the
+    # shape the model kept copying the reference onto, and stays small (jeffy 2026-07-16).
     out = mas.toys_look_like_toys("the mascot character holding up a doll, smiling")
-    assert "building block" in out
+    assert "ball" in out
     assert "no face" in out
     assert len(out.split()) < 28, f"a long descriptor dilutes and the prop vanishes: {out}"
 

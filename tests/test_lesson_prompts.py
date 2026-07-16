@@ -85,7 +85,7 @@ def test_the_style_and_the_negative_really_are_in_there(lesson):
 
     assert p["scene"] in pos, "the scene leads the prompt"
     assert "the same body proportions" in pos          # the bobblehead
-    assert "the props are toys a child can hold" in pos  # the boulder
+    assert "the props are small toys a child can hold" in pos  # the boulder
     assert "a sunny home garden" in pos, "the backdrop was substituted in"
     assert "bold vivid solid color background" not in pos
 
