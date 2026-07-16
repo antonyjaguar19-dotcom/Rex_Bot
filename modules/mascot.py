@@ -1812,11 +1812,14 @@ _TWO_PEOPLE_IDENTITY = (
     "and hair ornaments, her clothes, her shoes, her head size and her body proportions, "
     "all unchanged. The GROWN-UP is exactly the person in the SECOND reference image — "
     "her face, her hair, her clothes, her adult height and adult proportions, all "
-    "unchanged. Neither one takes the other's face, hair, clothes or build. The child is "
-    "small and the grown-up is a head and shoulders taller. BOTH are drawn in the SAME soft "
-    "3d pixar cartoon style with the same level of stylisation — the adult is a cartoon "
-    "character too, not a realistic human, so the two belong in one frame and the child does "
-    "not look like a costumed mascot beside a real person, "
+    "unchanged. Neither one takes the other's face, hair, clothes or build. PROPORTIONS: the "
+    "grown-up is a FULL-GROWN ADULT, about twice the child's height — the small child's head "
+    "reaches only to the adult's chest, the adult has tall adult body proportions (a small "
+    "head on a tall body) while the child is a short toddler with toddler proportions; they "
+    "are clearly a big grown-up and a little child, never the same size. BOTH are drawn in "
+    "the SAME soft 3d pixar cartoon style with the same level of stylisation — the adult is a "
+    "cartoon character too, not a realistic human, so the two belong in one frame and the "
+    "child does not look like a costumed mascot beside a real person, "
 )
 
 # The identity sentences the SINGLE-reference style opens with. Replaced wholesale when a
@@ -1838,6 +1841,8 @@ NEGATIVE_TWO_PEOPLE = (
     ", the child wearing the adult's clothes, the adult wearing the child's clothes, "
     "swapped outfits, swapped hair, the two faces blended together, the two characters "
     "merged, both people with the same hair, both people the same height, "
+    "the child and the adult the same size, the child nearly as tall as the adult, "
+    "the adult drawn short and small, matching heights, wrong scale between them, "
     "the child drawn as an adult, the adult drawn as a child, "
     "one art style bleeding into the other, mismatched art styles"
 )
