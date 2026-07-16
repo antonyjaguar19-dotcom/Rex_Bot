@@ -33,7 +33,7 @@ if str(_HERE) not in sys.path:
 
 log = logging.getLogger("claw_bot.image_backend.kontext")
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()   # modules -> 02_Agent -> Rexjaw_VFX
 COMFY_ROOT = PROJECT_ROOT / "01_ComfyUI" / "ComfyUI_windows_portable" / "ComfyUI"
 COMFY_INPUT = COMFY_ROOT / "input"
 COMFY_OUTPUT = COMFY_ROOT / "output"
