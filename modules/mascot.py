@@ -1310,8 +1310,12 @@ def no_phantom_object(scene: str) -> str:
         return scene                       # a prop is named — a held object is wanted
     if re.search(r"\b(?:empty|open)\b.{0,20}\bhand", s, re.I):
         return scene                       # already says the hands are empty
-    return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, holding no toy, doll or "
-                 f"object of any kind")
+    # WORDING MATTERS: this clause is scanned by lesson_objects.detect, which feeds the pin
+    # references. Naming "toy/doll/block/puppy" here made the detector think the shot WANTED
+    # a doll and fed the block reference in — so a running-and-moving shot grew an off-topic
+    # block. Say the hands are empty WITHOUT naming any prop noun.
+    return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, not holding anything, "
+                 f"both palms relaxed and clearly empty")
 
 
 # SCALE. Nothing in the prompt said how BIG a prop was, so "holding up a grey rock" came

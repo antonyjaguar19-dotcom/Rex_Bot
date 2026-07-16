@@ -402,7 +402,10 @@ def test_a_prop_less_scene_says_the_hands_are_empty():
     # The hallucinated-prop shots (a disembodied doll head, a faced ball) were all scenes with
     # NO held prop — just a gesture — so Qwen filled the free hand. Say the hands are empty.
     out = mas.no_phantom_object("the mascot character running beside a real live horse, waving")
-    assert "empty" in out and "holding no toy" in out
+    assert "empty" in out and "not holding anything" in out
+    # the clause must NOT name a prop noun — lesson_objects.detect scans it, and "doll"/
+    # "block" here fed the pin reference in and drew an off-topic block (jeffy 2026-07-16)
+    assert "doll" not in out and "toy" not in out and "block" not in out
     assert mas.no_phantom_object(out) == out                     # idempotent
 
     # a scene that DOES name a held prop is left alone (a held object is wanted there)
