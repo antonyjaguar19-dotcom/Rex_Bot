@@ -389,6 +389,15 @@ NEGATIVE_TEACHING = NEGATIVE_PRESENTER + (
     "a random toy in her hands, a phantom object, a disembodied doll head, a severed head, "
     "a floating head, a doll head with no body, a smear of colour over her face, "
     "a painted face, face paint, an object stuck to her face, "
+    # HAIRSTYLE DRIFT. A running pose loosened her tied-up top-knot into a ponytail. Her
+    # hairstyle is fixed by the reference and motion must not restyle it.
+    "her hairstyle changed from the reference, her hair loosened or restyled, hair blown "
+    "into a ponytail, hair worn down or loose when the reference wears it up, pigtails, "
+    # STYLE / SCALE MISMATCH beside another person. The stylised chibi child next to a more
+    # realistic adult read like a costumed mascot standing beside a real human.
+    "the adult drawn more realistically than the child, two different art styles in one "
+    "frame, the child looking like a costumed mascot beside a real human, mismatched "
+    "rendering styles, mismatched proportions between the two people, "
     # ANGER. A "playful frown" came back as a small girl SCOWLING in real anger. The
     # teacher in a lesson for six-year-olds is never cross with them.
     "angry, scowling, furious, glaring, mean expression, upset, crying, worried, "
@@ -1791,7 +1800,10 @@ _TWO_PEOPLE_IDENTITY = (
     "all unchanged. The GROWN-UP is exactly the person in the SECOND reference image — "
     "her face, her hair, her clothes, her adult height and adult proportions, all "
     "unchanged. Neither one takes the other's face, hair, clothes or build. The child is "
-    "small and the grown-up is a head and shoulders taller, "
+    "small and the grown-up is a head and shoulders taller. BOTH are drawn in the SAME soft "
+    "3d pixar cartoon style with the same level of stylisation — the adult is a cartoon "
+    "character too, not a realistic human, so the two belong in one frame and the child does "
+    "not look like a costumed mascot beside a real person, "
 )
 
 # The identity sentences the SINGLE-reference style opens with. Replaced wholesale when a
