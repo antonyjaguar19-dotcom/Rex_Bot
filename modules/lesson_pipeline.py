@@ -454,6 +454,86 @@ def run_visual_qc(lesson_id: str, max_rounds: int = 2,
     return {"rounds": max_rounds, "flagged": flagged}
 
 
+def _kontext_available() -> tuple:
+    """Is the Kontext edit model reachable and installed? (ok, why)."""
+    try:
+        from modules import comfyui_kontext_base as kx
+        model = kx.COMFY_ROOT / "models" / "diffusion_models" / kx.UNET_NAME
+        if not model.exists():
+            return False, f"{kx.UNET_NAME} not installed"
+        if not kx._comfy_alive():
+            return False, "ComfyUI not reachable"
+        return True, "ready"
+    except Exception as e:
+        return False, f"Kontext unavailable ({e})"
+
+
+def conform_props(lesson_id: str,
+                  progress_cb: Optional[Callable[[str], None]] = None) -> dict:
+    """Conform each recurring prop to its canonical look with a Kontext EDIT pass.
+
+    The characters are Qwen-Edit's job — its identity fidelity is high and it renders a
+    second person (the mother) that USO drops. Its one weakness is that the prop drifts
+    shot to shot. So after the stills are drawn, a Kontext instruction-edit repaints ONLY
+    the prop: 'everything in the reference stays the same — the child, her face, clothes,
+    the background, any other person — the only change is that the <noun> is <canonical
+    desc>'. Verified on a real still: the block became an apple and the girl was pixel-
+    identical. So the doll/puppy end up the SAME every shot, without touching the character.
+
+    Only shots that NAME a pinned object are edited. Best-effort: a failed edit leaves the
+    Qwen still as it was (a real prop that already looks right, not a hole).
+    """
+    def _p(msg: str):
+        log.info(msg)
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
+    from modules import lesson_objects as lo
+    lesson = lw.load_lesson(lesson_id)
+    objs = lo.objects_for(lesson)
+    if not objs:
+        return {"conformed": [], "why": "no recurring props"}
+    ok, why = _kontext_available()
+    if not ok:
+        _p(f"🧩 prop-conform skipped — {why}")
+        return {"conformed": [], "skipped": True, "why": why}
+
+    from modules import comfyui_kontext_base as kx
+    stills_dir = LESSONS_DIR / lesson_id / "stills"
+    beats = lesson.get("beats", [])
+    conformed: list = []
+    gpu_memory.acquire(gpu_memory.QWEN_EDIT)        # Kontext is a ComfyUI Flux model too
+    try:
+        for i, b in enumerate(beats):
+            named = lo.detect(b.get("mascot_scene", ""), objs)
+            if not named:
+                continue
+            sp = stills_dir / f"still_{i:02d}.png"
+            if not sp.exists():
+                continue
+            descs = "; ".join(f"the {o['noun']} is {o['desc']}"
+                              for o in objs if o.get("key") in named)
+            prompt = (
+                "everything in the reference image stays exactly the same — the child, her "
+                "face, her hair, her clothes, the background, and any other person are all "
+                f"unchanged. The ONLY change is: {descs}. Nothing inanimate has a face.")
+            r = kx.generate(prompt=prompt, output_path=sp, aspect_ratio="16:9",
+                            seed=8000 + i, reference_image=sp)
+            if getattr(r, "success", False) and sp.exists():
+                conformed.append(i)
+                _p(f"🧩 shot {i+1}: prop(s) conformed — {', '.join(named)}")
+            else:
+                _p(f"🧩 shot {i+1}: prop-conform skipped ({getattr(r, 'error', '?')}); "
+                   f"keeping the drawn prop")
+    finally:
+        gpu_memory.release(gpu_memory.QWEN_EDIT)
+    _p(f"🧩 conformed props on {len(conformed)} shot(s)")
+    return {"conformed": conformed}
+
+
 # ==============================================================================
 # PHASE 1 — scenes, voice, stills. Then STOP.
 # ==============================================================================
@@ -614,6 +694,16 @@ def prepare_lesson(lesson: dict,
                 _p(f"🖼️ {i+1}/{len(beats)} pictures drawn")
     finally:
         gpu_memory.release(_draw_label)
+
+    # Conform each recurring prop to its canonical look. The characters are Qwen-Edit's job
+    # (high identity fidelity + it renders a second person); its one weakness is the prop
+    # drifting shot to shot. A Kontext instruction-edit now repaints ONLY the prop — the
+    # doll/puppy end up the SAME every shot, the child untouched. Best-effort, and a no-op
+    # when the lesson has no recurring props or Kontext is not installed.
+    try:
+        conform_props(lesson_id, _p)
+    except Exception as e:                   # a conform pass must never sink a drawn lesson
+        _p(f"🧩 prop-conform skipped ({e}); keeping the drawn props")
 
     lesson = lw.load_lesson(lesson_id) or lesson
     for i, b in enumerate(lesson["beats"]):
