@@ -44,7 +44,12 @@ def test_no_two_workhorse_neighbours_share_a_framing():
     repeat — the same rule the kids pipeline enforces on shot_type."""
     fr = lw._framing_for(["teach", "teach", "teach", "teach"])
     assert all(fr[i] != fr[i + 1] for i in range(len(fr) - 1))
-    assert set(fr) == {"medium", "wide"}
+    # medium/wide are the only framings the KIND MAP hands out here — plus the one closeup
+    # promoted in because a lesson with no question would otherwise have no face shot at all
+    # (_ensure_a_closeup). The promotion runs after the de-dup and cannot create a clash:
+    # closeup is not a workhorse, so replacing a medium/wide with it only ever removes one.
+    assert set(fr) <= {"medium", "wide", "closeup"}
+    assert fr.count("closeup") == 1
 
 
 def test_the_rare_framings_are_left_alone():
@@ -140,3 +145,63 @@ def test_sequences_follow_a_reorder():
     seqs = lw.sequences(lw.load_lesson(lid2))
     assert seqs[1]["title"] == "Introduction"
     assert seqs[1]["shots"] == [1]
+
+
+# --- the lesson that never asks a question --------------------------------------
+
+def test_a_lesson_whose_only_question_is_the_last_line_still_gets_a_closeup():
+    # closeup is assigned by kind, and the only kind that earns it is `check` — of which
+    # _kinds_for grants exactly one, and only for a "?" strictly BETWEEN the first and last
+    # lines. So a lesson that asks nothing in the middle got NO CLOSEUP AT ALL: thirteen
+    # shots at arm's length, no face, and nothing anywhere said so.
+    #
+    # It is the most valuable shot to lose: the only framing lip-sync works at (a wide shot
+    # gives the mouth ~35px), and the SAFEST one for identity, because a closeup crops the
+    # hands out of frame and the T-pose is a full-body phenomenon.
+    lines = ["Everything around you is either living or not living.",
+             "Living things eat and grow.",
+             "A puppy eats and grows.",
+             "A ball does not eat and it never grows.",
+             "So remember: living things eat, grow and breathe."]
+    kinds = lw._kinds_for(lines)
+    assert "check" not in kinds, "this lesson asks nothing in the middle — that is the setup"
+
+    framings = lw._framing_for(kinds)
+    assert "closeup" in framings, "the lesson has no face shot in it anywhere"
+    # the face goes on a teaching beat, not on a bookend
+    assert kinds[framings.index("closeup")] == "teach"
+
+
+def test_a_lesson_that_asks_a_question_is_left_alone():
+    lines = ["Everything is living or not living.",
+             "Living things eat and grow.",
+             "Does a ball eat?",
+             "No — a ball never eats.",
+             "So living things eat and grow."]
+    kinds = lw._kinds_for(lines)
+    assert "check" in kinds
+    framings = lw._framing_for(kinds)
+    # exactly the one the check earned — the promotion must not add a second
+    assert framings.count("closeup") == 1
+    assert framings[kinds.index("check")] == "closeup"
+
+
+def test_a_very_short_lesson_is_not_forced_to_have_a_closeup():
+    # Nothing to promote: intro/recap are bookends and there is no interior teach beat.
+    framings = lw._framing_for(["intro", "teach", "recap"])
+    assert "closeup" not in framings
+
+
+def test_every_kind_the_writer_emits_is_a_valid_kind():
+    # _VALID_KINDS was declared and enforced by NOTHING, and carried "example" — a kind
+    # _kinds_for never once produced, which still had to be read, mapped and reasoned about
+    # every time anyone touched the framing. This is what makes the tuple real.
+    for n in range(1, 12):
+        lines = [f"Line number {i} of the lesson." for i in range(n)]
+        assert set(lw._kinds_for(lines)) <= set(lw._VALID_KINDS)
+    withq = ["Intro line.", "A teach line.", "Does a ball eat?", "The recap line."]
+    assert set(lw._kinds_for(withq)) <= set(lw._VALID_KINDS)
+    # ...and every kind that CAN be emitted has a framing, or it silently renders as the old
+    # full-body default.
+    for k in lw._VALID_KINDS:
+        assert k in lw._FRAMING_BY_KIND, f"{k} has no framing"

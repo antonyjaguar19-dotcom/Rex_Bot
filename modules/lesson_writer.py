@@ -155,18 +155,24 @@ _PICTURE_NOTE = (
 MIN_BEAT_WORDS = 7
 MAX_BEAT_WORDS = 22
 
+# NO image_prompt. It was asked for here, written to every beat, offered in
+# EDITABLE_BEAT_FIELDS — and read by NOTHING. The picture comes from `mascot_scene`, which
+# `lesson_pipeline.prepare_lesson` generates fresh from the narration and puts through the
+# guard chain. So the model's picture idea was thrown away, and so was any hand edit to it:
+# an edit box that pretends. It is not seeded INTO mascot_scene either, deliberately — this
+# is unguarded LLM prose, and `set_scene` runs the guards on hand edits precisely because
+# unguarded text reaching the sampler walks back into paid-for defects ("dressed as a puppy"
+# and the mascot is gone). Deleted 2026-07-17. facts_writer's image_prompt is a different
+# field on a different pipeline and is used for real.
 _DRESS_SYS = (
-    "For each numbered line of a children's lesson you write two things.\n"
-    'Output ONLY valid JSON: {"title": "...", "beats": [{"n": 1, "on_screen": "...", '
-    '"image_prompt": "..."}], "objects": [{"noun": "...", "desc": "..."}]}\n'
+    "For each numbered line of a children's lesson you write the words that go on screen.\n"
+    'Output ONLY valid JSON: {"title": "...", "beats": [{"n": 1, "on_screen": "..."}], '
+    '"objects": [{"noun": "...", "desc": "..."}]}\n'
     "Rules:\n"
     "- n: the NUMBER of the line this entry is for. Every line gets exactly one entry, "
     "and the number must match.\n"
     "- on_screen: 2-4 words, the idea of THAT line, for big text on screen. Not a "
     "sentence.\n"
-    "- image_prompt: a friendly cartoon scene a small child would like, showing ONE "
-    "action with ONE object, matching that line. No text, letters or numbers in the "
-    "image.\n"
     "- Never change, quote or repeat the lines themselves.\n"
     "- title: 3-6 words, what the whole lesson is called.\n"
     "- objects: the concrete THINGS this lesson keeps coming back to across several lines "
@@ -296,8 +302,14 @@ def _missing_key_ideas(source: str, prose: str, _p) -> list:
 
     Guarded against the checker itself: an item is kept only if its word is ACTUALLY in
     the book and ACTUALLY absent from the lesson. That stops a hallucinated requirement
-    ('photosynthesis' on a page that never says it) from re-rolling forever, and folds
-    away a synonym the lesson already taught (the substring match forgives feel/feels)."""
+    ('photosynthesis' on a page that never says it) from re-rolling forever, and folds away
+    a word-form the lesson already taught (eat/eats/eating).
+
+    WORD BOUNDARIES, not `in`. This check exists because a lesson taught 5 of the book's 6
+    properties and dropped BREATHE — and the test was `head not in prose_low`, so **"eat" is
+    a substring of "breathe"**. A book that says *eat* and a lesson that says only *breathe*
+    registered eat as covered. The check written because a lesson dropped `breathe` could be
+    fooled by the word `breathe`. ("great", "feature" and "meat" do it too.)"""
     try:
         raw = _call_llm(
             f"What the book says:\n---\n{source}\n---\n\n"
@@ -313,7 +325,12 @@ def _missing_key_ideas(source: str, prose: str, _p) -> list:
     kept = []
     for it in items:
         head = re.sub(r"[^a-z]", "", str(it).lower().split()[0]) if str(it).strip() else ""
-        if len(head) >= 3 and head in src_low and head not in prose_low:
+        if len(head) < 3:
+            continue
+        # `\b{head}\w*` — the word, plus its own endings (eat/eats/eating stay one idea), but
+        # never the word merely SITTING INSIDE another one.
+        rx = re.compile(rf"\b{re.escape(head)}\w*\b")
+        if rx.search(src_low) and not rx.search(prose_low):
             kept.append(str(it).strip())
     return kept
 
@@ -337,8 +354,20 @@ def _close_gaps(topic: dict, source: str, prose: str, budget: int, _p) -> str:
         except Exception as e:
             _p(f"⚠️ could not re-roll for the gap ({e}); teaching what we have")
             return prose
-        if got:
+        if not got:
+            continue
+        # A RE-ROLL REPLACES THE PROSE WHOLESALE, so it can lose an idea the last one had —
+        # the word budget is fixed, and the model pays for the gap it was just told about by
+        # dropping something else. Keep the new prose only if it is strictly better: it must
+        # cover everything the old one did, and more. Otherwise the "fix" is a trade, and we
+        # would be re-rolling forever swapping which property gets dropped.
+        before = set(_missing_key_ideas(source, prose, _p))
+        after = set(_missing_key_ideas(source, got, _p))
+        if after < before:
             prose = got
+        else:
+            _p(f"🔎 the re-roll traded one gap for another ({', '.join(sorted(after)) or '—'})"
+               f" — keeping the better draft")
 
     left = _missing_key_ideas(source, prose, _p)
     if left:
@@ -363,7 +392,12 @@ def _clean_prose(raw: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-_VALID_KINDS = ("intro", "teach", "example", "check", "recap", "outro")
+# Every kind `_kinds_for` can emit, and nothing else. "example" lived here for months and was
+# never once produced — dead vocabulary that still had to be read, mapped and reasoned about
+# every time someone touched the framing. Pinned by
+# test_every_kind_the_writer_emits_is_a_valid_kind, which is what makes this tuple real
+# rather than decorative.
+_VALID_KINDS = ("intro", "teach", "check", "recap", "outro")
 
 
 def split_into_lines(prose: str) -> list:
@@ -457,7 +491,6 @@ def _kinds_for(lines: list) -> list:
 _FRAMING_BY_KIND = {
     "intro": "establishing",
     "teach": "medium",
-    "example": "wide",
     "check": "closeup",
     "recap": "wide",
     "outro": "medium",
@@ -480,7 +513,38 @@ def _framing_for(kinds: list) -> list:
     de-dup rule live in one place (modules/shot_grammar); behaviour is byte-for-byte the
     same as before the lift."""
     from modules import shot_grammar
-    return shot_grammar.framing_for(kinds, _FRAMING_BY_KIND, _DEFAULT_FRAMING, _NUDGE)
+    got = shot_grammar.framing_for(kinds, _FRAMING_BY_KIND, _DEFAULT_FRAMING, _NUDGE)
+    return _ensure_a_closeup(got, kinds)
+
+
+def _ensure_a_closeup(framings: list, kinds: list) -> list:
+    """A lesson gets a FACE SHOT even when it never asks a question.
+
+    `closeup` is assigned by kind, and the only kind that earns it is `check` — of which
+    `_kinds_for` grants exactly one, and only for a "?" strictly BETWEEN the first and last
+    lines. A lesson whose only question is its final line therefore gets no check beat, so it
+    gets NO CLOSEUP AT ALL: thirteen shots at arm's length, no face, and nothing anywhere says
+    so.
+
+    That is the most valuable shot in the lesson to lose. It is the one framing lip-sync needs
+    (a wide shot gives the mouth ~35px and the lips barely move — see the LTX-2.3 note in
+    CLAUDE.md), and it is the SAFEST framing for identity, because a closeup crops the hands
+    out of frame and the T-pose is a full-body phenomenon.
+
+    So: promote, at the FRAMING layer only. Not the kind layer — calling a statement a "check"
+    would be a lie in the data, and `sequences` reads kinds to group the storyboard. The last
+    interior `teach` is the pick: an intro/recap/outro bookend is the wrong place for a face,
+    and the last teach beat is the lesson's closing idea.
+    """
+    if "closeup" in framings or len(framings) < 4:
+        return framings
+    for i in range(len(framings) - 2, 0, -1):       # last interior beat, backwards
+        if kinds[i] == "teach":
+            framings[i] = "closeup"
+            log.info(f"the lesson asked no question, so it had no face shot — beat {i+1} "
+                     f"is a closeup")
+            break
+    return framings
 
 
 # ==============================================================================
@@ -546,7 +610,6 @@ def ensure_outro(lesson_id: str) -> bool:
         "framing": _FRAMING_BY_KIND["outro"],
         "narration": line,
         "on_screen": "Subscribe!",
-        "image_prompt": "",
         # Waving is BUSY HANDS by construction — an idle scene goes home to the reference
         # photo, and the reference photo is a T-pose (mascot.never_empty_handed).
         "mascot_scene": ("the mascot character facing the camera waving both hands high "
@@ -622,7 +685,7 @@ def sequences(lesson: dict) -> list:
 
 
 def _dress_by_line(lines: list, dress: dict) -> dict:
-    """{line index: {on_screen, image_prompt}} — matched by the line's NUMBER.
+    """{line index: {on_screen}} — matched by the line's NUMBER.
 
     Matching by POSITION silently shifted a real lesson: the model returned one entry
     fewer than there were lines, and from that point on every caption belonged to the
@@ -658,10 +721,6 @@ def _to_beats(lines: list, dress: dict) -> list:
         on_screen = (extra.get("on_screen") or "").strip()[:40]
         if not on_screen:
             on_screen = " ".join(line.split()[:3]).strip(" ,.!?—-").title()
-        image_prompt = (extra.get("image_prompt") or "").strip()
-        if not image_prompt:
-            image_prompt = (f"a friendly cartoon child, {line.rstrip('.?!')}, "
-                            f"bright and simple, no text")
 
         beats.append({
             "kind": kinds[i],
@@ -671,7 +730,6 @@ def _to_beats(lines: list, dress: dict) -> list:
             "framing": framings[i],
             "narration": line,                 # the lesson's words, untouched
             "on_screen": on_screen,
-            "image_prompt": image_prompt,
             # The tickbox. OFF by default and that is deliberate: ON would mean an
             # ~8-minute Wan render for every beat the moment you pressed Render.
             "animate": False,
@@ -886,7 +944,7 @@ def _save(lesson: dict) -> None:
     atomic_write_json(LESSONS_DIR / lesson["lesson_id"] / "lesson.json", lesson)
 
 
-EDITABLE_BEAT_FIELDS = ("narration", "on_screen", "image_prompt", "mascot_scene",
+EDITABLE_BEAT_FIELDS = ("narration", "on_screen", "mascot_scene",
                         "motion_prompt", "framing")
 
 
@@ -919,7 +977,146 @@ def set_beat_field(lesson_id: str, beat_index: int, field: str, text: str) -> bo
         lesson["estimated_seconds"] = round(
             lesson["word_count"] / WORDS_PER_SEC + PAD_PER_BEAT * len(beats), 1)
     _save(lesson)
+
+    if field == "narration":
+        # The length is only bounded when the lesson is WRITTEN (plan_shape clamps it). A hand
+        # edit recomputed the estimate and told nobody, so a 90-second lesson could be edited
+        # to five minutes in silence. SAY SO — never clamp, never refuse: the words are
+        # Jeffy's and the edit must save. Cleared as soon as it is back in range.
+        secs = lesson["estimated_seconds"]
+        if secs < MIN_SECONDS or secs > MAX_SECONDS:
+            add_warning(lesson_id, "length_off_target",
+                        f"the lesson now runs about {secs:.0f}s — outside the "
+                        f"{MIN_SECONDS:.0f}-{MAX_SECONDS:.0f}s a Class-1 lesson wants. "
+                        f"Nothing is stopping you; just know before you render.")
+        else:
+            clear_warnings(lesson_id, code="length_off_target")
     return True
+
+
+# The fields the MACHINE writes on a beat. Deliberately not in EDITABLE_BEAT_FIELDS: that
+# tuple guards HAND edits (a typo'd framing would render as the old default with nothing to
+# say why), and these are records, not text. `contract` = what the shot promised;
+# `delivered` = what the renderer actually gave it. See modules/lesson_contract.py.
+BEAT_RECORD_FIELDS = ("contract", "delivered")
+
+
+def set_beat_record(lesson_id: str, beat_index: int, field: str, value) -> bool:
+    """Write a machine-made record onto a beat. Read-modify-write, like every other writer
+    here, so a record made during a render is not clobbered by a concurrent hand edit."""
+    if field not in BEAT_RECORD_FIELDS:
+        raise ValueError(f"record field must be one of {BEAT_RECORD_FIELDS}")
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    beats = lesson.get("beats", [])
+    if not (0 <= beat_index < len(beats)):
+        return False
+    beats[beat_index][field] = value
+    _save(lesson)
+    return True
+
+
+# ==============================================================================
+# WARNINGS — what the bot noticed, kept where you will actually see it
+# ==============================================================================
+#
+# Every warning this pipeline produced was a progress_cb string: "names a mother, but there
+# is no picture of her", "the lesson is still short of `breathe`", "the prop lost its
+# reference slot". All true, all detected, and all gone the moment the feed scrolled — long
+# before the gate, which is the one place a person is looking. A warning nobody reads is not
+# a warning; it is a log line.
+#
+# So they live on the lesson, on disk, and the gate prints them above the Render button.
+#
+# They NEVER block. `approve()` succeeds with a full list of them, because the whole doctrine
+# here is that only a physical floor may refuse (see facts `_short_takes`): these are things
+# to look at, not things to be stopped by.
+
+def add_warning(lesson_id: str, code: str, text: str, line: Optional[int] = None) -> bool:
+    """Note something worth looking at. IDEMPOTENT on (code, line).
+
+    Idempotency is the whole trick: a redraw of line 5 clears line 5 and re-adds whatever
+    still applies, so the list can never grow forever and can never describe a picture that
+    no longer exists.
+    """
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    got = [w for w in (lesson.get("warnings") or [])
+           if not (w.get("code") == code and w.get("line") == line)]
+    got.append({"code": code, "line": line, "text": text,
+                "at": datetime.now().isoformat(timespec="seconds")})
+    lesson["warnings"] = got
+    _save(lesson)
+    return True
+
+
+def clear_warnings(lesson_id: str, line: Optional[int] = None,
+                   code: Optional[str] = None) -> bool:
+    """Drop warnings. Scoped: by line (a redraw), by code (a re-check), or all of them."""
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return False
+    got = lesson.get("warnings") or []
+    if line is None and code is None:
+        got = []
+    else:
+        got = [w for w in got
+               if not ((line is None or w.get("line") == line)
+                       and (code is None or w.get("code") == code))]
+    lesson["warnings"] = got
+    _save(lesson)
+    return True
+
+
+def warnings_for_line(lesson: dict, line: int) -> list:
+    return [w for w in (lesson or {}).get("warnings") or [] if w.get("line") == line]
+
+
+def recheck_coverage(lesson_id: str, _p=lambda m: None) -> list:
+    """Does the lesson STILL teach everything the book does? Re-read against the BEATS.
+
+    The coverage check runs once, at write time, against the PROSE — and then the prose is cut
+    into beats and nothing ever re-cuts it. So every hand edit, every reorder, every deleted
+    line since then has been unchecked: an idea the check already blessed can be edited out in
+    silence, and the recap will still claim the whole definition. That is the exact defect the
+    check was written for, just arriving one step later.
+
+    Runs at PREPARE, not at the gate — this calls an LLM, and at the gate ComfyUI holds the
+    card. Detect while the writer model is up; surface at the gate, where a person is looking.
+
+    WARN-ONLY, and it may never:
+      - block approve() — only a physical floor may refuse;
+      - touch the narration — the words are Jeffy's;
+      - warn when it COULD NOT RUN. `_missing_key_ideas` returns [] on any error, and that
+        stays silent. Unmeasurable is not broken, and a "couldn't check" line every prepare
+        teaches you to ignore the whole list, which costs more than this buys.
+    """
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        return []
+    try:
+        # The same call write_lesson makes for the source — one way to read the book.
+        source = lt.topic_text(lesson["book_id"], lesson["topic_id"])
+    except Exception as e:
+        log.info(f"coverage re-check skipped — could not re-read the book ({e})")
+        return []
+    if not source:
+        return []
+
+    beats_text = " ".join((b.get("narration") or "") for b in lesson.get("beats", []))
+    missing = _missing_key_ideas(source, beats_text, _p)
+
+    clear_warnings(lesson_id, code="coverage_gap")
+    if missing:
+        joined = ", ".join(missing)
+        # Never blame a thin roll on the check: say what the BOOK says, and let Jeffy judge.
+        add_warning(lesson_id, "coverage_gap",
+                    f"the book says more about {joined} than this lesson does. Check it, or "
+                    f"add a line for it — the recap may be claiming the whole definition.")
+        _p(f"🔎 the lesson may not cover: {joined}")
+    return missing
 
 
 def set_beat_animate(lesson_id: str, beat_index: int, animate: bool) -> bool:

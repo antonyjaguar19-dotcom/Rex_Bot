@@ -504,3 +504,21 @@ def test_the_recap_is_no_longer_labelled_the_outro():
     assert kinds[0] == "intro"
     assert kinds[-1] == "recap"
     assert "outro" not in kinds
+
+
+def test_an_untick_after_approve_still_stops_the_render():
+    # approve() reads the ticks and stamps stage="approved"; render_lesson used to check only
+    # the STAMP. Anything that un-ticked a picture in between — a second tab, a redraw, a
+    # Discord command — left the stamp standing and an hour of Wan started on a picture
+    # nobody had confirmed. The same predicate, one call later.
+    _lesson(stage="stills")
+    lid = "20260714_100000"
+    lp.approve(lid)
+    assert lw.load_lesson(lid)["stage"] == "approved"
+
+    lw.set_beat_approved(lid, 0, False)          # a redraw, another tab, a stale click
+
+    with pytest.raises(lp.LessonRenderError) as e:
+        lp.render_lesson(lid)
+    assert "not confirmed" in str(e.value)
+    assert "1" in str(e.value), "it must name the line"

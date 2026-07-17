@@ -270,7 +270,7 @@ def test_naming_someone_you_have_a_picture_of_tags_them(mid, tmp_path, monkeypat
 
     lesson = {"beats": [{"mascot_scene":
                          "the mascot character being hugged by her mother, laughing"}]}
-    scene_sent, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+    scene_sent, refs, relation, _ = lp._scene_and_refs(lesson, 0, mid)
 
     assert relation == "mother"
     assert refs and len(refs) == 2, "the mascot AND the mother"
@@ -286,7 +286,7 @@ def test_naming_someone_you_have_no_picture_of_leaves_them_out_of_the_SHOT(mid, 
 
     lesson = {"beats": [{"mascot_scene":
                          "the mascot character playing with her aunty in the garden"}]}
-    scene_sent, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+    scene_sent, refs, relation, _ = lp._scene_and_refs(lesson, 0, mid)
 
     # The mascot alone — no second reference for a person we cannot draw. (refs is now the
     # explicit [mascot] rather than None, since object refs share this list.)
@@ -313,7 +313,7 @@ def test_but_your_WORDS_are_never_deleted(mid, tmp_path, monkeypatch):
     # ...and once she has a picture, the very next draw tags her — no edit needed
     cast.put_image(mid, "aunt", src=_png(tmp_path / "a.png"), filename="a.png")
     lesson = {"beats": [{"mascot_scene": kept}]}
-    _, refs, relation = lp._scene_and_refs(lesson, 0, mid)
+    _, refs, relation, _d = lp._scene_and_refs(lesson, 0, mid)
     assert relation == "aunt"
     assert refs and len(refs) == 2
 

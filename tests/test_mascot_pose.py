@@ -536,8 +536,22 @@ def test_a_prop_fits_in_a_hand():
                    "prop hugged with both arms",
                    "miniature prop", "doll-house sized toy", "finger-sized animal"):
         assert banned in mas.NEGATIVE_TEACHING, banned
-    assert "the props are small toys a child can hold" in mas.STYLE_TEACHING
-    assert "the size of an apple" in mas.STYLE_TEACHING          # small, palm-sized
+
+    # THE SCALE RULE MOVED — it is added only to a shot that actually HOLDS something.
+    # Appended to every teaching prompt it WAS the phantom apple: it asserts props ARE
+    # "clearly held in her hand" on a shot whose scene says her hands are empty, and the model
+    # believes the style over the scene. Measured one variable at a time on beat 4 of
+    # 20260716_000517 — see mascot._PROP_SCALE_CLAUSE.
+    _held = "the mascot character holding up a small grey rock in one hand"
+    assert "the props are small toys a child can hold" in \
+        mas.build_presenter_prompt(_held, "a garden", teaching=True)[0]
+    assert "sit in her palm" in \
+        mas.build_presenter_prompt(_held, "a garden", teaching=True)[0]
+
+    # ...and it names NO OBJECT. "about the size of an apple" was asserted here, and the
+    # sampler drew the metaphor: swap the word for "a small plum" and she holds a PLUM.
+    assert "the size of an apple" not in mas.STYLE_TEACHING
+    assert "apple" not in mas._PROP_SCALE_CLAUSE.lower()
 
 
 def test_a_living_creature_is_not_shrunk_into_a_toy():
@@ -555,9 +569,13 @@ def test_a_living_creature_is_not_shrunk_into_a_toy():
 # lesson gets an overlay and facts keeps exactly what it had.
 
 def test_the_lesson_tunes_its_own_prompt_and_facts_is_untouched():
-    assert "the props are small toys a child can hold" in mas.STYLE_TEACHING
-    assert "the props are small toys a child can hold" not in mas.STYLE_PRESENTER, \
+    _held = "the mascot character holding up a small grey rock in one hand"
+    assert "the props are small toys a child can hold" in \
+        mas.build_presenter_prompt(_held, "a garden", teaching=True)[0]
+    assert "the props are small toys a child can hold" not in \
+        mas.build_presenter_prompt(_held, "a garden", teaching=False)[0], \
         "a facts reel's giant honey dipper IS the joke"
+    assert "the props are small toys a child can hold" not in mas.STYLE_PRESENTER
 
     for lesson_only in ("angry", "scowling", "anthropomorphic object", "giant prop",
                         "thought bubble"):

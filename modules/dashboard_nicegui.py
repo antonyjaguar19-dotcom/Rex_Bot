@@ -154,6 +154,35 @@ def _mtime(p) -> int:
         return 0
 
 
+def _lesson_contract_line(contract: dict) -> str:
+    """What this shot PROMISED, in one line, to read against the picture in front of you.
+
+    The same contract the visual check is built from (modules/lesson_contract.py), so you and
+    it are judging against one list and not two. It is what turns "does this look OK?" — which
+    is a question nobody can answer at a glance — into "is she holding the blue block and
+    nothing else?", which anyone can.
+    """
+    if not contract:
+        return ""
+    bits = []
+    people = contract.get("people") or {}
+    bits.append(f"2 people (her + {people['relation']})" if people.get("count", 1) >= 2
+                else "1 child, alone")
+    if contract.get("framing"):
+        bits.append(contract["framing"])
+    props = [(o.get("desc") or o.get("noun") or "") for o in (contract.get("objects") or [])]
+    props = [p for p in props if p]
+    bits.append("holding: " + "; ".join(props) if props else "hands empty of props")
+    hands = (contract.get("hands") or {}).get("says")
+    if hands:
+        bits.append(f"hands: {hands}")
+    banned = contract.get("banned") or []
+    out = "PROMISED — " + " · ".join(bits)
+    if banned:
+        out += "\nNOT — " + "; ".join(banned)
+    return out
+
+
 def _asset_url(p) -> str:
     """A cache-busted URL for a file under 02_Agent/assets/."""
     p = Path(p)
@@ -4625,12 +4654,28 @@ def main_page():
                     _copy_btn(p["image_positive"])
                 _readonly_block(p["image_positive"])
 
+                # THE NEGATIVE — and whether the sampler ever hears a word of it.
+                #
+                # USO (the default lesson backend) wires ConditioningZeroOut into its
+                # negative input and its generate() takes no negative at all, so all ~430
+                # words are DISCARDED. This panel used to print them with a word count and
+                # no hint of that: it implied every ban was enforced while the bans on a
+                # face-on-an-object, emoji eyes, a crop top and the phantom apple were never
+                # sent. A preview that lies is worse than no preview — this panel's own
+                # docstring says so.
+                sent = p.get("negative_sent", True)
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.label(f"THE NEGATIVE — what it must NOT draw · "
-                             f"{len(p['image_negative'].split())} words") \
+                             f"{len(p['image_negative'].split())} words"
+                             + ("" if sent else "  ·  ⚠️ NOT SENT")) \
                         .classes("text-xs font-bold") \
                         .style("color:#f99; letter-spacing:.04em;")
                     _copy_btn(p["image_negative"])
+                if not sent:
+                    ui.label("This backend takes no negative prompt — none of this reaches "
+                             "the model. These bans are held up by the scene wording and by "
+                             "looking at the picture, not by the sampler.") \
+                        .classes("text-xs").style("color:#fc8; opacity:.95;")
                 _readonly_block(p["image_negative"])
 
                 who = (f"2nd reference: {p['relation']}" if p["relation"]
@@ -4661,6 +4706,10 @@ def main_page():
 
         sig = ((lesson or {}).get("lesson_id"), (lesson or {}).get("stage"),
                (lesson or {}).get("video", ""),
+               # what the bot noticed — or a warning raised by a redraw would not appear
+               # above the Render button until something else happened to force a repaint
+               tuple((w.get("code"), w.get("line"))
+                     for w in ((lesson or {}).get("warnings") or [])),
                tuple((b["narration"], b["on_screen"], b.get("animate"),
                       b.get("approved"), b.get("still", ""),
                       # the camera framing — so the header grouping and the [framing] tag
@@ -4702,7 +4751,24 @@ def main_page():
             # every picture with a tickbox, and the cost of ticking it.
             est_label = ui.label("").classes("text-xs").style("color:#7cf;")
 
+            # The Render button is built further down, after the rows — hold it in a slot so
+            # the repaint below can reach back and update it.
+            _gate_btn: dict = {}
+            # Which pictures have actually been opened full size, and the dialog for each.
+            # Rebuilt every repaint on purpose: a redrawn picture is a NEW picture, and
+            # "I looked at it" does not carry over to bytes nobody has seen.
+            _seen: set = set()
+            _dialogs: dict = {}
+
             def _repaint_estimate():
+                """The estimate AND the button, from ONE re-read of the disk.
+
+                They used to be separate: the label recomputed `unapproved` on every tick,
+                while the button captured it once at build time. So ticking the last picture
+                left the label saying "✅ every picture confirmed" beside a disabled button
+                still reading "🔒 1 picture(s) not confirmed" — the gate lying in the one
+                direction that makes you doubt your own eyes.
+                """
                 got = lw.load_lesson(S.lesson_id)
                 e = lp.estimate(got["beats"])
                 left = lw.unapproved(got)
@@ -4712,6 +4778,23 @@ def main_page():
                     + ("  ⚠️ over the cap — untick some" if e["over_cap"] else "")
                     + (f"  🔒 {len(left)} picture(s) still to confirm" if left
                        else "  ✅ every picture confirmed"))
+
+                btn = _gate_btn.get("btn")
+                if btn is None:
+                    return
+                if left:
+                    # A disabled button is a COURTESY, not the gate. lesson_pipeline.approve
+                    # and render_lesson both refuse the same thing, so a stale tab or a
+                    # Discord command hits the same wall.
+                    btn.disable()
+                    btn.set_text(f"🔒 {len(left)} picture(s) not confirmed")
+                    btn.tooltip(
+                        f"Look at line(s) {', '.join(str(n) for n in left)} full size and "
+                        f"tick ✓. Every bad picture this lesson has produced rendered "
+                        f"perfectly cleanly — the only way to catch one is to look.")
+                else:
+                    btn.enable()
+                    btn.set_text("🎬 Render the lesson")
 
             # The lesson as a storyboard: shots grouped into "Sequence N: Introduction",
             # the topic block, "Recap", "Subscribe". Computed from each beat's kind, so it
@@ -4741,8 +4824,17 @@ def main_page():
                         _big = ui.dialog()
                         with _big, ui.card().classes("p-1"):
                             ui.image(_src).style("width: min(90vw, 1100px);")
+                            # WHAT THIS SHOT PROMISED, beside the picture it promised it of.
+                            # The same contract the visual check is built from — so you and
+                            # it are judging against one list, not two.
+                            _c = (b.get("contract") or {})
+                            if _c:
+                                ui.label(_lesson_contract_line(_c)) \
+                                    .classes("text-xs p-2").style("color:#7cf;")
                             ui.label(b.get("mascot_scene") or "") \
                                 .classes("text-xs opacity-70 p-2")
+                        _big.on("show", lambda _=None, _i=i: _seen.add(_i))
+                        _dialogs[i] = _big
                         ui.image(_src) \
                             .style("width: 104px; border-radius: 6px; cursor: zoom-in;") \
                             .on("click", lambda _=None, d=_big: d.open()) \
@@ -4825,7 +4917,25 @@ def main_page():
                                          "cleanly as a good one, so looking is the only "
                                          "way to catch it.")
 
-                            def _ok(_=None, _i=i, _c=ok):
+                            def _ok(_=None, _i=i, _c=ok, _d=_dialogs.get(i)):
+                                # THE FIRST TICK ON A PICTURE YOU HAVE NOT OPENED OPENS IT.
+                                #
+                                # At 104px every defect this pipeline has produced is a few
+                                # pixels wide: mouse ears, emoji eyes, a face on a ball, a
+                                # different child entirely. The tick claims "I looked at this
+                                # FULL SIZE" and nothing ever checked that the claim was even
+                                # possible.
+                                #
+                                # It does NOT disable the tick until seen — a wiring bug there
+                                # would lock Jeffy out of his own render, and a check that can
+                                # sink a lesson is worse than the defect it was written for.
+                                # It costs one extra click, once, and never blocks.
+                                if _c.value and _i not in _seen and _d is not None:
+                                    _c.set_value(False)
+                                    _d.open()
+                                    ui.notify("Look at it full size first — then tick.",
+                                              type="info")
+                                    return
                                 lw.set_beat_approved(S.lesson_id, _i, bool(_c.value))
                                 _repaint_estimate()
                             ok.on_value_change(_ok)
@@ -4870,6 +4980,29 @@ def main_page():
                 if prepared:
                     _render_prompt_panel(i, b)
 
+            # WHAT THE BOT NOTICED — where you will actually see it.
+            #
+            # Every one of these was already detected and then thrown away into a progress
+            # string that scrolled off the feed long before this gate: the mother we have no
+            # photo of and quietly cut, the prop that lost its reference slot to her and will
+            # drift across the lesson (which has no other symptom anywhere), the crop that
+            # failed so a "closeup" is a full-body shot, the book idea a hand edit deleted.
+            #
+            # They NEVER block. approve() succeeds with a full list of them — only a physical
+            # floor may refuse (facts _short_takes doctrine). These are things to look at.
+            _warnings = lesson.get("warnings") or []
+            if _warnings:
+                with ui.column().classes("w-full gap-1").style(
+                        "margin-top: 10px; padding: 10px 12px; border-radius: 8px; "
+                        "background: #3a2a0d; border: 1px solid #fc851f55;"):
+                    ui.label(f"⚠️ {len(_warnings)} thing(s) worth a look before you render") \
+                        .classes("text-xs font-bold").style("color:#fc8;")
+                    for _w in sorted(_warnings, key=lambda w: (w.get("line") or 0)):
+                        ui.label(f"· {_w.get('text', '')}").classes("text-xs") \
+                            .style("color:#f3dcc0;")
+                    ui.label("None of these stop the render — they are things to check.") \
+                        .classes("text-xs opacity-60")
+
             with ui.row().classes("gap-2 items-center").style("margin-top: 8px;"):
                 if not prepared:
                     ui.button("🎨 Voice it & draw the pictures",
@@ -4880,25 +5013,15 @@ def main_page():
                                  "one picture per line. No video yet — you choose what "
                                  "gets animated afterwards.")
                 else:
-                    _repaint_estimate()
-                    unconfirmed = lw.unapproved(lesson)
                     render_btn = ui.button(
                         "🎬 Render the lesson",
                         on_click=lambda: render_lesson_action(S.lesson_id, full_refresh)) \
                         .classes("rex-btn-primary")
-                    if unconfirmed:
-                        # LOCKED. Nothing starts an hour of Wan on a picture nobody has
-                        # seen. The backend refuses too (lesson_pipeline.approve) — a
-                        # disabled button is a courtesy, not a gate; a stale tab or a
-                        # Discord command must hit the same wall.
-                        render_btn.disable()
-                        render_btn.set_text(
-                            f"🔒 {len(unconfirmed)} picture(s) not confirmed")
-                        render_btn.tooltip(
-                            f"Look at line(s) "
-                            f"{', '.join(str(n) for n in unconfirmed)} full size and tick "
-                            f"✓. Every bad picture this lesson has produced rendered "
-                            f"perfectly cleanly — the only way to catch one is to look.")
+                    # Hand the button to the repaint, then let it set the text and the
+                    # enabled state — ONE place decides, off ONE read of the disk, so the
+                    # label and the button can never disagree.
+                    _gate_btn["btn"] = render_btn
+                    _repaint_estimate()
 
                     ui.button("🔁 Redo the pictures",
                               on_click=lambda: prepare_lesson_action(

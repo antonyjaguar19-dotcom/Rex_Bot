@@ -110,7 +110,7 @@ def wired(tmp_path, monkeypatch):
 def test_no_person_two_objects_both_get_a_reference(wired, monkeypatch):
     monkeypatch.setattr(cast, "ref_for", lambda scene, mid: (None, None))
     lesson = wired("the mascot holding a puppy in one hand and a doll in the other")
-    scene, refs, relation = lp._scene_and_refs(lesson, 0, "nakshu")
+    scene, refs, relation, _ = lp._scene_and_refs(lesson, 0, "nakshu")
     assert relation is None
     assert [Path(r).as_posix() for r in refs] == [
         "/m/mascot.png", "/obj/puppy.png", "/obj/doll.png"]              # mascot + 2 props
@@ -121,7 +121,7 @@ def test_person_and_two_objects_person_keeps_the_slot(wired, monkeypatch):
     # PERSON WINS: mascot + mother + ONE object ref; the other object -> description-lock.
     monkeypatch.setattr(cast, "ref_for", lambda scene, mid: ("mother", Path("/f/mother.png")))
     lesson = wired("the mascot hugged by her mummy, a puppy beside her, holding a doll")
-    scene, refs, relation = lp._scene_and_refs(lesson, 0, "nakshu")
+    scene, refs, relation, _ = lp._scene_and_refs(lesson, 0, "nakshu")
     posix = [Path(r).as_posix() for r in refs]
     assert relation == "mother"
     assert posix[0] == "/m/mascot.png" and posix[1] == "/f/mother.png"    # person kept slot 2

@@ -179,11 +179,20 @@ def _remember_takes(narrations: list, audio_dir: Path) -> None:
 
 
 def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
-    """(scene_text, refs, relation) — the scene EXACTLY as the model will receive it.
+    """(scene_text, refs, relation, delivered) — the scene EXACTLY as the model will receive
+    it, plus a record of what this shot actually got.
 
     Shared by the renderer and by the reveal panel. A preview built from a second copy of
     this would drift from what is actually sent, and a preview that can lie is worse than
     no preview.
+
+    `delivered` is the fourth element for the same reason. Everything in it was ALREADY
+    known here and was announced into `_p()` — a progress string that scrolls off the feed
+    long before the gate, where the only detector that has ever worked is standing. The
+    dropped mother, and above all the prop that lost its reference slot to her (which will
+    drift, and has no other symptom), are decided in this function and nowhere else.
+    Returning the record instead of merely narrating it is what lets `lesson_contract.diff`
+    say so at the gate. See modules/lesson_contract.py.
 
     A SECOND PERSON GETS A SECOND REFERENCE. "You feel happy when mummy hugs you" needs a
     mummy in the picture, and for a long time we could not draw one: handed a single
@@ -194,6 +203,7 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
     Only when the scene actually names someone: a spare reference is another thing for Qwen
     to copy into a picture that did not ask for it.
     """
+    from modules import lesson_contract as lc
     from modules import lesson_objects as lo
     MAX_REFS = 3        # Qwen-Edit image1..image3 (comfyui_qwen_edit.MAX_REFS)
 
@@ -201,6 +211,8 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
     scene_text = orig_scene
     lesson_id = lesson.get("lesson_id")
     objects = lo.objects_for(lesson)
+    delivered = lc.delivered_blank()
+    delivered["framing"] = lesson["beats"][i].get("framing", "medium")
 
     # SLOT 1 — the mascot, always.
     refs = [str(r) for r in mascot.mascot_refs(max_refs=1)]
@@ -216,6 +228,7 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
         # which — that is what the proving render did, and it came back with two correct,
         # separate people first try.
         scene_text = cast.name_the_refs(scene_text, mid, relation)
+        delivered["people_drawn"] = 2
         _p(f"👥 line {i+1} has a second person — {relation} joins the shot")
     else:
         # NAMED, BUT WE HAVE NO PICTURE OF THEM. Qwen would paint the mascot's own identity
@@ -223,6 +236,7 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
         named = cast.role_in(orig_scene, mid)
         if named:
             scene_text = mascot.other_people_are_other_people(scene_text)
+            delivered["people_dropped"] = named
             _p(f"⚠️ line {i+1} names a {named}, but this mascot has no picture of them — "
                f"leaving them out of the shot (they would come back as a twin). Add one on "
                f"the Mascots tab and redraw.")
@@ -238,8 +252,10 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
             if img and len(refs) < MAX_REFS:
                 refs.append(str(img))
                 ref_specs.append((label, len(refs)))     # its 1-based slot in the ref list
+                delivered["objects_by_ref"].append(key)
             else:
                 desc_keys.append(key)                    # no slot (or no pin) -> desc-lock
+                delivered["objects_desc_locked"].append(key)
         if ref_specs:
             scene_text = lo.name_object_refs(scene_text, ref_specs)
             _p(f"🧸 line {i+1}: {', '.join(l for l, _ in ref_specs)} kept identical by "
@@ -247,7 +263,8 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
         if desc_keys:
             scene_text = lo.lock_descriptions(scene_text, desc_keys, objects)
 
-    return scene_text, refs, relation
+    delivered["refs"] = list(refs)
+    return scene_text, refs, relation, delivered
 
 
 def _seed_for(lesson: dict, i: int) -> int:
@@ -272,7 +289,7 @@ def _draw_one(lesson: dict, i: int, backdrop: str, mid: str, out: Path,
     A lesson's prop IS the teaching — a plate of vegetables has to look like vegetables,
     not candy — so a lesson pays the extra minute a shot. A facts reel does not.
     """
-    scene_text, refs, relation = _scene_and_refs(lesson, i, mid, _p)
+    scene_text, refs, relation, delivered = _scene_and_refs(lesson, i, mid, _p)
     framing = lesson["beats"][i].get("framing", "medium")
     from modules import runtime_settings as rs
     got = mascot.render_scene(
@@ -287,13 +304,64 @@ def _draw_one(lesson: dict, i: int, backdrop: str, mid: str, out: Path,
         # lessons render on USO by default (multi-subject: mascot + person + props); flip
         # with rs.set_lesson_image_backend("qwen").
         prefer_backend=rs.get_lesson_image_backend())
+
+    # WHAT THE SAMPLER ACTUALLY HEARD. USO wires ConditioningZeroOut into its negative input
+    # and its generate() has no negative parameter, so the whole ~430-word NEGATIVE_TEACHING
+    # is DISCARDED on the default lesson backend — the bans are written and never sent. Only
+    # Qwen-Edit honours it, and only off the Lightning path (cfg 1.0 = no CFG = no negative).
+    # Recorded per shot so the reveal panel cannot keep implying the bans were enforced.
+    # See mascot.render_scene and IMAGE_FEEDBACK.md.
+    delivered["negative_sent"] = negative_is_sent()
+
     if got:
         # DELIVER the framing. Qwen-Edit anchors to the full-body reference and ignores the
         # prompt's framing clause (measured: a closeup came back full-body), so the camera
         # distance is a deterministic crop of the render — see shot_framing. Runs once, here.
         from modules import shot_framing as sf
-        sf.crop_to_framing(got, framing)
+        # None = this framing needs no crop; False = it needed one and the crop FAILED, so
+        # the shot is framed wider than the shot list says and nothing else would ever say so.
+        delivered["crop_applied"] = (None if sf.is_noop(framing)
+                                     else sf.crop_to_framing(got, framing))
+        _record_shot(lesson, i, mid, delivered)
     return got
+
+
+def negative_is_sent() -> bool:
+    """Does the active lesson backend actually receive the negative prompt?
+
+    USO does not: its workflow zeroes the negative conditioning and its generate() takes no
+    negative at all (mascot.render_scene). Every negative-side fix in the ledger — no face on
+    objects, no emoji eyes, no crop top, the conditional apple ban — is inert on it. That is
+    not a bug to fix here (USO is the default for a measured reason: UNO multi-subject keeps
+    the mascot AND the mother AND the prop each on their own reference), it is a fact the rest
+    of the pipeline has to stop hiding.
+    """
+    from modules import runtime_settings as rs
+    return rs.get_lesson_image_backend() == "qwen"
+
+
+def _record_shot(lesson: dict, i: int, mid: str, delivered: dict) -> None:
+    """Write down what this shot promised and what it got. Never raises — a bookkeeping
+    failure must not cost a drawn picture."""
+    lesson_id = lesson.get("lesson_id")
+    try:
+        from modules import lesson_contract as lc
+        contract = lc.contract_for(lesson, i, mid)
+        # In memory for this run...
+        lesson["beats"][i]["contract"] = contract
+        lesson["beats"][i]["delivered"] = delivered
+        # ...and on disk, because prepare_lesson RELOADS the lesson after the draw loop
+        # (to pick up conform_props' edits) and would drop anything held only in memory.
+        lw.set_beat_record(lesson_id, i, "contract", contract)
+        lw.set_beat_record(lesson_id, i, "delivered", delivered)
+
+        # This shot's warnings are re-derived from scratch, so a redraw that FIXED something
+        # must not leave the old warning standing.
+        lw.clear_warnings(lesson_id, line=i + 1)
+        for w in lc.warnings_for(contract, delivered):
+            lw.add_warning(lesson_id, w["code"], w["text"], line=w["line"])
+    except Exception as e:
+        log.warning(f"could not record the shot contract for line {i+1}: {e}")
 
 
 def prompts_for(lesson_id: str, i: int) -> dict:
@@ -317,7 +385,7 @@ def prompts_for(lesson_id: str, i: int) -> dict:
 
     mid = _ml.get_active_id()
     backdrop = setting_for(lesson.get("topic", "") or lesson.get("title", ""))
-    scene_text, refs, relation = _scene_and_refs(lesson, i, mid)
+    scene_text, refs, relation, _delivered = _scene_and_refs(lesson, i, mid)
     framing = b.get("framing", "medium")
     # A SECOND PERSON keeps the identity clause apart — an object reference does not count.
     # The framing swaps the full-body clause for this shot's camera distance.
@@ -326,6 +394,7 @@ def prompts_for(lesson_id: str, i: int) -> dict:
         two_people=bool(relation),
         framing=framing)
 
+    from modules import lesson_contract as _lc
     from modules import lesson_objects as _lo
     return {
         "scene": b.get("mascot_scene", ""),      # what you edit
@@ -333,6 +402,14 @@ def prompts_for(lesson_id: str, i: int) -> dict:
         "scene_sent": scene_text,                # what the model is told (+ the family line)
         "image_positive": positive,              # ...plus the style. THIS is what Qwen gets.
         "image_negative": negative,
+        # ...IF the backend takes one. USO does not — it zeroes the negative conditioning and
+        # discards every word. The panel showed 430 words of bans with a word count beside
+        # them and no hint that the sampler never heard any of it: a preview that lies, which
+        # this function's whole docstring exists to forbid.
+        "negative_sent": negative_is_sent(),
+        # what this shot PROMISED — the same dict the visual check is built from, so the gate
+        # and the QC are judging the picture against one contract, not two.
+        "contract": _lc.contract_for(lesson, i, mid),
         "motion": b.get("motion_prompt") or default_motion(b),
         "motion_is_default": not b.get("motion_prompt"),
         "seed": _seed_for(lesson, i),
@@ -395,63 +472,6 @@ def redraw_still(lesson_id: str, i: int,
     lw.set_beat_approved(lesson_id, i, False)   # a NEW picture has not been looked at
     _p(f"✅ picture {i+1} redrawn — confirm it when you have looked")
     return True
-
-
-def run_visual_qc(lesson_id: str, max_rounds: int = 2,
-                  progress_cb: Optional[Callable[[str], None]] = None) -> dict:
-    """LOOK at every rendered still with the QC vision model and re-draw the ones it flags.
-
-    A separate PASS, not per-render, because VRAM: the 21 GB QC model (qwen2.5vl:32b) cannot
-    share a 16 GB card with ComfyUI's image model. So ComfyUI is freed before the QC model
-    loads, and the QC model is freed before any re-draw. Capped at `max_rounds` re-rolls; a
-    shot still flagged after that is SURFACED for a human, never looped forever. Best-effort:
-    if the QC model is not available the pass is skipped, and QC never blocks a render.
-
-    Returns {skipped?|rounds, flagged:[i,...], why?}.
-    """
-    def _p(msg: str):
-        log.info(msg)
-        if progress_cb:
-            try:
-                progress_cb(msg)
-            except Exception:
-                pass
-
-    from modules import image_qc
-    ok, why = image_qc.available()
-    if not ok:
-        _p(f"👁️ visual QC skipped — {why}")
-        return {"skipped": True, "why": why, "flagged": []}
-
-    stills_dir = LESSONS_DIR / lesson_id / "stills"
-    n = len(lw.load_lesson(lesson_id).get("beats", []))
-    flagged: list = []
-    for rnd in range(max_rounds + 1):
-        gpu_utils.free_comfyui_vram()               # give the 21 GB QC model the card
-        flagged = []
-        for i in range(n):
-            sp = stills_dir / f"still_{i:02d}.png"
-            if not sp.exists():
-                continue
-            v = image_qc.qc_still(sp, "teaching")
-            if v.get("ok", True):
-                _p(f"✅ shot {i+1}/{n}: passed visual QC")
-            else:
-                keys = ", ".join(f["key"] for f in v.get("fails", []))
-                _p(f"⚠️ shot {i+1}/{n}: visual QC flagged {keys}")
-                flagged.append(i)
-        if not flagged:
-            _p(f"👁️ all {n} shots passed visual QC")
-            return {"rounds": rnd, "flagged": []}
-        if rnd == max_rounds:
-            _p(f"👁️ {len(flagged)} shot(s) still flagged after {max_rounds} re-roll(s): "
-               f"{[i + 1 for i in flagged]} — surfacing for you to judge")
-            return {"rounds": rnd, "flagged": flagged}
-        gpu_utils.free_ollama_vram()                # free the QC model before re-drawing
-        _p(f"👁️ re-rolling {len(flagged)} flagged shot(s): {[i + 1 for i in flagged]}")
-        for i in flagged:
-            redraw_still(lesson_id, i, progress_cb)
-    return {"rounds": max_rounds, "flagged": flagged}
 
 
 def _kontext_available() -> tuple:
@@ -604,6 +624,17 @@ def prepare_lesson(lesson: dict,
     _obj_nouns = [o.get("noun") for o in _lo.objects_for(lesson)]
     _p(f"🎭 writing {len(beats)} scenes for {mascot.active_mascot_name()}…")
     with gpu_memory.llm():
+        # Does it STILL teach what the book teaches? Coverage was checked once, at write
+        # time, against the PROSE — and then the prose was cut into beats and nothing ever
+        # re-cut it. Every hand edit and every reorder since has been unchecked, so an idea
+        # the check already blessed could have been edited out in silence while the recap
+        # went on claiming the whole definition. Re-read against the BEATS, here, where the
+        # writer model is already on the card and the image model has not taken it yet.
+        # Warn-only: it surfaces at the gate and stops nothing.
+        try:
+            lw.recheck_coverage(lesson_id, _p)
+        except Exception as e:
+            log.info(f"coverage re-check skipped ({e})")
         for i, b in enumerate(beats):
             if not b.get("mascot_scene"):
                 b["mascot_scene"] = mascot.explainer_scene(
@@ -708,6 +739,12 @@ def prepare_lesson(lesson: dict,
         conform_props(lesson_id, _p)
     except Exception as e:                   # a conform pass must never sink a drawn lesson
         _p(f"🧩 prop-conform skipped ({e}); keeping the drawn props")
+        # ...but it must not vanish either. Skipping the conform pass means the props were
+        # never repainted to their canonical look, which is exactly the drift the pins exist
+        # to stop — and until now that was a progress line that scrolled away.
+        lw.add_warning(lesson_id, "prop_conform_failed",
+                       f"the props were not conformed to their pinned look ({e}) — check "
+                       f"that the doll and the puppy look the same in every shot")
 
     lesson = lw.load_lesson(lesson_id) or lesson
     for i, b in enumerate(lesson["beats"]):
@@ -807,6 +844,20 @@ def render_lesson(lesson_id: str,
         raise LessonRenderError(
             "this lesson has not been approved. Look at the pictures, tick the lines "
             "worth animating, then press Render.")
+
+    # ...and the ticks are read AGAIN, here, not trusted from the stage flag.
+    #
+    # `approve()` checks them and stamps stage="approved"; this function used to check only
+    # the stamp. Anything that un-ticked a picture in between — a second browser tab, a
+    # redraw, a Discord command — left the stamp standing and the render went ahead on a
+    # picture nobody had confirmed. It is the same predicate, one call later; the gate is
+    # cheap and the hour of Wan is not.
+    unconfirmed = lw.unapproved(lesson)
+    if unconfirmed:
+        raise LessonRenderError(
+            f"{len(unconfirmed)} picture(s) not confirmed yet — line(s) "
+            f"{', '.join(str(n) for n in unconfirmed)}. Open each one, look at it properly, "
+            f"and tick ✓. Nothing starts an hour of Wan on a picture nobody has seen.")
 
     beats = lesson["beats"]
     stills = [Path(b["still"]) for b in beats]

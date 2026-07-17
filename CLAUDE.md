@@ -155,7 +155,9 @@ that non-living things do not feel. **The picture taught the opposite of the wor
 ### One lesson, one look
 `STYLE_PRESENTER` says only "bold vivid solid color background", so Qwen picked a new
 colour every shot — blue/purple/beige/grey. 13 pictures that watch like four different
-videos. `BACKDROPS[hash(lesson_id)]`, stable across a redo. Facts keeps its free choice.
+videos. `lesson_pipeline.SETTINGS` + `setting_for(topic)` — one real place per lesson, matched
+on the topic (NOT hashed off the lesson_id: this line said `BACKDROPS[hash(lesson_id)]` for
+days and no such symbol has ever existed). Facts keeps its free choice.
 
 ### The fix-it loop was a dead end (all 3 found by DRIVING the UI)
 - `approve()` refused stage="rendered" → render once and there was **no way back through
@@ -267,10 +269,89 @@ stays in every shot — no mascot-less plates (Jeffy's call).
   puppy, and a mother-hug shot rendered a distinct adult (person-wins, no twin).** 893 tests
   (`test_lesson_objects.py`). Reveal shows "🧸 kept consistent: …".
 
+### THE SHOT CONTRACT — and the negative that was never sent (2026-07-17, needs restart)
+The consistency spine above is healthy. The losses were elsewhere, and they share one shape:
+**the bot already DETECTS the thing that goes wrong and throws the detection into a `_p()`
+progress string that scrolls off the feed long before the gate.** New `modules/lesson_contract.py`
+records, per beat, what the shot PROMISED (`contract`) and what it GOT (`delivered`, returned
+from `_scene_and_refs` instead of logged); `diff()` names the losses; `lw.add_warning`
+(idempotent on `(code, line)`) persists them to `lesson["warnings"]`, printed **above the
+Render button**. Warnings NEVER block — only the unconfirmed picture and the Wan cap may
+refuse. **962 tests.**
+- **`object_desc_locked` — THE consistency hole, and it had no other symptom.** `MAX_REFS=3`
+  and person wins, so a named person + two pinned props silently demotes prop #2 to
+  description-only. It drifts, and nothing anywhere said so.
+- **THE PHANTOM APPLE WAS `STYLE_TEACHING`.** Solved by ablation on the GPU — beat 4 of
+  `20260716_000517`, one seed, one variable at a time, looking at every render (full table in
+  `IMAGE_FEEDBACK.md`). The prop-scale clause *"the props are small toys a child can hold —
+  **about the size of an apple**, small enough to sit in her palm, **clearly held in her
+  hand**"* was appended to EVERY teaching prompt, including prop-less shots. Swap "apple" for
+  "a small plum" → **she holds a PLUM**: the size metaphor IS the prop. Drop the clause → her
+  hands come back EMPTY. Then the second bite: `no_phantom_object` wrote "no fruit and no
+  apple" to say the hands were empty, **`_HELD_PROP` matched the guard's own words**, the prop
+  clause was added, and the apple returned — *the guard against phantom props was
+  manufacturing it* (2nd time this class has bitten; its docstring said "name no prop noun"
+  while its last line named two). Fix = `mascot.holds_a_prop()`, ONE negation-aware detector
+  shared by the guard and the builder, and `_PROP_SCALE_CLAUSE` added only when it is true.
+  Lessons: a noun in a size metaphor is drawn; a blanket style clause outranks the scene;
+  negation removes nothing; **a guard's own words are read by the next detector**. Verified in
+  the real code path: beats 4 and 6 render with empty, open hands. **964 tests.**
+- **THE NEGATIVE IS NOT SENT — and it was a RED HERRING.** USO (the code default) wires
+  `ConditioningZeroOut` into its negative input and its `generate()` takes no negative — **all
+  ~430 words of `NEGATIVE_TEACHING` are discarded**. Real, and worth knowing (the reveal
+  printed them with a word count: a preview that lies; now `lp.negative_is_sent()` + the panel
+  say **NOT SENT**). But the A/B acquitted it: **both backends drew the apple**, and switching
+  to Qwen-Edit would not have fixed one of them. Live setting here is `qwen`; the code default
+  and `config_snapshot` are `uso`. Harness: `run_backend_ab.py`.
+- **The missing closeup.** `_kinds_for` grants one `check` beat, only for a "?" strictly
+  interior — so a lesson that asks nothing in the middle got **no closeup at all**: no face
+  shot, the one framing lip-sync needs, and the safest for identity (a closeup crops the
+  hands out; the T-pose is a full-body phenomenon). `_ensure_a_closeup` promotes the last
+  interior `teach` at the FRAMING layer (never the kind — `sequences` reads kinds).
+  `example` deleted from `_VALID_KINDS` (never emitted) and the tuple is now pinned.
+- **`"eat" is a substring of "breathe".`** `_missing_key_ideas` used `head not in prose_low` —
+  so the coverage check written *because a lesson dropped `breathe`* could be fooled by the
+  word `breathe`. Now word-boundary; and a re-roll is kept only if its missing-set is a
+  strict SUBSET (a re-roll replaces the prose wholesale and was trading one gap for another).
+  `lw.recheck_coverage` re-reads against the **beats** at prepare (warn-only; silent when it
+  cannot run).
+- **Gate integrity**: `render_lesson` now re-reads `lw.unapproved` (it trusted the
+  `stage=="approved"` stamp, so an untick from another tab slipped through); the Render button
+  and the estimate repaint from ONE read of disk (the button captured `unapproved` at build
+  time and went on saying "🔒 1 not confirmed" after you ticked the last one); the first tick
+  on a picture you have not opened **opens it** (never disables the tick — a check that can
+  lock Jeffy out is worse than the defect).
+- **Deleted, all of it dead and lying**: `props_library` + `prop_extractor` (a global
+  cross-video prop shelf whose docstring claimed a dashboard + `!prop list` that never
+  existed; a global shelf is cross-lesson identity leak by design), and the lesson
+  `image_prompt` field (written to every beat, editable, **read by nothing** — the picture
+  comes from `mascot_scene`). Not seeded into `mascot_scene`: that is unguarded LLM prose and
+  would walk around the guard chain.
+- **VISUAL QC: built, measured, DELETED. Do not build it a third time without reading
+  `IMAGE_FEEDBACK.md`.** Both models had been convicted by a **parser bug** — the 7b answers
+  under `"[key]"`, the 32b under `"1"`, the lookup wanted the bare key, so every verdict was
+  discarded and the fail-open default called it "pass". That is why the record said the 32b
+  "passed a face on a ball": it said `fail` and nobody read it. Measured properly: **7b = 0%
+  recall on every check** (of a ball with a face: *"No faces on objects"* — blind and sure,
+  and no strictness setting rescues that, because strictness only routes UNCERTAINTY);
+  **32b caught the T-pose 1/1, doll-with-a-face 1/1, 2/3 faces-on-objects** but costs
+  60-140s/image (~20 min a lesson) + a 21 GB unload of ComfyUI. Jeffy's call: not worth it.
+  **The checker is `.claude/skills/image-supervisor` — a person looking at pixels.** What
+  survives is the contract, printed beside the picture at the gate.
+- **`tests/conftest.py` now isolates `rs.SETTINGS_PATH`.** It is
+  `05_Config/runtime_settings.json` — the REAL one — and 8 test files call `rs.set_*`, so
+  merely running the suite rewrote Jeffy's settings; `test_mascot_library` called
+  `rs.set_active_mascot("a-mascot-that-was-deleted")` outright. Same floor as the
+  facts-memory isolation.
+- **`tests/test_docs_name_real_symbols.py`** — the docs may not name code that does not
+  exist. It found `script_generator.update_shot_narration` (it lives in `dashboard_nicegui`)
+  on its first run. Prose correction alone is what failed three times.
+
 ## 3F. FACTS MODE — **FROZEN 2026-07-13**. Spec: `02_Agent/FACTS_MODE.md`. Don't tune it without being asked.
 Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice, Wan 720p shots, read-along captions, music bed, thumbnail held as the first frame, under 40s. Frozen settings + reasons live in **`FACTS_MODE.md`**; `config_snapshot/` mirrors `05_Config` (which is outside git). 577 tests green. Commits: 6623667, 5e6d99c, 30582d6, ad1c8bf, d4d9fd0, c787651.
 - **Music bed (3 shipped bugs, all silent).** ACE-Step under-fills — asked 49s it wrote 29s of music + 10s of digital silence + 8s of junk. Fixes: ask **2x** and *measure the composed body*, re-ask longer if short (`_MUSIC_ASK_HEADROOM=2.0`, `_MUSIC_TRIES=2`); cut the bed at its **music body** (`_music_body_end`, first gap ≥1.5s under −45dB after ≥8s of music) not its tail — trimming the tail left the hole mid-track and `_align_music_tail` (which fits a long track by cutting from the FRONT to keep the outro) then kept the dead air; **never loop** a short bed (replaying its opening = the same 8 bars twice, heard instantly) — it starts late instead.
 - **Music bed — the scratched-record loop (2026-07-15, needs restart).** Brain reel `20260715_081821` shipped to YouTube with a 1.2s loop. ACE rolled **36s of silence then 40s of a repeating cell** — the only music WAS the loop. `_align_music_tail` keeps the END (to land the outro), and ACE degrades over length, so it kept the worst, loopiest tail; `trim_trailing_silence` only stripped the tail, so the 36s intro survived and any front window was dead air. Fixes (all in `facts_assembly` + `_music_bed`): trim BOTH ends; `bed_loopiness()` = peak 0.4–2.5s autocorr of the RMS envelope **re-centered per window**; `_choose_music_offset` abandons a loopy tail for a clearly-cleaner earlier window (+fade) only when tail>`_LOOP_BAD` AND margin>0.15 else outro wins; `_music_bed` **re-rolls** a near-identical-loop take. Also killed two latents: MusicGen fallback `duration_sec=dur` (NameError → fallback always dead) → `reel`; `assembly._probe_duration` `float('N/A')` crash on a trim-collapsed file → 0.0. **Loopiness only catches the pathological loop, NOT musicality** — shipped cheerful beds score 0.44–0.88 (repetition IS musical), a RANDOM-noise roll ~0.53, the scratched loop 0.93; so `_LOOP_BAD=0.90` (0.80 would re-roll good 0.88 beds), and a bad-but-not-looping roll is the user's call. **Reliable fix for a bad roll = reuse a proven bed** (`songs/facts_bed_<id>_trimmed.wav` all survive) + audio-only re-mux — brain reel shipped with the bee reel's bed. 867 tests.
+- **Music bed — the DEAD take (2026-07-17, needs restart).** Snow reel `20260716_224317` shipped with **no music at all**. ACE returned a full-length track that was **nothing but noise floor — peak −58.7 dB across all 79.7s**, while all 9 other beds on disk peak at 0.0 dB. Silence walked through every gate there was: full duration ✓, and `bed_loopiness` **0.0** — the *cleanest possible score*, because a flat envelope has no variance to correlate. So it was the one take to pass on the FIRST roll, break the retry loop, and ship. `trim_trailing_silence` did collapse it (78-byte wav — the trim was RIGHT), but `if after < 1.0: return music` read that as "the detector must be wrong, trust the source" — the source WAS silence; evidence thrown away (now warns). `audit_music_bed` **caught it** ("THE MUSIC DROPS OUT — 19 silent stretches") and the reel **shipped anyway** — the audit only warns. Fix = the missing gate: `fasm.bed_peak_db()`/`bed_is_silent()`, floor `_BED_DEAD_PEAK_DB=−45.0` (~14 dB over the dead take, ~45 dB under every healthy one — nothing real lives between). Scoring is now `(alive, not_loop, got)`: a dead take can never win however long its silence measures; all takes dead → **raise** → MusicGen (also checked) → announced no-bed. Floor is **PHYSICAL, not adaptive** (doctrine: `_short_takes`' `words/4.0`) — a merely QUIET take is not broken (loudnorm lifts the bed to −32 LUFS anyway), and **unmeasurable ≠ silent** or a broken ffmpeg drops every bed forever. **The silent roll is NOT rare**: repairing the reel, ACE rolled silence AGAIN on try 1 (rejected → re-rolled → clean); `_MUSIC_TRIES=2` may be thin. **Fade-up**: the bed is cut from the FRONT to land its outro on the last frame, so it opened mid-phrase at full level under word one — `MUSIC_FADE_IN_SEC=1.0` via `bed_fade_in_at(raw,total)` (0.0 front-trimmed; `total-raw` when a short bed was delayed — fading its leading silence would fade nothing and still let the music barge in), applied **AFTER loudnorm** (single-pass loudnorm rides a time-varying gain and lifts a pre-fade back to flat). Reel repaired in place + verified in the finished file (bed −32 dB, 0 dead blocks). **937 tests.**
 - **`fasm.audit_music_bed()`** — subtracts the narration back out of the **finished file**; what remains IS the bed. Logs `bed verified … no dropouts` or `THE MUSIC DROPS OUT`, to dashboard + Discord. Every music bug looked right at every intermediate step and was wrong in the file.
 - **No silent downgrade** — `facts_pipeline.preflight()` proves the backend answers BEFORE the story is written; mascot mode ON now RAISES instead of quietly rendering abstract backdrops (a dead ComfyUI used to cost a 40-min render of the wrong film).
 - **Poster frame replaceable** — `prepend_still(replace=True)` rebuilds from a pristine copy in `final/_posterless/`; a re-rolled thumbnail now reaches the VIDEO (it used to rewrite only the .jpg, leaving the reel opening on the poster you just rejected). `publish_kit._refresh_poster_frame` does it for every aspect.
@@ -403,7 +484,7 @@ Deep QA of the kids LLM chain (story → image+motion prompts → storyboard sti
 
 ## 4. In Progress / Half-Done
 - **RESTARTED + VERIFIED 2026-07-13 16:39** — one bot (launcher → venv stub → interpreter; the stub means ONE bot shows as TWO pids — do not "kill the duplicate"), dashboard 7860, ComfyUI 8188, Ollama 11434. Facts mode frozen and live. Known cosmetic: `Could not pin panel: 403 Forbidden` — the bot lacks Manage Messages in #claw-bot (panel posts, won't pin).
-- **USO wired (2026-07-02) + 2 TODOs for 2026-07-03.** USO single-image char-consistency backend built (`modules/image_backends/comfyui_uso.py`), registered in models.json, and wired into KIDS (`storyboard_generator._kids_backend()` prefers USO) + MUSIC (`musicvideo_pipeline` scene-0 anchor cascade). Toggle `rs.get/set_uso_mode_enabled()` (default True). `image_backend.get_named_backend(id)` added. models.json `image_backend.active` now = `comfyui_uso` (global default). 201 tests pass; real story→USO storyboard verified (cartoon_saloon, 2-char, ref×2 multi-char held). **Bot restart needed** to load .py edits. TODO tomorrow: (1) wire USO into photoreal HORROR mode (`horrorstory_pipeline.py`); (2) add narration-edit UI to web dashboard for ALL modes (kids has it; add music+horror in `dashboard_nicegui.py`; backend `script_generator.update_shot_narration`/`rewrite_narration` exists).
+- **USO wired (2026-07-02) + 2 TODOs for 2026-07-03.** USO single-image char-consistency backend built (`modules/image_backends/comfyui_uso.py`), registered in models.json, and wired into KIDS (`storyboard_generator._kids_backend()` prefers USO) + MUSIC (`musicvideo_pipeline` scene-0 anchor cascade). Toggle `rs.get/set_uso_mode_enabled()` (default True). `image_backend.get_named_backend(id)` added. models.json `image_backend.active` now = `comfyui_uso` (global default). 201 tests pass; real story→USO storyboard verified (cartoon_saloon, 2-char, ref×2 multi-char held). **Bot restart needed** to load .py edits. TODO tomorrow: (1) wire USO into photoreal HORROR mode (`horrorstory_pipeline.py`); (2) add narration-edit UI to web dashboard for ALL modes (kids has it; add music+horror in `dashboard_nicegui.py`; backend `script_generator.rewrite_narration` + `dashboard_nicegui.update_shot_narration` exist).
 - **RESTARTED 2026-06-10 23:08** — hardening pass + watchdog LIVE. Verified: 1 bot instance, dashboard answers HTTP 307 (login gate active), status embed posted, sync poller up, no stale lock. Still unverified by hand: Discord busy-notice when dashboard renders, login lockout, mobile ☰.
 - **Launcher restart-loop gotcha (fixed)** — first version of crash-restart loop in `00_Tools/launch_clawbot.ps1` caused launcher windows to ping-pong: new launcher kills old launcher's bot → old loop sees non-zero exit → respawns → 2-3 simultaneous bots. Loop now exits if another claw_bot.py already running. Launcher is OUTSIDE the repo — back up manually if edited.
 - **Bot restart needed (2026-06-04)** — today's .py edits (UI tabs, sync_bridge, auth, narration edit, AI rewrite) on disk, NOT live until restart.

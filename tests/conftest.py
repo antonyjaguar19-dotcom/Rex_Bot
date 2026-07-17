@@ -41,6 +41,29 @@ def _no_gpu_mascot(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_runtime_settings(monkeypatch, tmp_path_factory):
+    """No test may write to the owner's LIVE settings.
+
+    `rs.SETTINGS_PATH` is `05_Config/runtime_settings.json` — the real one, on the real
+    machine — and eight test files call `rs.set_*`. Every setter does read-modify-write of
+    that whole file, so simply RUNNING THE SUITE rewrote Jeffy's settings; and
+    `test_mascot_library` calls `rs.set_active_mascot("a-mascot-that-was-deleted")` outright,
+    with no restore. Which mascot is left active at the end depended on test ORDER.
+
+    Same floor as `_isolated_facts_memory` below, and the same reasoning: a test may not reach
+    out and change the machine it is running on. Pointing at a path that does not exist means
+    `_load()` returns `{}` and every getter answers with its own default — pristine, and
+    identical on every machine, instead of whatever this one happens to be set to.
+    """
+    try:
+        import modules.runtime_settings as rs
+    except Exception:
+        return
+    d = tmp_path_factory.mktemp("runtime_settings")
+    monkeypatch.setattr(rs, "SETTINGS_PATH", d / "runtime_settings.json", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_facts_memory(monkeypatch, tmp_path_factory):
     """No test may write to the real facts memory.
 

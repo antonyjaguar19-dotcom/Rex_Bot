@@ -139,7 +139,10 @@ def test_the_gate_has_a_confirm_a_redraw_and_reorder_arrows(page):
 
     assert "lesson_ok_" in gate, "no per-picture confirm checkbox"
     assert "set_beat_approved(" in gate
-    assert "render_btn.disable()" in gate, "Render is not locked while a picture is unconfirmed"
+    # Render is locked while a picture is unconfirmed. The disable() now lives in
+    # _repaint_estimate, which owns both the label and the button off one read of the disk —
+    # see test_the_render_button_cannot_disagree_with_the_gate.
+    assert "btn.disable()" in src, "Render is not locked while a picture is unconfirmed"
     assert "not confirmed" in gate
     assert "redraw_still_action(" in gate, "no per-picture redraw"
     assert "lw.move_beat(" in gate, "no reorder"
@@ -216,3 +219,116 @@ def test_the_prompts_are_revealed(page):
     assert 'b.get("motion_prompt", "")' in sig
 
     assert len(page.elements) > 100
+
+
+def test_the_gate_shows_what_the_bot_noticed(page):
+    # Every warning this pipeline made was a progress_cb string: the mother we have no photo
+    # of and quietly cut, the prop that lost its reference slot to her and will drift (which
+    # has NO other symptom anywhere), the crop that failed so a "closeup" is a full-body
+    # shot. All true, all detected, and all gone the moment the feed scrolled — long before
+    # this gate, which is the one place a person is looking.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def render_lesson_script")
+    end = src.index("def render_lesson_library", start)
+    gate = src[start:end]
+
+    assert 'lesson.get("warnings")' in gate, "the gate does not read the warnings"
+    assert "worth a look before you render" in gate
+    # ...and it says out loud that they are not a wall, so a full list does not read as a
+    # refusal and send Jeffy hunting for an override.
+    assert "None of these stop the render" in gate
+
+    # The change signature must carry them, or a warning raised by a redraw would not appear
+    # until something else forced a repaint.
+    sig_start = src.index('sig = ((lesson or {}).get("lesson_id")')
+    sig = src[sig_start:src.index("if not _changed(\"lesson_script\"", sig_start)]
+    assert '.get("warnings")' in sig
+
+
+def test_a_warning_is_not_a_gate(tmp_path, monkeypatch):
+    # THE RULE. Only a physical floor may refuse (facts _short_takes doctrine): the
+    # unconfirmed picture and the Wan cap. A thing to look at must never become a wall — a
+    # check that can sink a lesson is worse than the defect it was written for.
+    from modules import lesson_pipeline as lp
+    from modules import lesson_writer as lw
+    monkeypatch.setattr(lw, "LESSONS_DIR", tmp_path)
+    lid = "20260101_000000"
+    (tmp_path / lid).mkdir()
+    lw._save({"lesson_id": lid, "title": "t", "stage": "stills",
+              "beats": [{"narration": "hi", "approved": True, "animate": False}]})
+    for code in ("person_dropped", "object_desc_locked", "negative_not_sent",
+                 "prop_conform_failed", "coverage_gap"):
+        lw.add_warning(lid, code, f"{code} happened", line=1)
+    assert len(lw.load_lesson(lid)["warnings"]) == 5
+    got = lp.approve(lid)              # must not raise
+    assert got["stage"] == "approved"
+
+
+def test_the_render_button_cannot_disagree_with_the_gate(page):
+    # The label recomputed `unapproved` on every tick; the button captured it ONCE at build
+    # time. So ticking the last picture left "✅ every picture confirmed" beside a disabled
+    # button reading "🔒 1 picture(s) not confirmed" — the gate lying in the one direction
+    # that makes you doubt your own eyes. ONE function, ONE read of the disk, both.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    start = src.index("def _repaint_estimate")
+    body = src[start:src.index("# The lesson as a storyboard", start)]
+    assert "lw.unapproved(" in body, "the repaint does not re-read the ticks"
+    assert "btn.enable()" in body and "btn.disable()" in body, \
+        "the repaint does not own the button's state"
+    assert "not confirmed" in body
+
+    gate = src[src.index("def render_lesson_script"):src.index("def render_lesson_library")]
+    assert "_gate_btn[\"btn\"] = render_btn" in gate, "the button never reaches the repaint"
+
+
+def test_the_gate_makes_you_open_the_picture_before_you_tick_it(page):
+    # At 104px every defect this pipeline has produced is a few pixels wide — a face on a
+    # ball, mouse ears, emoji eyes, a different child entirely. The tick claims "I looked at
+    # this FULL SIZE" and nothing ever checked the claim was even possible.
+    #
+    # It must NOT disable the tick until seen: a wiring bug there would lock Jeffy out of his
+    # own render, and a check that can sink a lesson is worse than the defect it was written
+    # for. One extra click, once.
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    gate = src[src.index("def render_lesson_script"):src.index("def render_lesson_library")]
+
+    assert "min(90vw, 1100px)" in gate, "there is no full-size view to open"
+    assert "cursor: zoom-in" in gate
+    assert '_big.on("show"' in gate, "opening the picture is not recorded"
+    assert "_i not in _seen" in gate, "the tick does not consult whether you looked"
+    assert "_d.open()" in gate, "the first tick does not open the picture"
+    # ...and it never disables the tick.
+    assert "ok.disable()" not in gate and "ok.set_enabled(False)" not in gate
+
+
+def test_the_gate_shows_what_the_shot_promised(page):
+    # The same contract the visual check is built from — so you and it judge the picture
+    # against ONE list, not two. It is what turns "does this look OK?" (unanswerable at a
+    # glance) into "is she holding the blue block and nothing else?" (anyone can).
+    import inspect
+
+    import modules.dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    gate = src[src.index("def render_lesson_script"):src.index("def render_lesson_library")]
+    assert "_lesson_contract_line(" in gate
+
+    got = dash._lesson_contract_line({
+        "line": 1, "framing": "medium",
+        "people": {"count": 1, "relation": None},
+        "objects": [{"key": "doll", "noun": "doll", "desc": "a small faceless blue block"}],
+        "hands": {"says": "clapping her hands together"},
+        "banned": ["an apple or any fruit"]})
+    assert "1 child, alone" in got
+    assert "a small faceless blue block" in got
+    assert "clapping her hands together" in got
+    assert "an apple or any fruit" in got
+    assert dash._lesson_contract_line({}) == ""

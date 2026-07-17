@@ -65,7 +65,7 @@ def test_the_revealed_prompt_is_byte_for_byte_what_qwen_gets(lesson):
     # rebuild it the way the RENDERER does — through the same two functions
     got = lw.load_lesson(lesson)
     from modules import mascot_library as ml
-    scene_sent, _, _ = lp._scene_and_refs(got, 0, ml.get_active_id())
+    scene_sent, _, _, _ = lp._scene_and_refs(got, 0, ml.get_active_id())
     backdrop = lp.setting_for(got["topic"])
     # ...including this shot's camera framing, which swaps the full-body clause. prompts_for
     # reads it off the beat with a `medium` default, so the reference build must too.
@@ -229,3 +229,114 @@ def test_a_phantom_apple_is_banned_unless_the_scene_names_a_fruit():
     _, neg_apple = mas.build_presenter_prompt(
         "the mascot character holding up an apple", "garden", teaching=True)
     assert "a red apple" not in neg_apple                   # the apple shot keeps its apple
+
+
+# --- the negative that never leaves the building -------------------------------
+#
+# The default lesson backend is USO, and USO wires ConditioningZeroOut into its negative
+# input — its generate() has no negative parameter at all. So the whole ~430-word
+# NEGATIVE_TEACHING is discarded: the bans on a face-on-an-object, emoji eyes, a crop top
+# and the phantom apple are written and never sent. Half the "CODE"-status rows in
+# IMAGE_FEEDBACK.md have no sampler behind them on the backend actually in use.
+#
+# That is not a bug to fix by flipping the backend (USO is the default for a measured
+# reason: UNO multi-subject keeps the mascot AND the mother AND the prop each on their own
+# reference). It is a fact the pipeline has to stop hiding.
+
+def test_uso_reports_that_the_negative_is_not_sent(lesson, monkeypatch):
+    from modules import runtime_settings as rs
+    monkeypatch.setattr(rs, "get_lesson_image_backend", lambda: "uso")
+    assert lp.prompts_for(lesson, 0)["negative_sent"] is False
+    assert lp.negative_is_sent() is False
+
+    monkeypatch.setattr(rs, "get_lesson_image_backend", lambda: "qwen")
+    assert lp.prompts_for(lesson, 0)["negative_sent"] is True
+    assert lp.negative_is_sent() is True
+
+
+def test_uso_really_does_throw_the_negative_away():
+    # The claim above is only worth anything if it is true of the backend. Qwen-Edit takes
+    # `negative_prompt=`; the USO call does not, and nothing else may quietly grow one.
+    src = inspect.getsource(mas.render_scene)
+    uso_call = src.split("from modules.image_backends import comfyui_uso as uso")[1]
+    assert "negative" not in uso_call.split("reference_images=")[0], \
+        "if USO now takes a negative, negative_is_sent() is lying"
+
+
+def test_the_reveal_says_when_the_negative_is_not_sent():
+    # A preview that shows 430 words of bans with a word count, next to a sampler that never
+    # heard any of them, is exactly the "preview that can lie" this panel exists to forbid.
+    from modules import dashboard_nicegui as dash
+    src = inspect.getsource(dash.main_page)
+    assert 'p.get("negative_sent"' in src
+    assert "NOT SENT" in src
+    assert "takes no negative prompt" in src
+
+
+def test_the_shot_contract_reaches_the_gate(lesson):
+    # The gate and the visual check must judge the picture against ONE contract, not two.
+    p = lp.prompts_for(lesson, 0)
+    assert p["contract"]["line"] == 1
+    assert p["contract"]["framing"] == "medium"
+    assert p["contract"]["background"] == lp.setting_for("Living and Non-living Things")
+
+
+# --- the phantom apple was IN THE STYLE PROMPT ---------------------------------
+#
+# Measured on beat 4 of lesson 20260716_000517 (nakshu, qwen-edit, one seed, one variable at
+# a time — see mascot._PROP_SCALE_CLAUSE):
+#
+#   as written .......................... an apple in her hand
+#   "no fruit and no apple" in the scene . an apple in her hand   (negation does nothing)
+#   "hands clasped behind her back" ...... an apple in her hand   (the scene is overruled)
+#   "size of an apple" -> "small plum" ... a PLUM in her hand     <- the metaphor IS the prop
+#   the fruit noun deleted, clause kept .. a toy house in her hand
+#   THE CLAUSE DROPPED ................... her hands empty and open  <- the fix
+
+def test_the_style_never_names_an_object_in_a_size_metaphor():
+    # "about the size of an apple" was appended to EVERY teaching prompt, and the sampler drew
+    # the metaphor. A noun in a size comparison is a noun the model puts in her hand.
+    assert "size of an apple" not in mas.STYLE_TEACHING
+    assert "apple" not in mas._PROP_SCALE_CLAUSE.lower()
+    # ...and the size is still constrained, which is why the clause exists (a "grey rock" came
+    # back as a BOULDER hugged with both arms).
+    assert "sit in her palm" in mas._PROP_SCALE_CLAUSE
+    assert "never bigger than her head" in mas._PROP_SCALE_CLAUSE
+
+
+def test_a_shot_with_no_prop_is_never_told_that_props_are_in_her_hand():
+    # THE CAUSE. The clause states props ARE "clearly held in her hand" — on a shot whose
+    # scene says "her hands empty and open, not holding anything". The model believes the
+    # style over the scene, so it puts something there.
+    empty = ("the mascot character running in a playground, her hands empty and open, "
+             "not holding anything, both palms relaxed and clearly empty")
+    positive, _neg = mas.build_presenter_prompt(empty, "a garden", teaching=True)
+    assert "clearly held in her hand" not in positive
+    assert "small toys a child can hold" not in positive
+
+
+def test_a_shot_that_really_holds_something_still_gets_the_scale_rule():
+    # The clause has a real job: without it "holding up a grey rock" came back as a BOULDER
+    # bigger than her torso, hugged with both arms — which also ate the second prop.
+    held = "the mascot character holding up a small grey rock in one hand"
+    positive, _neg = mas.build_presenter_prompt(held, "a garden", teaching=True)
+    assert "sit in her palm" in positive
+    assert "never bigger than her head" in positive
+
+
+def test_the_prop_clause_and_the_phantom_guard_use_ONE_detector():
+    # no_phantom_object and the scale clause must never disagree about whether this shot holds
+    # anything — one saying "her hands are empty" while the other says "the prop is held in
+    # her hand" is how the contradiction got into the prompt in the first place.
+    import inspect
+    src = inspect.getsource(mas.build_presenter_prompt)
+    assert "holds_a_prop(scene)" in src
+    assert "holds_a_prop(" in inspect.getsource(mas.no_phantom_object)
+
+
+def test_the_facts_reel_is_not_given_the_lesson_scale_rule():
+    # A facts reel's prop need not fit in a hand (the gag is often a huge thing), and facts
+    # renders on the Lightning path where the negative is inert anyway. teaching=False only.
+    held = "the mascot character holding up a small grey rock in one hand"
+    positive, _neg = mas.build_presenter_prompt(held, "a garden", teaching=False)
+    assert "sit in her palm" not in positive

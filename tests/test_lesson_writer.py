@@ -7,6 +7,7 @@ said it. A placeholder saved to disk when the model was down, then voiced and
 rendered like the real thing.
 """
 import json
+import re
 
 import pytest
 
@@ -94,7 +95,7 @@ BEATS = [
      "on_screen": "Your body", "image_prompt": "a happy child waving"},
     {"kind": "teach", "narration": "You have two eyes, and they let you see the world.",
      "on_screen": "Two eyes", "image_prompt": "a child looking at a butterfly"},
-    {"kind": "example", "narration": "You use your ears to hear your friend calling you.",
+    {"kind": "teach", "narration": "You use your ears to hear your friend calling you.",
      "on_screen": "Two ears", "image_prompt": "a child listening"},
     {"kind": "check", "narration": "Which part of you helps you hear? Your ears do.",
      "on_screen": "Check", "image_prompt": "a child pointing at an ear"},
@@ -127,7 +128,7 @@ def test_a_topic_becomes_a_lesson(book, monkeypatch):
     # THE narration is the lesson's own prose, verbatim — the model never rewrites it.
     spoken = " ".join(b["narration"] for b in lesson["beats"])
     assert "two eyes to see" in spoken and "brush your teeth" in spoken.lower()
-    assert all(b["on_screen"] and b["image_prompt"] for b in lesson["beats"])
+    assert all(b["on_screen"] for b in lesson["beats"])
     # It is on disk and reloadable — the render reads it back, not the browser.
     assert lw.load_lesson(lesson["lesson_id"])["title"] == "Your Wonderful Body"
 
@@ -220,7 +221,7 @@ def test_a_failed_captioning_pass_does_not_cost_the_lesson(book, monkeypatch):
     monkeypatch.setattr(lw, "_call_llm", fake)
 
     lesson = lw.write_lesson(book, "t01")
-    assert all(b["on_screen"] and b["image_prompt"] for b in lesson["beats"])
+    assert all(b["on_screen"] for b in lesson["beats"])
 
 
 # --- the book's words vs the machine's ---------------------------------------
@@ -513,3 +514,180 @@ def test_a_costume_may_not_cost_the_mascot_her_identity():
     for banned in ("different character", "different child", "changed hairstyle",
                    "hair hidden under a hat"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+# --- warnings: what the bot noticed, kept where you will actually see it -------
+#
+# Every warning this pipeline made was a progress_cb string — true, detected, and gone the
+# moment the feed scrolled, long before the gate. A warning nobody reads is a log line.
+
+def _bare_lesson():
+    lid = "20260101_000000"
+    (lw.LESSONS_DIR / lid).mkdir(parents=True, exist_ok=True)
+    lw._save({"lesson_id": lid, "title": "t", "beats": [{"narration": "hi"}]})
+    return lid
+
+
+def test_a_warning_survives_the_scroll():
+    lid = _bare_lesson()
+    lw.add_warning(lid, "person_dropped", "line 2: no picture of her mother", line=2)
+    got = lw.load_lesson(lid)["warnings"]
+    assert len(got) == 1
+    assert got[0]["code"] == "person_dropped" and got[0]["line"] == 2
+    assert got[0]["at"], "a warning is stamped, so a stale one can be spotted"
+
+
+def test_the_same_warning_twice_is_still_one_warning():
+    # Idempotent on (code, line), or a redraw loop grows the list forever.
+    lid = _bare_lesson()
+    for _ in range(3):
+        lw.add_warning(lid, "object_desc_locked", "the doll may drift", line=5)
+    assert len(lw.load_lesson(lid)["warnings"]) == 1
+
+
+def test_the_same_code_on_a_different_line_is_a_different_warning():
+    lid = _bare_lesson()
+    lw.add_warning(lid, "object_desc_locked", "line 5", line=5)
+    lw.add_warning(lid, "object_desc_locked", "line 6", line=6)
+    assert len(lw.load_lesson(lid)["warnings"]) == 2
+
+
+def test_a_redraw_clears_only_that_lines_warnings():
+    # A redraw that FIXED something must not leave the old warning standing beside the new
+    # picture — the list would then describe a picture that no longer exists.
+    lid = _bare_lesson()
+    lw.add_warning(lid, "object_desc_locked", "line 5", line=5)
+    lw.add_warning(lid, "person_dropped", "line 5", line=5)
+    lw.add_warning(lid, "coverage_gap", "the whole lesson", line=None)
+    lw.clear_warnings(lid, line=5)
+    got = lw.load_lesson(lid)["warnings"]
+    assert [w["code"] for w in got] == ["coverage_gap"]
+
+
+def test_warnings_can_be_cleared_by_code_for_a_recheck():
+    lid = _bare_lesson()
+    lw.add_warning(lid, "coverage_gap", "breathe", line=None)
+    lw.add_warning(lid, "person_dropped", "line 2", line=2)
+    lw.clear_warnings(lid, code="coverage_gap")
+    assert [w["code"] for w in lw.load_lesson(lid)["warnings"]] == ["person_dropped"]
+
+
+def test_a_record_is_not_a_hand_edit():
+    # EDITABLE_BEAT_FIELDS guards HAND edits (a typo'd framing renders as the old default
+    # with nothing to say why). The contract and the delivered record are machine-made and
+    # go through their own door.
+    lid = _bare_lesson()
+    with pytest.raises(ValueError):
+        lw.set_beat_field(lid, 0, "contract", "x")
+    with pytest.raises(ValueError):
+        lw.set_beat_record(lid, 0, "narration", "x")
+    assert lw.set_beat_record(lid, 0, "contract", {"line": 1, "framing": "medium"})
+    assert lw.load_lesson(lid)["beats"][0]["contract"]["framing"] == "medium"
+
+
+# --- coverage: the check that could be fooled by the word it was written for ----
+
+def test_eat_is_not_covered_by_breathe(monkeypatch):
+    # THE BUG, exactly. `head not in prose_low` — and "eat" is a substring of "breathe".
+    # This check exists BECAUSE a lesson taught 5 of the book's 6 properties and dropped
+    # breathe; a book saying "eat" and a lesson saying only "breathe" registered eat as
+    # covered. The check written because a lesson dropped `breathe` was fooled by the word
+    # `breathe`.
+    monkeypatch.setattr(lw, "_call_llm",
+                        lambda *a, **k: json.dumps({"missing": ["eat"]}))
+    got = lw._missing_key_ideas("Living things eat and grow.",
+                                "Living things breathe. That is great.", lambda m: None)
+    assert got == ["eat"], "'eat' was swallowed by 'breathe'/'great'"
+
+
+def test_a_word_the_lesson_really_does_teach_is_forgiven(monkeypatch):
+    # eat/eats/eating are one idea. The fix must not make the check pedantic.
+    monkeypatch.setattr(lw, "_call_llm",
+                        lambda *a, **k: json.dumps({"missing": ["eat"]}))
+    for taught in ("A puppy eats its food.", "A puppy is eating.", "Puppies eat."):
+        assert lw._missing_key_ideas("Living things eat and grow.", taught,
+                                     lambda m: None) == [], taught
+
+
+def test_a_reroll_that_covers_less_is_thrown_away(monkeypatch):
+    # A re-roll replaces the prose WHOLESALE, and the word budget is fixed — so the model
+    # pays for the gap it was just told about by dropping something else. A "fix" that
+    # trades one gap for another is not a fix, and re-rolling forever swapping which
+    # property gets dropped is worse than keeping the better draft.
+    source = "Living things eat, grow, move and breathe."
+    first = "Living things eat. They grow. They move."          # missing: breathe
+    traded = "Living things breathe. They grow. They move."      # missing: eat  <- a trade
+
+    calls = {"n": 0}
+
+    def fake_llm(prompt, sys=None, role=None, **k):
+        if role == "structurer":            # the coverage checker
+            prose = prompt.split("The lesson written from it:")[1].lower()
+            # WORD BOUNDARIES here too — the first version of this fake used `w not in prose`
+            # and fell for the very bug under test: "eat" is inside "breathe", so it reported
+            # the traded draft as complete and the test failed for the wrong reason.
+            out = [w for w in ("eat", "breathe")
+                   if not re.search(rf"\b{w}\w*\b", prose)]
+            return json.dumps({"missing": out})
+        calls["n"] += 1
+        return traded                        # the re-roll: trades breathe for eat
+
+    monkeypatch.setattr(lw, "_call_llm", fake_llm)
+    monkeypatch.setattr(lw, "_clean_prose", lambda s: s)
+    monkeypatch.setattr(lw, "_prose_ask", lambda *a, **k: "ask")
+
+    got = lw._close_gaps({"title": "t"}, source, first, 60, lambda m: None)
+    assert calls["n"] > 0, "it never tried to re-roll"
+    assert got == first, "it kept a draft that lost an idea to gain one"
+
+
+def test_a_long_hand_edit_warns_but_saves():
+    # The length is only bounded when the lesson is WRITTEN. A hand edit recomputed the
+    # estimate and told nobody — a 90s lesson could become five minutes in silence. Say so;
+    # never clamp, never refuse. The words are Jeffy's.
+    lid = _bare_lesson()
+    long_line = " ".join(["word"] * 2000)
+    assert lw.set_beat_field(lid, 0, "narration", long_line) is True
+    got = lw.load_lesson(lid)
+    assert got["beats"][0]["narration"] == long_line, "the edit must save"
+    assert got["estimated_seconds"] > lw.MAX_SECONDS
+    assert [w["code"] for w in got["warnings"]] == ["length_off_target"]
+
+    lw.set_beat_field(lid, 0, "narration", " ".join(["word"] * 200))
+    assert lw.load_lesson(lid)["warnings"] == [], "the warning outlived the problem"
+
+
+def test_the_only_way_to_change_a_lesson_picture_is_the_guarded_scene(book, monkeypatch):
+    # `image_prompt` was asked of the model, written to every beat, and offered in
+    # EDITABLE_BEAT_FIELDS — and read by NOTHING. The picture comes from `mascot_scene`,
+    # regenerated fresh from the narration at prepare. So a hand edit to it was silently
+    # discarded: an edit box that pretends, which is the worst state a control can be in.
+    #
+    # It is NOT seeded into mascot_scene either. That would invert the guard chain:
+    # set_scene runs clean_scene_for_the_mascot on hand edits precisely because unguarded
+    # text reaching the sampler walks back into paid-for defects, and _DRESS's picture idea
+    # is unguarded LLM prose.
+    assert "image_prompt" not in lw.EDITABLE_BEAT_FIELDS
+    assert "image_prompt" not in lw._DRESS_SYS
+
+    monkeypatch.setattr(lw, "_call_llm", _llm(PROSE, BEATS))
+    lesson = lw.write_lesson(book, "t01")
+    assert all("image_prompt" not in b for b in lesson["beats"])
+
+    lid = lesson["lesson_id"]
+    with pytest.raises(ValueError):
+        lw.set_beat_field(lid, 0, "image_prompt", "a child holding an apple")
+    # ...and the guarded door still works
+    assert lw.set_beat_field(lid, 0, "mascot_scene", "the mascot character clapping")
+
+
+def test_the_global_prop_shelf_is_gone():
+    # props_library/prop_extractor were a complete, tested, GLOBAL cross-video prop shelf
+    # that nothing called — and prop_extractor.checklist()'s docstring claimed it was
+    # "surfaced in the dashboard and !prop list", neither of which was ever built. A global
+    # shelf is also cross-lesson identity leak by design: a doll pinned in lesson A
+    # reappearing in lesson B is the OPPOSITE of the goal. Lesson-scoped pinning
+    # (lesson_objects) is the right scope, and it is live because it has the CHECK.
+    for gone in ("modules.props_library", "modules.prop_extractor"):
+        with pytest.raises(ImportError):
+            __import__(gone)

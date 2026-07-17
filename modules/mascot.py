@@ -225,13 +225,6 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     "she is wearing EXACTLY THE SAME CLOTHES as in the reference image — the same top, "
     "the same skirt, the same shoes, unchanged in every shot; only the PROPS change",
 ) + (
-    # SCALE. Nothing constrained how BIG a prop was, and "holding up a grey rock" came
-    # back as a BOULDER bigger than her torso, hugged with both arms — which also ate the
-    # SECOND prop the scene asked for, because both her arms were full of the first.
-    # A lesson's prop is a child's toy: it fits in her hand. A facts reel's need not.
-    ", the props are small toys a child can hold — about the size of an apple, small enough "
-    "to sit in her palm, clearly held in her hand, never bigger than her head and never "
-    "doll-house tiny"
     # The flat colour card made every shot look like a void. A real place is better
     # television AND better teaching — but the child and the prop are the lesson, so the
     # setting stays soft and behind her, and the captions have to stay readable over it.
@@ -245,6 +238,35 @@ STYLE_TEACHING = STYLE_PRESENTER.replace(
     ", her pose is natural, relaxed and candid — a real child caught mid-moment, weight "
     "shifted onto one leg, shoulders loose, a lively spontaneous expression, never a stiff "
     "symmetrical mannequin standing straight at the camera"
+)
+
+# PROP SCALE — appended ONLY to a shot whose scene actually names something to hold.
+#
+# It is here to stop a prop being drawn too big: "holding up a grey rock" came back as a
+# BOULDER bigger than her torso, hugged with both arms, which also ate the SECOND prop the
+# scene asked for. That reason is still good. But the clause was appended to EVERY teaching
+# shot, and it asserts, in the present tense, that props ARE small toys CLEARLY HELD IN HER
+# HAND — on a shot whose scene says "her hands empty and open, not holding anything".
+#
+# The model believes the style over the scene. **This clause is the phantom apple.** Measured
+# on beat 4 of lesson 20260716_000517 (nakshu, qwen-edit, one seed, one variable at a time):
+#
+#   as written .......................... an apple in her hand
+#   "no fruit and no apple" in the scene . an apple in her hand   (negation does nothing)
+#   "hands clasped behind her back" ...... an apple in her hand   (the scene is overruled)
+#   "size of an apple" -> "small plum" ... a PLUM in her hand     <- the metaphor IS the prop
+#   the fruit noun deleted, clause kept .. a toy house in her hand
+#   THE CLAUSE DROPPED ................... her hands empty and open  ✅
+#
+# So the fix is not wording, it is a CHECK: say it only when it is true. `_HELD_PROP` is the
+# same detector `no_phantom_object` uses to decide whether a scene has a prop at all, so the
+# two can never disagree about what this shot is holding.
+#
+# The size is now given WITHOUT naming an object ("sit in her palm" already says it). A noun
+# in a size metaphor is a noun the sampler draws.
+_PROP_SCALE_CLAUSE = (
+    ", the props are small toys a child can hold, small enough to sit in her palm, clearly "
+    "held in her hand, never bigger than her head and never doll-house tiny"
 )
 
 # --- Camera framing (LESSON-ONLY) --------------------------------------------
@@ -1277,7 +1299,14 @@ _HANDS_BUSY_EXTRA = re.compile(r"\bgestur\w*\b", re.I)
 
 def never_empty_handed(scene: str) -> str:
     """Idle hands go home to the reference photo, and the reference photo is a T-pose. Give
-    them a NATURAL, varied job — never the same stiff pose twice."""
+    them a NATURAL, varied job — never the same stiff pose twice.
+
+    KNOWN LIMIT, worth knowing before you press Redraw: the pose is `hash(scene) % 8`.
+    Deterministic on purpose — the same scene must not shuffle its pose on every repaint — but
+    it also means REDRAWING a T-posed shot returns the same pose forever. Only the seed
+    changed, and the seed is not what put her arms out. To move the pose you have to edit the
+    scene (the 🔧 Prompts panel at the gate), not re-roll it.
+    """
     s = scene or ""
     if _HANDS_BUSY.search(s) or _HANDS_BUSY_EXTRA.search(s):
         return scene
@@ -1297,6 +1326,28 @@ _HELD_PROP = re.compile(
     r"apple|banana|fruit|plate|food|cup|mug|bowl|spoon|book|crayon|leaf|figurine|teddy|"
     r"car|truck|cube|box|balloon)\b", re.I)
 
+# A NOUN INSIDE A NEGATION IS NOT A PROP. "no fruit and no apple" is a scene saying her hands
+# are EMPTY, and a plain `_HELD_PROP.search()` reads it as two props — which is exactly how
+# the guard against phantom props ended up manufacturing one (see no_phantom_object). Scenes
+# written before that was fixed still carry the words on disk, and the writer can produce them
+# again, so the DETECTOR has to be the thing that is right.
+_NEGATED = re.compile(
+    r"\bno\s+\w+(?:\s+(?:and|or)\s+no\s+\w+)*"          # "no fruit and no apple"
+    r"|\bnot\s+holding\s+[^,.]*"                        # "not holding anything at all"
+    r"|\bwithout\s+(?:a\s+|an\s+|any\s+)?\w+"           # "without a toy"
+    r"|\bnothing\s+in\s+(?:her\s+)?hands?", re.I)
+
+
+def holds_a_prop(scene: str) -> bool:
+    """Does this scene actually ask for something IN HER HANDS?
+
+    The single detector for that question — `no_phantom_object` and `build_presenter_prompt`
+    must never disagree about it, because one saying "her hands are empty" while the other
+    says "the prop is clearly held in her hand" is a contradiction the sampler resolves by
+    drawing a prop.
+    """
+    return bool(_HELD_PROP.search(_NEGATED.sub(" ", scene or "")))
+
 
 def no_phantom_object(scene: str) -> str:
     """A prop-less scene must SAY her hands are empty, or Qwen fills them with a random toy.
@@ -1307,18 +1358,29 @@ def no_phantom_object(scene: str) -> str:
     stops GESTURING hands sprouting a phantom object.
     """
     s = scene or ""
-    if _HELD_PROP.search(s):
+    if holds_a_prop(s):
         return scene                       # a prop is named — a held object is wanted
     if re.search(r"not holding anything|hands? empty|empty and open|clearly empty", s, re.I):
         return scene                       # already says the hands are empty (idempotent)
     if re.search(r"\bcradl\w*|both arms\b", s, re.I):
         return scene                       # her arms are cradling an animal — not empty
-    # WORDING MATTERS: this clause is scanned by lesson_objects.detect, which feeds the pin
-    # references. Naming "toy/doll/block/puppy" here made the detector think the shot WANTED
-    # a doll and fed the block reference in — so a running-and-moving shot grew an off-topic
-    # block. Say the hands are empty WITHOUT naming any prop noun.
-    return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, not holding anything, "
-                 f"no fruit and no apple, both palms relaxed and clearly empty")
+    # WORDING MATTERS, AND IT BIT TWICE. This clause is scanned by detectors downstream, and
+    # naming a prop in order to FORBID it tells them the prop is wanted:
+    #
+    #  1. `lesson_objects.detect` — naming "toy/doll/block/puppy" made it think the shot
+    #     wanted a doll and fed the pinned block in as a reference, so a running shot grew an
+    #     off-topic block. That is why the rule was written.
+    #  2. `_HELD_PROP` — and this clause went on to say "no fruit and no apple", which
+    #     `_HELD_PROP` MATCHES. So `build_presenter_prompt` concluded the shot held something,
+    #     appended "the props are ... clearly held in her hand", and Qwen obliged. **The guard
+    #     against phantom props was manufacturing the phantom prop.** Measured on beat 4 of
+    #     20260716_000517: with "no fruit and no apple" the hands come back full; with the
+    #     nouns gone they come back empty.
+    #
+    # The rule was right and the clause broke it in its own last line. NAME NOTHING. "Not
+    # holding anything" says it, and no detector can read a prop into it.
+    return _tidy(f"{s.rstrip(' ,')}, her hands empty and open, not holding anything at all, "
+                 f"both palms relaxed, open and clearly empty")
 
 
 # A live animal must never be DANGLED from one hand (jeffy 2026-07-16). If she holds it, both
@@ -1936,10 +1998,25 @@ def build_presenter_prompt(scene: str, background: str = "",
     if clause and _FULL_BODY_CLAUSE in style:
         style = style.replace(_FULL_BODY_CLAUSE, clause)
 
+    # THE PROP SCALE CLAUSE — only on a shot that HAS a prop. See _PROP_SCALE_CLAUSE for the
+    # measurements: appended unconditionally, it is what put an apple in her hand on every
+    # prop-less shot, because it states that props ARE clearly held in her hand and the model
+    # believes the style over the scene. `holds_a_prop` is the same detector
+    # no_phantom_object uses, so the two can never disagree about whether this shot holds
+    # anything — and it is negation-aware, so the guard's own "not holding anything" cannot
+    # be read back as a prop.
+    if teaching and holds_a_prop(scene):
+        style = style + _PROP_SCALE_CLAUSE
+
     # PHANTOM APPLE. Qwen's prior is "a child holds a small round red apple" and it filled the
     # free hand with one across shots that never named it (a running shot, a plant shot, a
     # doll shot). Ban it — but ONLY when THIS scene does not name a fruit, so the one shot that
     # legitimately shows an apple keeps it. Conditional, scene-aware (jeffy 2026-07-16).
+    #
+    # KEPT, but it is not the fix and never was: measured, this ban does NOTHING (the apple
+    # arrives with it on, on both backends, and USO discards the negative entirely). The prop
+    # clause above was the cause. This stays only because it costs nothing on the one backend
+    # that reads a negative — do not mistake it for the guard that works.
     if teaching and not re.search(r"\b(?:apple|fruit|banana|orange|berry|berries|grape)\b",
                                   scene, re.I):
         negative = (negative + ", a red apple, a round red fruit, a piece of fruit in her "
