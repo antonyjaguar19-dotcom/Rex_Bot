@@ -968,12 +968,34 @@ def render_lesson(lesson_id: str,
             _p(f"⏭️ lip-sync off — {why}; animated beats stay silent (voiced over)")
         else:
             gpu_utils.free_comfyui_vram()      # LatentSync needs the VRAM Wan was holding
-            if not _ls.face_detectable(stills[ticked[0]]):
-                _p("⏭️ lip-sync skipped — this mascot has no human-detectable face; "
-                   "animated beats stay silent (voiced over, as before)")
+            # TWO gates decide which ticked beats get a mouth:
+            #  1. a HUMAN face must be present at all — one insightface pass over the ticked
+            #     stills (frac 0.0 = a creature mascot; it keeps a silent clip, voiced over).
+            #  2. the FRAMING must be medium/closeup. A wide/establishing beat has a small,
+            #     MOVING figure and LatentSync slides the mouth onto the neck; size alone does
+            #     not catch it (a working medium and a sliding establishing still measure the
+            #     same), the framing does. Wide beats stay silent and are voiced over — the
+            #     talking shots in a lesson are the medium/closeup ones anyway.
+            fracs = _ls.face_fracs([stills[i] for i in ticked])
+            has_face = {i: (fr > 0) for i, fr in zip(ticked, fracs)}
+            eligible = [i for i in ticked
+                        if has_face[i]
+                        and (beats[i].get("framing") or "medium") in _ls.LIPSYNC_FRAMINGS]
+            if not any(has_face.values()):
+                _p("⏭️ lip-sync skipped — no human-detectable face on the animated shots "
+                   "(a creature mascot?); they stay silent, voiced over, as before")
+            elif not eligible:
+                _p("⏭️ lip-sync skipped — the animated shots are wide/establishing (small, "
+                   "moving face); a lip-sync needs a medium/closeup framing. Voiced over")
             else:
-                _p(f"👄 lip-syncing {len(ticked)} animated shot(s) with LatentSync…")
+                _p(f"👄 lip-syncing {len(eligible)} medium/closeup shot(s) "
+                   f"(of {len(ticked)} animated)…")
                 for i in ticked:
+                    if i not in eligible:
+                        why = ("no face" if not has_face[i]
+                               else f"{beats[i].get('framing')} framing (too wide)")
+                        _p(f"  ⏭️ shot {i+1}: {why} — kept silent (voiced over)")
+                        continue
                     bwav = d / "audio" / f"beat_{i:02d}.wav"
                     if not bwav.exists():
                         _p(f"  ⚠️ shot {i+1}: no voice file, keeping silent clip")

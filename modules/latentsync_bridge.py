@@ -34,12 +34,12 @@ import logging
 log = logging.getLogger("clawbot.latentsync")
 
 # --- where the standalone install lives -------------------------------------------------
-# TODO(relocate): this currently points at the experiment tree. Move the env + repo +
-# checkpoints under 03_Models (beside venv_chatterbox) for production and update these three
-# constants; nothing else changes.
-_ROOT = Path(r"E:/Rexjaw_VFX/08Experiment")
+# Production home: 03_Models (beside venv_chatterbox), OUT of the experiment tree so a sweep
+# of 08Experiment cannot break lessons. The venv was recreated here (a Python venv bakes
+# absolute paths and cannot simply be moved); the repo + checkpoints were moved across.
+_ROOT = Path(r"E:/Rexjaw_VFX/03_Models")
 LATENTSYNC_DIR = _ROOT / "LatentSync"
-ENV_PY = _ROOT / "latentsync_env" / "Scripts" / "python.exe"
+ENV_PY = _ROOT / "venv_latentsync" / "Scripts" / "python.exe"
 UNET_CKPT = LATENTSYNC_DIR / "checkpoints" / "latentsync_unet.pt"
 UNET_CONFIG = LATENTSYNC_DIR / "configs" / "unet" / "stage2_512.yaml"
 
@@ -48,6 +48,15 @@ _FFMPEG_BIN = Path(r"E:/Rexjaw_VFX/00_Tools/ffmpeg/bin")
 # LatentSync inference knobs — the values proven in the experiment.
 INFERENCE_STEPS = 20
 GUIDANCE_SCALE = 1.5
+
+# Which lesson framings are safe to lip-sync. Measured the hard way: an ESTABLISHING wide
+# shot (small figure that MOVES across the frame while Wan animates it) makes LatentSync lose
+# the mouth — it "slides to the neck and back". A medium/closeup presenter holds the face
+# steady and syncs clean. Face SIZE alone does not separate them (a working medium still and a
+# sliding establishing still both measured ~0.22 of frame) — the FRAMING does, because it is
+# about the face being large AND stable, not just large. So lip-sync runs on medium/closeup
+# beats and leaves wide/establishing beats as silent clips, voiced over.
+LIPSYNC_FRAMINGS = ("medium", "closeup")
 
 
 def _env() -> dict:
@@ -68,41 +77,57 @@ def is_available() -> Tuple[bool, str]:
     return True, "ready"
 
 
-def face_detectable(image: Path, timeout: int = 180) -> bool:
-    """Does LatentSync's OWN detector (insightface/SCRFD) find a face in this still?
+def face_fracs(images: list, timeout: int = 300) -> list:
+    """For each image, the largest face's size as a fraction of the frame — max(w/W, h/H),
+    or 0.0 if no face (or on any failure: unknown is treated as no-sync, never a crash).
 
-    Run in the LatentSync env because insightface only lives there. Returns True only on a
-    clear, printed 'FACES n' with n>=1. Any failure is treated as NOT detectable — better to
-    keep the silent Wan clip than to hand LatentSync a still it will crash on. A creature
-    mascot returns False here and never reaches `lipsync()`.
-    """
+    ONE subprocess for the whole batch: insightface loads once (~13s), not per still. Runs in
+    the LatentSync env because insightface only lives there. This is both gates in one number:
+    0.0 == not a (human) face at all (a creature mascot), and a small-but-nonzero value == a
+    face too small to lip-sync (a wide/establishing shot — see MIN_LIPSYNC_FACE_FRAC)."""
     ok, _ = is_available()
     if not ok:
-        return False
+        return [0.0] * len(images)
     code = (
-        "import sys, cv2\n"
+        "import sys, json, cv2\n"
         "from insightface.app import FaceAnalysis\n"
         "app=FaceAnalysis(providers=['CPUExecutionProvider'])\n"
         "app.prepare(ctx_id=-1, det_size=(640,640))\n"
-        "img=cv2.imread(sys.argv[1])\n"
-        "n=0 if img is None else len(app.get(img))\n"
-        "print('FACES', n)\n"
+        "out=[]\n"
+        "for p in sys.argv[1:]:\n"
+        "    img=cv2.imread(p)\n"
+        "    if img is None: out.append(0.0); continue\n"
+        "    H,W=img.shape[:2]; best=0.0\n"
+        "    for f in app.get(img):\n"
+        "        x1,y1,x2,y2=f.bbox\n"
+        "        best=max(best, max((x2-x1)/W, (y2-y1)/H))\n"
+        "    out.append(round(float(best),3))\n"
+        "print('FRACS', json.dumps(out))\n"
     )
     try:
-        r = subprocess.run([str(ENV_PY), "-c", code, str(image)],
+        r = subprocess.run([str(ENV_PY), "-c", code, *[str(p) for p in images]],
                            cwd=str(LATENTSYNC_DIR), env=_env(),
                            capture_output=True, text=True, timeout=timeout)
     except Exception as e:
-        log.warning(f"face_detectable probe failed: {e}")
-        return False
+        log.warning(f"face_fracs probe failed: {e}")
+        return [0.0] * len(images)
     for line in (r.stdout or "").splitlines():
-        if line.startswith("FACES"):
+        if line.startswith("FRACS"):
             try:
-                return int(line.split()[1]) >= 1
+                import json as _j
+                vals = _j.loads(line[5:].strip())
+                if len(vals) == len(images):
+                    return [float(v) for v in vals]
             except Exception:
-                return False
-    log.warning(f"face_detectable: no verdict (stderr tail: {(r.stderr or '')[-300:]})")
-    return False
+                break
+    log.warning(f"face_fracs: no verdict (stderr tail: {(r.stderr or '')[-300:]})")
+    return [0.0] * len(images)
+
+
+def face_detectable(image: Path, timeout: int = 180) -> bool:
+    """Is there any (human) face at all? Presence only — size is judged separately with
+    MIN_LIPSYNC_FACE_FRAC. A creature mascot returns False. Thin wrapper over face_fracs."""
+    return face_fracs([image], timeout=timeout)[0] > 0.0
 
 
 def lipsync(video: Path, audio: Path, out: Path,
