@@ -516,6 +516,77 @@ def test_a_costume_may_not_cost_the_mascot_her_identity():
         assert banned in mas.NEGATIVE_PRESENTER, banned
 
 
+# --- a summary line has no single thing to anchor on (2026-07-22) --------------
+#
+# Measured on the real lesson 20260714_113840: "Today we learned that living things eat,
+# grow, feel happy when loved, and move around all by themselves" rendered as the mascot
+# hugging a puppy — a different beat's idea, not this one. A recap/outro line sums up
+# several ideas at once and names no single concrete thing, so the artist fell back to a
+# generic happy pose that showed none of them.
+
+def test_the_teaching_prompt_handles_a_list_of_ideas_not_naming_one_thing():
+    from modules import mascot as mas
+    sysp = mas._TEACHING_SYS.lower()
+    assert "list several ideas instead of naming one thing" in sysp
+    assert "shows none of them" in sysp
+    assert "came back as the mascot hugging a puppy" in sysp, \
+        "the rule must keep its real, measured reason"
+    assert "pick one of the listed ideas" in sysp
+
+
+def test_recap_scene_is_steered_to_the_lessons_own_objects(monkeypatch):
+    """The lesson's own recurring objects (already pinned, already proven to render well
+    together — see the `check` beat in this same real lesson) are the concrete thing to
+    show on a summary line, instead of a new invented moment."""
+    from modules import mascot as mas
+    import modules.script_generator as sg
+
+    seen = {}
+    def fake(prompt, sys_prompt, role="creative"):
+        seen["prompt"] = prompt
+        return ('{"scene": "the mascot character facing the camera holding a small '
+                'faceless blue ball in one hand, a real live puppy sitting beside her"}')
+    monkeypatch.setattr(sg, "_call_llm", fake)
+
+    mas.explainer_scene(
+        "Today we learned that living things eat, grow, feel happy, and move around.",
+        topic="Living and Non-living Things", teaching=True, framing="wide",
+        object_nouns=["doll", "puppy"], kind="recap")
+
+    prompt = seen["prompt"].lower()
+    assert "sums up the lesson rather than naming one thing" in prompt
+    assert "show the mascot with doll and puppy together" in prompt
+    assert "if this line is about" not in prompt, \
+        "the per-line hint must not also fire for a summary beat"
+
+
+def test_an_ordinary_teach_beat_keeps_the_old_per_line_object_hint(monkeypatch):
+    """Back-compat: a beat that is not a recap/outro renders exactly as it did before
+    `kind` existed, and `kind` itself stays optional for other callers (facts_pipeline)."""
+    from modules import mascot as mas
+    import modules.script_generator as sg
+
+    seen = {}
+    def fake(prompt, sys_prompt, role="creative"):
+        seen["prompt"] = prompt
+        return ('{"scene": "the mascot character kneeling beside a puppy, stroking its '
+                'back with one hand, laughing, facing the camera"}')
+    monkeypatch.setattr(sg, "_call_llm", fake)
+
+    mas.explainer_scene("Your puppy Jimmy feels happy when you pet him!",
+                        topic="Living and Non-living Things", teaching=True,
+                        framing="medium", object_nouns=["doll", "puppy"], kind="teach")
+    prompt = seen["prompt"].lower()
+    assert "if this line is about doll or puppy" in prompt
+    assert "sums up the lesson" not in prompt
+
+    # kind is optional (facts_pipeline never passes it) and must not crash or change
+    # behaviour for a caller that still doesn't know it exists.
+    mas.explainer_scene("Your puppy Jimmy feels happy when you pet him!",
+                        topic="t", teaching=True, object_nouns=["doll", "puppy"])
+    assert "if this line is about doll or puppy" in seen["prompt"].lower()
+
+
 # --- warnings: what the bot noticed, kept where you will actually see it -------
 #
 # Every warning this pipeline made was a progress_cb string — true, detected, and gone the

@@ -914,12 +914,14 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         # composed BODY is measured, and if it is short we ask again for longer.
         # (Looping a short bed to fill the reel is not an option: replaying the
         # opening is heard as a stutter, which is how this bug was reported.)
-        # A take is judged on BOTH length and whether it is actually music: ACE can
-        # under-fill (short) OR collapse the whole track into a repeating cell (a
-        # scratched record). Either is a reason to ask again — a looping bed cannot
-        # be windowed out of, only re-rolled. Best take = non-looping first, then
-        # longest, so a clean short beats a long loop.
-        best, best_len, best_ok = None, 0.0, False
+        # A take is judged on THREE things, because ACE has three ways to fail and
+        # each one used to ship: it can hand back silence (a full-length track of
+        # noise floor — the snow reel), collapse the whole track into a repeating
+        # cell (a scratched record), or simply under-fill (short). Every one is a
+        # reason to roll again. Best take = AUDIBLE first, then non-looping, then
+        # longest — a dead take can never win, however long and unrepetitive its
+        # silence measures.
+        best, best_len, best_ok, best_alive = None, 0.0, False, False
         ask = reel * _MUSIC_ASK_HEADROOM
         for attempt in range(1, _MUSIC_TRIES + 1):
             _p(f"🎵 composing the music bed ({mood}, {reel:.0f}s reel, "
@@ -936,19 +938,28 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
                 raise RuntimeError("ACE-Step produced no file")
             track = fasm.trim_trailing_silence(Path(track))
             got = _probe_dur(track)
-            loop = fasm.bed_loopiness(Path(track))
-            not_loop = loop <= fasm._LOOP_BAD
-            if (not_loop, got) > (best_ok, best_len):
-                best, best_len, best_ok = Path(track), got, not_loop
-            if got >= reel - 0.5 and not_loop:
+            alive = not fasm.bed_is_silent(Path(track))
+            # Scoring silence for loopiness is meaningless (a flat envelope has no
+            # variance to correlate) and it flatters the take with a 0.0.
+            not_loop = alive and fasm.bed_loopiness(Path(track)) <= fasm._LOOP_BAD
+            if (alive, not_loop, got) > (best_alive, best_ok, best_len):
+                best, best_len, best_ok, best_alive = Path(track), got, not_loop, alive
+            if alive and not_loop and got >= reel - 0.5:
                 break
-            why = "loops like a scratched record" if not not_loop else \
-                  f"only {got:.1f}s of music for a {reel:.1f}s reel"
+            why = ("came back SILENT — ACE returned noise floor, not music" if not alive
+                   else "loops like a scratched record" if not not_loop
+                   else f"only {got:.1f}s of music for a {reel:.1f}s reel")
             _p(f"⚠️ the bed {why} — asking ACE-Step again")
             # Under-fill: ask longer. A loop: ask the same length again (a fresh roll).
             if got < reel - 0.5:
                 ask = min(_MUSIC_MAX_ASK, ask * max(1.4, (reel / max(got, 1.0)) * 1.15))
 
+        if not best_alive:
+            # Never ship silence dressed as a bed. Falling through to MusicGen gets
+            # the reel actual music (it fades out rather than landing an outro —
+            # worse, but audible), and a dead MusicGen degrades to an ANNOUNCED no
+            # bed. Both beat the quiet reel this check exists to stop.
+            raise RuntimeError("every take of the bed came back silent")
         if not best_ok:
             _p(f"⚠️ every take of the bed loops — shipping the least-repetitive one "
                f"({best.name}); consider a different music mood")
@@ -969,6 +980,11 @@ def _music_bed(facts_id: str, duration_sec: float, _p) -> Optional[Path]:
         )
         if not track:
             _p("⚠️ no music track produced; continuing without a bed")
+            return None
+        if fasm.bed_is_silent(Path(track)):
+            # The fallback is the path a silent ACE roll lands on. If it is silent
+            # too, an announced no-bed is honest; a silent "bed" is not.
+            _p("⚠️ the MusicGen bed is silent too; continuing without a bed")
             return None
         _p(f"🎵 music bed: {Path(track).name}")
         return Path(track)

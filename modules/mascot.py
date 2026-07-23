@@ -1691,6 +1691,13 @@ _TEACHING_SYS = (
     "who cannot read is looking at the picture to understand the words. If the picture "
     "shows something else, the line is wasted.\n"
     "\n"
+    "SOME LINES LIST SEVERAL IDEAS INSTEAD OF NAMING ONE THING ('living things eat, grow, "
+    "move around, and have babies'). With no single object to hold onto, the artist falls "
+    "back on a generic happy moment that shows NONE of them — that exact line came back as "
+    "the mascot hugging a puppy, which is a different line's idea, not this one. Pick ONE "
+    "of the listed ideas and show it actually happening (a bite for 'eat', watering a "
+    "plant for 'grow', running for 'move') instead of a mood with no idea behind it.\n"
+    "\n"
     "KEEP EVERY PICTURE SIMPLE. A child who cannot read must understand THIS LINE in one "
     "glance. Show the mascot and the SINGLE thing the line is about — and nothing else. Do "
     "NOT crowd the frame: no extra prop, no extra animal, no extra person that the line does "
@@ -1822,7 +1829,7 @@ _FRAMING_STEER = {
 
 def explainer_scene(fact: str, topic: str = "", context: str = "",
                     teaching: bool = False, framing: str = "",
-                    object_nouns: Optional[list] = None) -> str:
+                    object_nouns: Optional[list] = None, kind: str = "") -> str:
     """A costumed, camera-facing mascot scene that ILLUSTRATES one fact.
 
     Unlike scene_prompt (a single funny thumbnail), this is the per-shot presenter
@@ -1832,6 +1839,10 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
 
     `teaching=True` swaps the facts prompt (which asks for spectacle) for the lesson
     prompt (which asks the picture to show what the line SAYS). See _TEACHING_SYS.
+
+    `kind` (intro/teach/check/recap/outro) steers the recurring-objects hint for a
+    summary beat — see the `nouns` branch below. Cosmetic only: an empty kind falls
+    back to the per-line hint, same as before this existed.
     """
     fb = fallback_scene(fact or topic, context, topic)
     if not (fact or "").strip():
@@ -1848,7 +1859,18 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
             # "a stuffed animal" instead of "a doll" would slip past the match and drift.
             nouns = [n for n in (object_nouns or []) if n]
             obj_line = ""
-            if nouns:
+            if nouns and (kind or "").strip().lower() in ("recap", "outro"):
+                # A recap/outro line sums up more than one idea at once — it has no
+                # single named thing of its own for the artist to hold onto, which is
+                # how it drifted to a generic happy pose (see the note above about
+                # list-lines). The lesson's own recurring objects are the concrete,
+                # already-pinned things to show TOGETHER instead — that ties the
+                # summary back to what was actually taught, not a new unrelated scene.
+                obj_line = ("\n\nThis line sums up the lesson rather than naming one "
+                            "thing. Show the mascot with " + " and ".join(nouns) +
+                            " together — the same things from earlier in the lesson, "
+                            "called by these plain words, not fancier names.")
+            elif nouns:
                 obj_line = ("\n\nIf this line is about " + " or ".join(nouns) +
                             ", call it exactly that plain word ('a " + nouns[0] +
                             "'), not a fancier name — it is the same one every shot.")

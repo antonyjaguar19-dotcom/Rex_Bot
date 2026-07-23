@@ -639,7 +639,8 @@ def prepare_lesson(lesson: dict,
             if not b.get("mascot_scene"):
                 b["mascot_scene"] = mascot.explainer_scene(
                     b["narration"], lesson.get("topic", ""), teaching=True,
-                    framing=b.get("framing", "medium"), object_nouns=_obj_nouns)
+                    framing=b.get("framing", "medium"), object_nouns=_obj_nouns,
+                    kind=b.get("kind", ""))
             lw.set_beat_field(lesson_id, i, "mascot_scene", b["mascot_scene"])
     gpu_utils.free_ollama_vram()
 
@@ -690,11 +691,25 @@ def prepare_lesson(lesson: dict,
     # Whose family. A second mascot inheriting the first one's mother is the twin problem
     # with extra steps, so the family belongs to the mascot (assets/mascots/<id>/family/).
     from modules import mascot_library as _ml
-    cast.migrate()                      # the old shared assets/cast/, moved in once
-    mid = _ml.get_active_id()
-    _p(f"🎬 this lesson is set in {backdrop}")
-
     from modules import runtime_settings as _rs
+    cast.migrate()                      # the old shared assets/cast/, moved in once
+
+    # Lessons star the LESSON mascot (nakshu by default — a HUMAN face, so the LatentSync
+    # lip-sync pass in render_lesson can find it; a creature mascot would fall back to a
+    # silent clip). Facts keep their own mascot: the global active id the Facts dropdown
+    # drives, default RexJaw. Pin the lesson mascot for the drawing and restore the previous
+    # active mascot in the finally below, so preparing a lesson never changes which mascot a
+    # facts reel presents with.
+    _prev_mascot = _ml.get_active_id()
+    _lesson_mascot = _rs.get_lesson_mascot()
+    if _lesson_mascot and _lesson_mascot != _prev_mascot:
+        try:
+            _ml.set_active_id(_lesson_mascot)
+        except Exception as e:
+            _p(f"⚠️ could not switch to lesson mascot {_lesson_mascot!r}: {e}")
+    mid = _ml.get_active_id()
+    _p(f"🎬 this lesson is set in {backdrop}, presented by {mid}")
+
     _draw_label = (gpu_memory.FLUX_USO if _rs.get_lesson_image_backend() == "uso"
                    else gpu_memory.QWEN_EDIT)
     gpu_memory.acquire(_draw_label)
@@ -729,6 +744,12 @@ def prepare_lesson(lesson: dict,
                 _p(f"🖼️ {i+1}/{len(beats)} pictures drawn")
     finally:
         gpu_memory.release(_draw_label)
+        # Give facts their mascot back — a lesson borrows the active id, it does not keep it.
+        if _lesson_mascot and _lesson_mascot != _prev_mascot:
+            try:
+                _ml.set_active_id(_prev_mascot)
+            except Exception:
+                pass
 
     # Conform each recurring prop to its canonical look. The characters are Qwen-Edit's job
     # (high identity fidelity + it renders a second person); its one weakness is the prop
@@ -926,6 +947,44 @@ def render_lesson(lesson_id: str,
                 clips[i] = dst
         finally:
             gpu_memory.release(gpu_memory.WAN_VIDEO)
+
+    # 1b. Lip-sync the freshly animated beats onto the mascot's face.
+    #
+    # Wan gives body motion + identity but a dead mouth. LatentSync (a SEPARATE env — its
+    # torch-cu128 / mediapipe / insightface stack cannot share the bot venv) repaints the
+    # mouth to that beat's own voice as a second pass over the Wan clip. It runs a HUMAN face
+    # detector first, so it only fires for a human-faced mascot; a creature mascot (RexJaw)
+    # finds 0 faces, keeps its silent Wan clip, and is voiced over exactly as before — not a
+    # bug, it is what the model is. Each Wan clip is already the length of its beat's wav, so
+    # this aligns with no looping, and the concatenated narration the assembler lays over the
+    # whole video still matches (the mouth and the narration come from the same wav). Only the
+    # freshly-`ticked` clips are synced; a reused clip was already synced on the render that
+    # made it. Never fatal: a failed sync keeps the silent clip.
+    from modules import runtime_settings as _rs
+    if ticked and _rs.get_lesson_lipsync():
+        from modules import latentsync_bridge as _ls
+        ok, why = _ls.is_available()
+        if not ok:
+            _p(f"⏭️ lip-sync off — {why}; animated beats stay silent (voiced over)")
+        else:
+            gpu_utils.free_comfyui_vram()      # LatentSync needs the VRAM Wan was holding
+            if not _ls.face_detectable(stills[ticked[0]]):
+                _p("⏭️ lip-sync skipped — this mascot has no human-detectable face; "
+                   "animated beats stay silent (voiced over, as before)")
+            else:
+                _p(f"👄 lip-syncing {len(ticked)} animated shot(s) with LatentSync…")
+                for i in ticked:
+                    bwav = d / "audio" / f"beat_{i:02d}.wav"
+                    if not bwav.exists():
+                        _p(f"  ⚠️ shot {i+1}: no voice file, keeping silent clip")
+                        continue
+                    synced = _ls.lipsync(clips[i], bwav,
+                                         clips_dir / f"clip_{i:02d}_ls.mp4")
+                    if synced:
+                        shutil.copyfile(synced, clips[i])
+                        _p(f"  ✓ shot {i+1} lip-synced")
+                    else:
+                        _p(f"  ⚠️ shot {i+1} lip-sync failed — keeping silent clip")
 
     # 2. Everything else: the still, with a slow pan. No GPU, seconds each.
     rest = [i for i in range(len(beats)) if clips[i] is None]

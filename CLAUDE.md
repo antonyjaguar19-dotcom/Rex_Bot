@@ -347,6 +347,30 @@ refuse. **962 tests.**
   exist. It found `script_generator.update_shot_narration` (it lives in `dashboard_nicegui`)
   on its first run. Prose correction alone is what failed three times.
 
+### Jeffy judged the bot by a lesson that predates almost everything above (2026-07-22)
+Jeffy reported lessons still not good — character drift, stiff poses, pictures unrelated to
+the line. The only REAL published lesson on disk is `20260714_113840` (opened and looked at
+every still directly): no `objects` field, no `framing` field, arms-spread holding two props
+in still_00 (the exact T-pose this section's `never_empty_handed` fixed), a mismatched adult
+art style in still_04 — it predates nearly every fix logged above. **No lesson has been
+generated since** (`20260716_000517` is a dev QC harness run, not a rendered video), and the
+bot's restart status is unknown — Core Rule 7 means none of this may even be live. Most of
+what looked wrong is very likely already fixed and simply never seen.
+- **The one gap that was NOT already covered**: summary/recap lines that list several ideas
+  at once ("living things eat, grow, feel happy when loved, and move around") have no single
+  concrete thing for the scene-writer to anchor on. Measured on that exact line: it rendered
+  as the mascot hugging a puppy — a different beat's idea, not this one. Fixed in
+  `mascot.explainer_scene` (new `kind` param, threaded from `lesson_pipeline.prepare_lesson`)
+  + a new `_TEACHING_SYS` rule: a recap/outro beat with recurring objects now steers to show
+  those objects together (the doll and the puppy, side by side — the picture that already
+  worked for the `check` beat in the same lesson); with no pinned objects, the model is told
+  to pick ONE of the listed ideas and depict it happening, not a mood with no idea behind it.
+- **Verified**: targeted lesson/mascot/framing tests (112) + the full suite still green,
+  modulo failures already present from this sandbox missing `nicegui`/`discord` and
+  `05_Config` — none touch `mascot.py`/`lesson_pipeline.py`. **NOT render-verified** — no
+  GPU/ComfyUI from this session. Restart the bot, then regenerate `20260714_113840` (or write
+  a fresh lesson) and look at the stills before trusting this fixed anything.
+
 ## 3F. FACTS MODE — **FROZEN 2026-07-13**. Spec: `02_Agent/FACTS_MODE.md`. Don't tune it without being asked.
 Facts Shorts is finished and locked: mascot presents 5 true facts, cloned voice, Wan 720p shots, read-along captions, music bed, thumbnail held as the first frame, under 40s. Frozen settings + reasons live in **`FACTS_MODE.md`**; `config_snapshot/` mirrors `05_Config` (which is outside git). 577 tests green. Commits: 6623667, 5e6d99c, 30582d6, ad1c8bf, d4d9fd0, c787651.
 - **Music bed (3 shipped bugs, all silent).** ACE-Step under-fills — asked 49s it wrote 29s of music + 10s of digital silence + 8s of junk. Fixes: ask **2x** and *measure the composed body*, re-ask longer if short (`_MUSIC_ASK_HEADROOM=2.0`, `_MUSIC_TRIES=2`); cut the bed at its **music body** (`_music_body_end`, first gap ≥1.5s under −45dB after ≥8s of music) not its tail — trimming the tail left the hole mid-track and `_align_music_tail` (which fits a long track by cutting from the FRONT to keep the outro) then kept the dead air; **never loop** a short bed (replaying its opening = the same 8 bars twice, heard instantly) — it starts late instead.

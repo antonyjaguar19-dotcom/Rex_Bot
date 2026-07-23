@@ -774,6 +774,38 @@ def set_lesson_image_backend(backend: str) -> None:
     data = _load(); data["lesson_image_backend"] = backend; _save(data)
 
 
+def get_lesson_mascot() -> str:
+    """Which mascot presents LESSONS (default 'nakshu'). Separate from the global active
+    mascot, which is the FACTS presenter (the Facts dropdown drives it, default 'rexjaw').
+
+    Lessons need a HUMAN-faced mascot so the LatentSync lip-sync pass can find a face —
+    a creature mascot silently falls back to a silent clip + voiceover. prepare_lesson pins
+    this for the drawing and restores the previous active mascot afterwards, so preparing a
+    lesson never changes which mascot a facts reel uses."""
+    return (_load().get("lesson_mascot") or "nakshu").strip()
+
+
+def set_lesson_mascot(mascot_id: str) -> None:
+    mascot_id = (mascot_id or "").strip()
+    if not mascot_id:
+        raise ValueError("lesson mascot id is empty")
+    data = _load(); data["lesson_mascot"] = mascot_id; _save(data)
+
+
+def get_lesson_lipsync() -> bool:
+    """Lip-sync animated lesson beats (Wan body → LatentSync mouth). Default ON.
+
+    Only fires when the standalone LatentSync install is present AND the active mascot has a
+    HUMAN-detectable face (a creature mascot keeps its silent Wan clip + voiceover). Both are
+    checked at render time in latentsync_bridge; this switch only lets you turn the whole
+    pass off. Missing key = ON."""
+    return bool(_load().get("lesson_lipsync", True))
+
+
+def set_lesson_lipsync(on: bool) -> None:
+    data = _load(); data["lesson_lipsync"] = bool(on); _save(data)
+
+
 # Shorts custom thumbnails are not offered in every region (Jeffy's included), and
 # where they are not, the platform grabs the FIRST FRAME. So the thumbnail is held
 # on the front of the reel: a poster frame, not an animated shot. 0 = off.

@@ -85,3 +85,6 @@ assets/mascots/*/voice.*
 # not source. Keep them on disk, out of the repo.
 assets/Text_books/
 04_Outputs/lessons/
+
+# session scratch — LTX/lesson experiments (binaries)
+experimental/

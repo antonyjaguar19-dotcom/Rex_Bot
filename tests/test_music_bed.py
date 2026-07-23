@@ -166,6 +166,96 @@ def test_a_loopy_tail_is_abandoned_for_a_cleaner_window(tmp_path):
     assert off < (d - 36.0) - 2.0, f"stayed on the loopy tail (offset {off:.1f}s of {d:.1f}s)"
 
 
+# -------------------------------------------------------- the take is dead --
+
+def _silent_track(path: Path, secs=40.0, peak_db=-60.0):
+    """What ACE handed back for the snow reel: full length, nothing but noise floor."""
+    subprocess.run([str(FFMPEG_EXE), "-y", "-loglevel", "error", "-f", "lavfi",
+                    "-i", f"anoisesrc=r=44100:a=1:d={secs}", "-af",
+                    f"volume={peak_db}dB", "-t", str(secs), str(path)],
+                   capture_output=True, timeout=180)
+    return path
+
+
+def test_a_take_of_noise_floor_is_not_music(tmp_path):
+    """The snow reel's bed: 79.7s peaking at -58.7 dB, while every healthy bed
+    ever shipped peaks at 0.0 dB."""
+    dead, alive = _silent_track(tmp_path / "dead.wav"), tmp_path / "alive.wav"
+    _tone(alive, "sine=f=220:r=44100", 20.0)
+    assert fasm.bed_is_silent(dead), "a track of noise floor must read as silent"
+    assert not fasm.bed_is_silent(alive), "real music must never read as silent"
+
+
+def test_silence_walks_through_every_other_gate(tmp_path):
+    """The regression. A dead take has the full duration AND scores a perfect 0.0
+    for loopiness (a flat envelope has no variance to correlate), so length and
+    loop — the only two checks there were — both wave it through. bed_is_silent is
+    what actually catches it."""
+    dead = _silent_track(tmp_path / "dead.wav", secs=40.0)
+    assert fasm._probe_duration(dead) == pytest.approx(40.0, abs=0.5), "full length"
+    assert fasm.bed_loopiness(dead) <= fasm._LOOP_BAD, "the loop check is fooled"
+    assert fasm.bed_is_silent(dead), "so this is the only thing standing between "\
+                                     "a dead take and a reel with no music"
+
+
+def test_a_quiet_but_real_bed_survives(tmp_path):
+    """The floor is physical and far below real music: loudnorm lifts the bed to
+    -32 LUFS at mix time anyway, so a quiet take is not a broken one — rejecting
+    it would throw away a usable bed to no purpose."""
+    quiet = tmp_path / "quiet.wav"
+    subprocess.run([str(FFMPEG_EXE), "-y", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "sine=f=220:r=44100:d=20", "-af", "volume=-20dB",
+                    "-t", "20", str(quiet)], capture_output=True, timeout=120)
+    peak = fasm.bed_peak_db(quiet)
+    assert -45.0 < peak < -30.0, f"the test needs a quiet-but-audible take; got {peak}"
+    assert not fasm.bed_is_silent(quiet), f"{peak} dB music is quiet, not dead"
+
+
+def test_an_unmeasurable_bed_gets_the_benefit_of_the_doubt(tmp_path):
+    """Unknown is not silent — the same rule as a voice take probing 0.0. Judging
+    an unreadable probe as silence would drop every bed on a broken ffmpeg."""
+    junk = tmp_path / "notaudio.wav"
+    junk.write_bytes(b"not audio at all")
+    assert fasm.bed_peak_db(junk) is None
+    assert not fasm.bed_is_silent(junk)
+
+
+# --------------------------------------------------------------- the fade up --
+
+def test_a_front_trimmed_bed_fades_up_from_the_top(tmp_path):
+    """A long bed is cut from the front to land its outro on the last frame, so it
+    opens mid-phrase — without a fade it snaps on at full level under word one."""
+    assert fasm.bed_fade_in_at(raw_dur=80.0, total_dur=40.0) == 0.0
+
+
+def test_a_delayed_bed_fades_up_where_its_music_starts(tmp_path):
+    """A short bed is pushed back, so its head is silence. Fading from 0 would fade
+    the silence and still let the music barge in at full level."""
+    assert fasm.bed_fade_in_at(raw_dur=30.0, total_dur=40.0) == pytest.approx(10.0)
+
+
+def test_an_unmeasurable_bed_fades_from_the_top(tmp_path):
+    """_probe_duration returns 0.0 when it cannot measure; that must not put the
+    fade-up at the END of the reel."""
+    assert fasm.bed_fade_in_at(raw_dur=0.0, total_dur=40.0) == 0.0
+
+
+def test_the_fade_is_applied_after_loudnorm(tmp_path):
+    """Order is load-bearing: single-pass loudnorm rides a time-varying gain and
+    reads a fade applied before it as a quiet passage to lift back to flat."""
+    fc = fasm._bed_audio_filter(raw_dur=80.0, total_dur=40.0)
+    assert fc.index("loudnorm") < fc.index("afade"), "the fade must come after loudnorm"
+    assert "afade=t=in:st=0.000" in fc
+    assert "amix" in fc and fc.index("afade") < fc.index("amix")
+
+
+def test_the_fade_never_runs_past_the_reel(tmp_path):
+    fc = fasm._bed_audio_filter(raw_dur=0.4, total_dur=0.5)
+    st = float(fc.split("afade=t=in:st=")[1].split(":")[0])
+    d = float(fc.split(":d=")[-1].split("[")[0])
+    assert st + d <= 0.5 + 1e-6, f"fade runs to {st + d:.3f}s of a 0.5s reel"
+
+
 # ---------------------------------------------------------------- the audit --
 
 def _reel(path: Path, voice: Path, bed: Path | None, secs=20.0):

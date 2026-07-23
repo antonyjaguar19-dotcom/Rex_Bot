@@ -39,6 +39,10 @@ log = logging.getLogger("claw_bot.facts_assembly")
 # -32 LUFS puts it ~13 dB under the narration: clearly there, never competing.
 MUSIC_LUFS = -32.0
 MUSIC_TP = -2.0       # true-peak ceiling, so a loud bar cannot poke through the voice
+# The bed is cut out of the middle of a longer track (see _align_music_tail), so
+# it starts mid-phrase: without this it snaps on at full level under the first
+# word. Fade it up instead.
+MUSIC_FADE_IN_SEC = 1.0
 
 
 def _wrap(text: str, max_chars: int = 22) -> str:
@@ -299,6 +303,51 @@ def _music_body_end(music: Path) -> Optional[float]:
     return next((s for s in starts if s >= _MIN_BODY_SEC), None)
 
 
+# A take must actually CONTAIN music, and nothing checked that it did.
+# ACE can return a track of exactly the right length that is nothing but noise
+# floor: the snow reel's bed peaked at -58.7 dB across all 79.7s, while every
+# healthy bed ever shipped peaks at 0.0 dB. Silence walks through every OTHER
+# gate untouched — it has the full duration, and it cannot loop (a flat envelope
+# has no variance to correlate, so it scores 0.0, the cleanest score there is).
+# It was the one take to pass on the first roll, and it shipped a reel with no
+# music.
+#
+# The floor is PHYSICAL, like the voice-take floor, and deliberately generous:
+# a whole track that never once peaks above -45 dBFS has no music in it at any
+# level, while a merely QUIET take is not a broken one (loudnorm lifts the bed to
+# -32 LUFS at mix time regardless, so rejecting one would throw away a usable bed
+# to no purpose). That leaves ~14 dB of daylight over the dead take and ~45 dB
+# under every healthy bed measured — nothing real lives in between.
+_BED_DEAD_PEAK_DB = -45.0
+
+
+def bed_peak_db(music: Path) -> Optional[float]:
+    """Peak level of a track in dBFS, or None when it cannot be measured."""
+    r = subprocess.run(
+        [str(FFMPEG_EXE), "-hide_banner", "-i", str(music),
+         "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=300)
+    for ln in (r.stderr or "").splitlines():
+        if "max_volume:" in ln:
+            try:
+                return float(ln.split("max_volume:")[1].split("dB")[0])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def bed_is_silent(music: Path) -> bool:
+    """True only when a take is PROVABLY dead — unmeasurable is not silent.
+
+    Same rule as _probe_dur returning 0.0 for a voice take: if ffmpeg cannot read
+    the level, the bed gets the benefit of the doubt. Judging an unreadable probe
+    as silence would throw away every bed on a broken ffmpeg — trading a rare bad
+    roll for a permanent one.
+    """
+    peak = bed_peak_db(music)
+    return peak is not None and peak < _BED_DEAD_PEAK_DB
+
+
 def trim_trailing_silence(music: Path) -> Path:
     """Reduce a generated track to the music it actually contains.
 
@@ -322,7 +371,15 @@ def trim_trailing_silence(music: Path) -> Path:
         log.warning(f"silence trim failed ({r.stderr[:120]}); using the raw bed")
         return music
     before, after = _probe_duration(music), _probe_duration(out)
-    if after < 1.0:                     # the whole thing read as silence — trust the source
+    if after < 1.0:
+        # The trim ate the whole track. That is not the detector being wrong — it
+        # is the detector being RIGHT about a take that is silence end to end (the
+        # snow bed collapsed to a 78-byte wav here, and this branch handed the dead
+        # mp3 back as if nothing had happened). The raw file is still returned,
+        # because a real bed must never be destroyed by one bad probe — but it is
+        # said out loud, and bed_is_silent() is what actually rejects the take.
+        log.warning(f"⚠️ {music.name} trimmed away to nothing — the take reads as "
+                    f"silence, not music; handing back the raw file")
         return music
     if body_end:
         log.info(f"🎵 bed cut to its music body: {before:.1f}s -> {after:.1f}s "
@@ -539,23 +596,54 @@ def audit_music_bed(video: Path, narration: Path, hold_sec: float = 0.0) -> Opti
         return None
 
 
+def bed_fade_in_at(raw_dur: float, total_dur: float) -> float:
+    """The second at which the bed's music actually starts, so it can be faded up.
+
+    _align_music_tail anchors the bed's END, and how it gets there decides where
+    the music begins. A LONG bed is trimmed from the FRONT (keeping its outro for
+    the last frame), so its music opens mid-phrase at t=0. A SHORT one is delayed
+    instead, so its head is silence and the music enters at total-raw. Fading from
+    0 in that case would fade the silence and still let the music barge in.
+
+    An unmeasurable bed (probe returns 0.0) fades from the top: unknown must not
+    become a fade parked at the end of the reel.
+    """
+    if raw_dur <= 0 or raw_dur >= total_dur:
+        return 0.0
+    return max(0.0, total_dur - raw_dur)
+
+
+def _bed_audio_filter(raw_dur: float, total_dur: float) -> str:
+    """Bed normalised, faded up, and mixed under the narration.
+
+    The fade comes AFTER loudnorm on purpose: single-pass loudnorm rides a
+    time-varying gain, and a fade applied before it gets read as a quiet passage
+    and lifted back to flat.
+
+    amix divides by the input count, which would halve the VOICE too — so the
+    voice (input 1) is handed through at unity and the bed (input 2) is set by
+    loudnorm alone. The mix ends on the narration.
+    """
+    st = bed_fade_in_at(raw_dur, total_dur)
+    d = min(MUSIC_FADE_IN_SEC, max(0.1, total_dur - st))
+    return (
+        f"[2:a]loudnorm=I={MUSIC_LUFS}:TP={MUSIC_TP}:LRA=11,"
+        f"afade=t=in:st={st:.3f}:d={d:.3f}[m];"
+        f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=0:"
+        f"weights='1 1':normalize=0[a]"
+    )
+
+
 def _mux_facts(video_path: Path, narration_path: Path, music_path: Optional[Path],
                total_dur: float, subs_path: Path, out_path: Path,
                w: int = 1080, h: int = 1920, progress_cb=None) -> Path:
     inputs = ["-i", str(Path(video_path).resolve()),
               "-i", str(Path(narration_path).resolve())]
     if music_path is not None and Path(music_path).exists():
+        raw_dur = _probe_duration(Path(music_path))
         music_path = _align_music_tail(Path(music_path), total_dur)
         inputs += ["-i", str(Path(music_path).resolve())]
-        # Music (input 2) normalised to a fixed loudness, then mixed under the
-        # narration (input 1); the mix ends on the narration.
-        # amix divides by the input count, which would halve the VOICE too — so the
-        # voice is handed through at unity and the bed is set by loudnorm alone.
-        audio_fc = (
-            f"[2:a]loudnorm=I={MUSIC_LUFS}:TP={MUSIC_TP}:LRA=11[m];"
-            f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=0:"
-            f"weights='1 1':normalize=0[a]"
-        )
+        audio_fc = _bed_audio_filter(raw_dur, total_dur)
     else:
         audio_fc = "[1:a]anull[a]"
 

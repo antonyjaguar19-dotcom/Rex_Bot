@@ -49,6 +49,7 @@ from modules import job_lock
 from modules import job_recovery as jr
 from modules import config_check
 from modules import manual_mode as mm
+from modules import ad_director as adir
 from modules import publish_kit as pk
 from modules import voices
 from modules import mascot_library as ml
@@ -320,49 +321,77 @@ STAGES = ["script", "prompts", "storyboard", "video", "final"]
 # ==============================================================================
 
 CUSTOM_CSS = """
+/* ============================================================================
+   Rexjaw dashboard theme. Design pass follows the UI/UX priority rules:
+   1 accessibility (4.5:1 contrast, visible focus rings), 2 touch (44px targets),
+   6 typography (16px base, 1.5 line-height, semantic tokens), 7 motion (150-300ms).
+   ========================================================================== */
 :root{
-  --rex-orange:#ff6a2b; --rex-orange-2:#ff4d0f;
-  --rex-steel:#c9d1dc; --rex-panel:rgba(255,255,255,0.045);
-  --rex-line:rgba(255,255,255,0.08);
+  /* brand */
+  --rex-orange:#ff7a3d; --rex-orange-2:#ff5a1c; --rex-mint:#38d39b; --rex-blue:#6b7cff;
+  /* surfaces (one scale, used everywhere) */
+  --rex-bg:#0b0d12; --rex-panel:rgba(255,255,255,0.05); --rex-panel-2:rgba(255,255,255,0.07);
+  --rex-line:rgba(255,255,255,0.10); --rex-line-strong:rgba(255,255,255,0.16);
+  /* text — contrast-checked on --rex-bg (all >= 4.5:1) */
+  --rex-text:#eaf0f8; --rex-muted:#aeb8c9; --rex-faint:#8a94a6;
+  /* rhythm */
+  --rex-r:14px; --rex-r-lg:18px; --rex-gap:16px; --rex-ease:cubic-bezier(.4,0,.2,1);
 }
+html{font-size:16px;}
 body{
   background:
-    radial-gradient(1100px 560px at 88% -12%, rgba(255,106,43,0.16), transparent 60%),
-    radial-gradient(820px 480px at -5% 108%, rgba(70,110,200,0.10), transparent 55%),
-    #0b0d12 !important;
-  color:#e9edf5 !important;
+    radial-gradient(1100px 560px at 88% -12%, rgba(255,122,61,0.15), transparent 60%),
+    radial-gradient(820px 480px at -5% 108%, rgba(107,124,255,0.10), transparent 55%),
+    var(--rex-bg) !important;
+  color:var(--rex-text) !important;line-height:1.5 !important;
   font-family:'Inter','Segoe UI',system-ui,sans-serif !important;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
 }
 .q-page{background:transparent !important;}
+.opacity-70,.opacity-60,.opacity-75,.opacity-55,.opacity-80{opacity:1 !important;}
+.text-xs{color:var(--rex-muted);}          /* helper text stays legible, not dim */
+
+/* Accessibility rule #1: never remove focus — make it obvious for keyboard users */
+a:focus-visible,button:focus-visible,.q-btn:focus-visible,
+.q-tab:focus-visible,.q-field--focused .q-field__control,
+[tabindex]:focus-visible{
+  outline:2px solid var(--rex-orange) !important;outline-offset:2px !important;
+  border-radius:10px;
+}
+
 ::-webkit-scrollbar{width:10px;height:10px;}
-::-webkit-scrollbar-thumb{background:rgba(255,106,43,0.35);border-radius:6px;}
-::-webkit-scrollbar-thumb:hover{background:rgba(255,106,43,0.55);}
+::-webkit-scrollbar-thumb{background:rgba(255,122,61,0.35);border-radius:6px;}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,122,61,0.55);}
 ::-webkit-scrollbar-track{background:transparent;}
 
-/* HERO with animated sheen */
+/* HERO */
 .rex-hero{
   position:relative;overflow:hidden;
   background:linear-gradient(120deg,#1b1e28 0%,#111319 62%);
-  border:1px solid var(--rex-line);border-radius:18px;padding:18px 26px;color:#fff;
+  border:1px solid var(--rex-line);border-radius:var(--rex-r-lg);padding:20px 28px;color:#fff;
   box-shadow:0 12px 40px rgba(0,0,0,0.45);
 }
 .rex-hero:before{
   content:"";position:absolute;top:0;bottom:0;left:0;width:40%;
-  background:linear-gradient(90deg,transparent,rgba(255,106,43,0.10),transparent);
+  background:linear-gradient(90deg,transparent,rgba(255,122,61,0.10),transparent);
   animation:sheen 6.5s linear infinite;
 }
 @keyframes sheen{0%{transform:translateX(-120%);}100%{transform:translateX(360%);}}
+@media (prefers-reduced-motion: reduce){
+  .rex-hero:before,.rex-pulse{animation:none !important;}
+  *{transition-duration:.01ms !important;}
+}
 
-/* GLASS CARDS */
+/* CARDS */
 .rex-card{
   background:var(--rex-panel) !important;border:1px solid var(--rex-line) !important;
-  border-radius:16px !important;box-shadow:0 6px 24px rgba(0,0,0,0.30);
-  backdrop-filter:blur(6px);margin-bottom:14px;
-  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;
+  border-radius:var(--rex-r) !important;box-shadow:0 6px 24px rgba(0,0,0,0.30);
+  backdrop-filter:blur(7px);margin-bottom:var(--rex-gap);padding:20px 22px;
+  transition:transform .2s var(--rex-ease),box-shadow .2s var(--rex-ease),border-color .2s var(--rex-ease);
 }
 .rex-card:hover{
-  transform:translateY(-2px);border-color:rgba(255,106,43,0.35) !important;
-  box-shadow:0 12px 32px rgba(255,106,43,0.12);
+  transform:translateY(-2px);border-color:rgba(255,122,61,0.35) !important;
+  box-shadow:0 14px 34px rgba(255,122,61,0.12);
 }
 
 /* DRAWER + NAV */
@@ -372,62 +401,150 @@ body{
 }
 .rex-nav .q-tab{
   justify-content:flex-start !important;min-height:48px;border-radius:12px;
-  margin:3px 8px;color:#aab2c2 !important;font-weight:600;transition:all .15s ease;
+  margin:3px 8px;color:var(--rex-muted) !important;font-weight:600;
+  transition:background .2s var(--rex-ease),color .2s var(--rex-ease);
 }
-.rex-nav .q-tab:hover{background:rgba(255,255,255,0.05) !important;color:#fff !important;}
+.rex-nav .q-tab:hover{background:rgba(255,255,255,0.06) !important;color:#fff !important;}
 .rex-nav .q-tab--active{
-  background:linear-gradient(120deg,rgba(255,106,43,0.24),rgba(255,77,15,0.10)) !important;
+  background:linear-gradient(120deg,rgba(255,122,61,0.26),rgba(255,90,28,0.10)) !important;
   color:#fff !important;box-shadow:inset 3px 0 0 var(--rex-orange);
 }
 .rex-nav .q-tab__indicator{display:none;}
 
-.rex-section-title{font-size:20px;font-weight:800;margin-bottom:4px;letter-spacing:.2px;}
+.rex-section-title{font-size:1.35rem;font-weight:800;margin-bottom:4px;letter-spacing:.2px;
+  color:var(--rex-text);}
 
 /* STEPPER */
 .rex-step{display:flex;align-items:center;justify-content:center;width:44px;height:44px;
-  border-radius:50%;background:rgba(255,255,255,0.06);color:#e9edf5;font-weight:800;
-  border:2px solid var(--rex-line);transition:all .4s ease;}
+  border-radius:50%;background:rgba(255,255,255,0.06);color:var(--rex-text);font-weight:800;
+  border:2px solid var(--rex-line);transition:all .25s var(--rex-ease);}
 .rex-step.active{background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2));
-  border-color:#fff;transform:scale(1.15);box-shadow:0 0 22px rgba(255,106,43,0.7);}
-.rex-step.done{background:linear-gradient(120deg,#3ad29c,#1ea97a);border-color:rgba(255,255,255,0.4);}
-.rex-step-line{flex:1;height:3px;background:rgba(255,255,255,0.08);margin:0 4px;border-radius:2px;}
-.rex-step-line.done{background:linear-gradient(90deg,#3ad29c,var(--rex-orange));box-shadow:0 0 10px rgba(255,106,43,0.4);}
+  border-color:#fff;transform:scale(1.12);box-shadow:0 0 22px rgba(255,122,61,0.6);}
+.rex-step.done{background:linear-gradient(120deg,var(--rex-mint),#1ea97a);border-color:rgba(255,255,255,0.4);}
+.rex-step-line{flex:1;height:3px;background:rgba(255,255,255,0.10);margin:0 4px;border-radius:2px;}
+.rex-step-line.done{background:linear-gradient(90deg,var(--rex-mint),var(--rex-orange));box-shadow:0 0 10px rgba(255,122,61,0.4);}
 
-/* BUTTONS */
+/* BUTTONS — primary CTA + a 44px min tap target on every button (touch rule #2) */
+.q-btn{min-height:40px;border-radius:12px !important;text-transform:none !important;
+  transition:transform .15s var(--rex-ease),box-shadow .15s var(--rex-ease),background .15s var(--rex-ease) !important;}
+.q-btn.q-btn--dense{min-height:36px;}
+.q-btn:hover{transform:translateY(-1px);}
 .rex-btn-primary{
   background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2)) !important;
-  color:#fff !important;font-weight:700 !important;border-radius:14px !important;
-  padding:12px 24px !important;box-shadow:0 8px 24px rgba(255,106,43,0.35) !important;
-  transition:transform .15s ease,box-shadow .15s ease !important;letter-spacing:.3px;
+  color:#fff !important;font-weight:700 !important;border-radius:var(--rex-r) !important;
+  padding:12px 24px !important;min-height:44px;box-shadow:0 8px 24px rgba(255,122,61,0.35) !important;
+  letter-spacing:.3px;
 }
 .rex-btn-primary:hover{transform:translateY(-2px) scale(1.02) !important;
-  box-shadow:0 12px 30px rgba(255,106,43,0.5) !important;}
+  box-shadow:0 12px 30px rgba(255,122,61,0.5) !important;}
 
 .rex-pulse{animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.45;}}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
 
 /* MEDIA CARDS */
-.rex-shot-card{background:rgba(255,255,255,0.05) !important;border-radius:14px !important;
-  padding:10px !important;border:1px solid var(--rex-line) !important;transition:all .2s ease;}
-.rex-shot-card:hover{border-color:rgba(255,106,43,0.4) !important;transform:translateY(-1px);}
-.rex-shot-card.approved{border-color:rgba(58,210,156,0.6) !important;box-shadow:0 0 18px rgba(58,210,156,0.22) !important;}
+.rex-shot-card{background:var(--rex-panel-2) !important;border-radius:var(--rex-r) !important;
+  padding:12px !important;border:1px solid var(--rex-line) !important;
+  transition:border-color .2s var(--rex-ease),transform .2s var(--rex-ease);}
+.rex-shot-card:hover{border-color:rgba(255,122,61,0.4) !important;transform:translateY(-1px);}
+.rex-shot-card.approved{border-color:rgba(56,211,155,0.6) !important;box-shadow:0 0 18px rgba(56,211,155,0.22) !important;}
 
 /* BADGES */
-.rex-badge{display:inline-block;padding:4px 12px;border-radius:14px;font-size:11px;
+.rex-badge{display:inline-block;padding:4px 12px;border-radius:14px;font-size:0.7rem;
   font-weight:800;letter-spacing:.6px;text-transform:uppercase;}
 .rex-badge-pink{background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2));color:#fff;}
-.rex-badge-purple{background:linear-gradient(120deg,#5b6cff,#3a3dff);color:#fff;}
-.rex-badge-mint{background:linear-gradient(120deg,#3ad29c,#1ea97a);color:#08130f;}
+.rex-badge-purple{background:linear-gradient(120deg,var(--rex-blue),#3a3dff);color:#fff;}
+.rex-badge-mint{background:linear-gradient(120deg,var(--rex-mint),#1ea97a);color:#08130f;}
 
 /* LOG */
-.rex-log{background:rgba(0,0,0,0.4) !important;border:1px solid var(--rex-line) !important;
+.rex-log{background:rgba(0,0,0,0.42) !important;border:1px solid var(--rex-line) !important;
   border-radius:12px !important;padding:14px !important;
-  font-family:'JetBrains Mono','Consolas',monospace !important;font-size:12px !important;
-  color:#9fb0c8 !important;max-height:280px;overflow-y:auto;}
+  font-family:'JetBrains Mono','Consolas',monospace !important;font-size:0.8rem !important;
+  line-height:1.55 !important;color:#c2cddf !important;max-height:280px;overflow-y:auto;}
 
-/* nicer inputs */
-.q-field--outlined .q-field__control{border-radius:12px !important;}
+/* MANUAL MODE — ad-maker look: hero, numbered step chips, sub-panels */
+.rex-mhero{display:flex;align-items:center;gap:16px;padding:18px 22px;margin-bottom:10px;
+  border-radius:var(--rex-r-lg);position:relative;overflow:hidden;
+  background:linear-gradient(120deg,rgba(255,122,61,0.20),rgba(107,124,255,0.12) 70%);
+  border:1px solid var(--rex-line-strong);box-shadow:0 10px 30px rgba(0,0,0,0.35);}
+.rex-mhero .ico{font-size:30px;line-height:1;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4));}
+.rex-mhero h3{margin:0;font-size:1.45rem;font-weight:800;color:#fff;letter-spacing:.2px;}
+.rex-mhero p{margin:3px 0 0;font-size:.82rem;color:var(--rex-muted);max-width:52ch;}
+.rex-mstep{display:flex;align-items:baseline;gap:10px;margin:14px 0 6px;}
+.rex-mstep .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+  border-radius:9px;font-weight:800;font-size:.82rem;color:#fff;flex:none;align-self:center;
+  background:linear-gradient(120deg,var(--rex-orange),var(--rex-orange-2));
+  box-shadow:0 3px 10px rgba(255,122,61,0.35);}
+.rex-mstep .n.ai{background:linear-gradient(120deg,var(--rex-blue),#3a3dff);
+  box-shadow:0 3px 10px rgba(107,124,255,0.35);}
+.rex-mstep .t{font-size:1.02rem;font-weight:700;color:var(--rex-text);}
+.rex-mstep .s{font-size:.78rem;color:var(--rex-faint);}
+.rex-mpanel{background:var(--rex-panel-2);border:1px solid var(--rex-line);
+  border-radius:var(--rex-r);padding:14px 16px;margin:2px 0 8px;}
+
+/* INPUTS — clearer border, orange focus, legible labels (forms rule #8) */
+.q-field--outlined .q-field__control{border-radius:12px !important;background:rgba(255,255,255,0.02);}
 .q-field--outlined .q-field__control:before{border-color:var(--rex-line) !important;}
+.q-field--outlined .q-field__control:hover:before{border-color:var(--rex-line-strong) !important;}
+.q-field--outlined.q-field--focused .q-field__control:after{border-color:var(--rex-orange) !important;}
+.q-field__label{color:var(--rex-muted) !important;}
+.q-field__native,.q-field__input{color:var(--rex-text) !important;}
+
+/* ============================================================================
+   GLOBAL POLISH — applies to every tab/card via CSS only (no markup changes,
+   so nothing in the bot's logic can break). Cohesive look across all modes.
+   ========================================================================== */
+
+/* Every card gets a consistent brand top-edge + a titled header treatment. */
+.rex-card{border-top:1px solid rgba(255,122,61,0.22) !important;}
+.rex-card .text-xl.font-bold,.rex-card .text-lg.font-bold{
+  position:relative;padding-left:14px;letter-spacing:.2px;color:#fff;}
+.rex-card .text-xl.font-bold::before,.rex-card .text-lg.font-bold::before{
+  content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:5px;height:1.05em;border-radius:3px;
+  background:linear-gradient(180deg,var(--rex-orange),var(--rex-orange-2));
+  box-shadow:0 0 10px rgba(255,122,61,0.5);}
+
+/* Media reads as framed tiles everywhere. */
+.rex-card img,.rex-card video{border-radius:12px;}
+.rex-card video{box-shadow:0 6px 20px rgba(0,0,0,0.35);}
+
+/* Menus, dialogs, notifications, tooltips — same rounded, dark, bordered look. */
+.q-menu{border-radius:12px !important;border:1px solid var(--rex-line) !important;
+  background:#12151d !important;box-shadow:0 12px 34px rgba(0,0,0,0.5) !important;}
+.q-item{border-radius:8px;margin:2px 6px;min-height:40px;}
+.q-item:hover{background:rgba(255,122,61,0.10) !important;}
+.q-notification{border-radius:12px !important;font-weight:600;
+  box-shadow:0 10px 30px rgba(0,0,0,0.5) !important;}
+.q-tooltip{background:#12151d !important;border:1px solid var(--rex-line) !important;
+  border-radius:8px !important;font-size:.78rem !important;color:var(--rex-text) !important;
+  box-shadow:0 8px 22px rgba(0,0,0,0.5) !important;}
+.q-dialog__backdrop{backdrop-filter:blur(3px);}
+
+/* Brand accent for Quasar's own controls (switches / checkboxes / spinners). */
+.q-toggle__inner--truthy .q-toggle__thumb:after,
+.q-checkbox__inner--truthy{color:var(--rex-orange) !important;}
+.q-toggle__inner--truthy .q-toggle__track{background:var(--rex-orange) !important;opacity:.5;}
+.q-spinner,.text-accent{color:var(--rex-orange) !important;}
+.q-linear-progress__model{background:var(--rex-orange) !important;}
+
+/* Separators + expansion (live log footer) tidy. */
+.q-separator{background:var(--rex-line) !important;margin:10px 0 !important;}
+.q-expansion-item{border-radius:12px;overflow:hidden;}
+
+/* Upload widgets match the input language instead of Quasar's default grey. */
+.q-uploader{border-radius:12px !important;border:1px dashed var(--rex-line-strong) !important;
+  background:rgba(255,255,255,0.02) !important;max-width:100%;}
+.q-uploader__header{background:linear-gradient(120deg,rgba(255,122,61,0.18),transparent) !important;
+  color:var(--rex-text) !important;}
+
+/* Header bar + drawer chrome. */
+.q-header{background:rgba(11,13,18,0.85) !important;backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--rex-line) !important;}
+.q-footer{border-top:1px solid var(--rex-line) !important;}
+
+/* Links use the brand, not Quasar blue. */
+a{color:var(--rex-orange);}
+a:hover{color:var(--rex-orange-2);}
 """
 
 
@@ -1863,6 +1980,172 @@ def discard_job_action(job_id: str, refresh_cb):
 MANUAL_LAST_GEN: dict = {}
 # Optional reference image for the next generation (uploaded via the UI).
 MANUAL_REF: dict = {}
+# Chosen video backend + its live option widgets for the Animate button.
+# {"backend": id|None}. Widgets kept separately so animate reads .value live;
+# both rebuilt only when the operator switches backend (not on the refresh timer).
+MANUAL_VIDEO: dict = {"backend": None}
+MANUAL_VID_WIDGETS: dict = {}
+# Last AI-crafted ad prompts (motion carries to new shots; image/neg fill the inputs).
+MANUAL_CRAFTED: dict = {}
+
+
+def manual_action_frame_action(shot_n: int, action: str, refresh_cb):
+    """Action-image-sequence: edit the shot's still into the 'after the action'
+    frame (Qwen-Image-Edit) and pin it as the END frame for flf2v."""
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    if not (action or "").strip():
+        ui.notify("❌ Describe the action first.", type="negative")
+        return
+    if not _try_begin(f"action frame shot {shot_n}"):
+        return
+    S.push(f"Editing action end-frame for shot {shot_n}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            res = mm.action_end_frame(proj, shot_n, action)
+            S.push(f"Shot {shot_n} action frame ready — '{res['instruction'][:50]}'. "
+                   f"Pick an LTX flf2v model and Animate.")
+        except Exception as e:
+            S.push(f"Action frame failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu(f"action frame shot {shot_n}", worker)
+
+
+def manual_action_clip_action(shot_n: int, action: str, refresh_cb):
+    """Smooth Action → clip: feed the shot's still + the action into the LTX-2.3
+    i2v TWO-STAGE graph (the same smooth pipeline the mascot experiment used) —
+    the action becomes the motion prompt, no keyframes, no frame edits."""
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    try:
+        shot = mm.get_shot(proj, shot_n)
+    except IndexError as e:
+        ui.notify(str(e), type="negative")
+        return
+    action = (action or shot.get("motion_prompt") or "").strip()
+    if not action:
+        ui.notify("❌ Describe the action/motion first.", type="negative")
+        return
+    if not _try_begin(f"action clip shot {shot_n}"):
+        return
+    S.push(f"Action → clip (smooth i2v) for shot {shot_n}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            # Phrase the action in LTX's motion style (over-time), then animate.
+            motion = action
+            try:
+                motion = adir.craft_motion(action, "comfyui_ltx23_i2v") or action
+            except Exception:
+                pass
+            mm.set_shot_fields(proj, shot_n, motion_prompt=motion)
+            clip = mm.animate_shot(proj, shot_n, backend_id="comfyui_ltx23_i2v")
+            S.push(f"Shot {shot_n} smooth clip → {clip.name}")
+        except Exception as e:
+            S.push(f"Action clip failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu(f"action clip shot {shot_n}", worker)
+
+
+def manual_midframes_action(shot_n: int, description: str, k: int, refresh_cb):
+    """Keyframe sequence: generate k in-between frames between the shot's first and
+    last stills from a motion description; flf2v then renders through all of them."""
+    proj = _manual_proj()
+    if proj is None:
+        ui.notify("❌ No manual project.", type="negative")
+        return
+    try:
+        shot = mm.get_shot(proj, shot_n)
+    except IndexError as e:
+        ui.notify(str(e), type="negative")
+        return
+    if not shot.get("end_image"):
+        ui.notify("❌ Set a LAST frame first (upload one, or 🎬 Action → frame).",
+                  type="negative")
+        return
+    if not (description or "").strip():
+        ui.notify("❌ Describe the motion between the two frames.", type="negative")
+        return
+    if not _try_begin(f"midframes shot {shot_n}"):
+        return
+    S.push(f"Generating {k} in-between frame(s) for shot {shot_n}…")
+    refresh_cb()
+
+    def worker():
+        try:
+            res = mm.generate_midframes(proj, shot_n, description, k)
+            S.push(f"Shot {shot_n}: {len(res['mid_images'])} in-between frame(s) ready. "
+                   f"Pick an LTX flf2v model and Animate for a keyframe clip.")
+        except Exception as e:
+            S.push(f"In-between frames failed: {e}")
+        finally:
+            _end()
+            refresh_cb()
+    _bg_gpu(f"midframes shot {shot_n}", worker)
+
+
+def _manual_video_options() -> tuple[Optional[str], dict]:
+    """Read the currently-revealed video-option widgets into an options dict
+    for mm.animate_shot. Missing/blank fields are simply left out."""
+    w = MANUAL_VID_WIDGETS
+    opts: dict = {}
+    try:
+        if "steps" in w and str(w["steps"].value or "").strip():
+            opts["steps"] = int(float(w["steps"].value))
+    except (ValueError, TypeError):
+        pass
+    try:
+        if "cfg" in w and str(w["cfg"].value or "").strip():
+            opts["cfg"] = float(w["cfg"].value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        if "fps" in w and str(w["fps"].value or "").strip():
+            opts["fps"] = int(float(w["fps"].value))
+    except (ValueError, TypeError):
+        pass
+    if "lightning" in w:
+        opts["lightning_lora"] = bool(w["lightning"].value)
+    if "negative" in w and (w["negative"].value or "").strip():
+        opts["negative"] = w["negative"].value.strip()
+    return MANUAL_VIDEO.get("backend"), opts
+
+
+def restart_bot_process() -> None:
+    """Reload .py edits by relaunching the bot. Spawns a detached PowerShell that
+    waits for THIS process to die, then starts claw_bot.py in a fresh console, then
+    kills us. The dashboard is a daemon thread INSIDE the bot process, so exiting
+    here takes the whole process down (bot + dashboard) and the relauncher brings
+    both back. Ollama + ComfyUI are untouched. Mirrors claw_bot._spawn_relaunch."""
+    import subprocess
+    bot_script = _HERE / "claw_bot.py"        # 02_Agent/claw_bot.py
+    py = sys.executable                        # venv python while running
+    ps_cmd = (
+        f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue; "
+        f"Start-Sleep -Milliseconds 800; "
+        f"$env:PYTHONPATH = '{_HERE}'; "
+        f"Set-Location '{PROJECT_ROOT}'; "
+        f"& '{py}' '{bot_script}'"
+    )
+    CREATE_NEW_CONSOLE = 0x00000010
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+        creationflags=CREATE_NEW_CONSOLE,
+        close_fds=True,
+    )
+    # Give the spawn a beat to detach, then take the process down.
+    threading.Timer(1.0, lambda: os._exit(0)).start()
 
 
 def _manual_proj() -> Optional[dict]:
@@ -1925,6 +2208,12 @@ def manual_add_last_to_board(refresh_cb, duration: float = 5.0):
                            prompt=MANUAL_LAST_GEN.get("prompt", ""),
                            seed=MANUAL_LAST_GEN.get("seed"),
                            duration=duration)
+        # Carry the AI-crafted motion prompt onto the new shot so Animate is ready.
+        if MANUAL_CRAFTED.get("motion"):
+            try:
+                mm.set_shot_fields(proj, shot["n"], motion_prompt=MANUAL_CRAFTED["motion"])
+            except Exception:
+                pass
         S.push(f"Added shot {shot['n']} to manual board")
     except Exception as e:
         ui.notify(f"Add failed: {e}", type="negative")
@@ -1932,7 +2221,9 @@ def manual_add_last_to_board(refresh_cb, duration: float = 5.0):
     refresh_cb()
 
 
-def manual_animate_action(shot_n: int, refresh_cb):
+def manual_animate_action(shot_n: int, refresh_cb,
+                          backend_id: Optional[str] = None,
+                          options: Optional[dict] = None):
     proj = _manual_proj()
     if proj is None:
         ui.notify("❌ No manual project.", type="negative")
@@ -1948,12 +2239,13 @@ def manual_animate_action(shot_n: int, refresh_cb):
         return
     if not _try_begin(f"manual animate shot {shot_n}"):
         return
-    S.push(f"Animating manual shot {shot_n}…")
+    S.push(f"Animating manual shot {shot_n} — backend={backend_id or '(active)'}…")
     refresh_cb()
 
     def worker():
         try:
-            clip = mm.animate_shot(proj, shot_n)
+            clip = mm.animate_shot(proj, shot_n,
+                                   backend_id=backend_id, options=options)
             S.push(f"Manual shot {shot_n} animated → {clip.name}")
         except Exception as e:
             S.push(f"Animate failed: {e}")
@@ -2780,6 +3072,38 @@ def main_page():
                 ui.notify(f"Video backend → {vid_sel.value} (settings reset to model defaults)",
                           type="positive")))
 
+        # ---- Lifecycle: restart to load .py edits ----
+        ui.separator()
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            ui.label("♻️ Bot lifecycle").classes("text-sm font-bold opacity-80")
+            ui.label("Python has no hot-reload — restart to load code edits. "
+                     "ComfyUI + Ollama keep running; back in ~15s.") \
+                .classes("text-xs opacity-60")
+
+        def _confirm_restart():
+            with ui.dialog() as dlg, ui.card().classes("rex-card"):
+                ui.label("♻️ Restart the bot?").classes("text-lg font-bold")
+                ui.label("The bot AND this dashboard drop for ~15s while a fresh "
+                         "console relaunches. Any in-flight render is interrupted.") \
+                    .classes("text-xs").style("color:#ffcf5c;")
+                with ui.row().classes("gap-2 justify-end w-full"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                    def _go():
+                        dlg.close()
+                        S.push("♻️ Restart requested from dashboard — relaunching…")
+                        ui.notify("Restarting… this page will drop for ~15s.",
+                                  type="warning")
+                        try:
+                            restart_bot_process()
+                        except Exception as e:
+                            ui.notify(f"Restart failed: {e}", type="negative")
+                    ui.button("Restart now", on_click=_go).props("color=red unelevated")
+            dlg.open()
+        ui.button("♻️ Restart bot", on_click=_confirm_restart) \
+            .props("outline color=red") \
+            .tooltip("Relaunch the bot to load .py edits")
+
     # ============== QUEUE (paused feedback) ==============
     with ui.card().classes("rex-card w-full") as card_queue:
         with ui.row().classes("items-center"):
@@ -3075,13 +3399,20 @@ def main_page():
 
     # ============== MANUAL MODE ==============
     with ui.card().classes("rex-card w-full") as card_manual:
-        with ui.row().classes("items-center"):
-            ui.label("🎛️ Manual Mode").classes("text-xl font-bold")
-            ui.element("span").classes("rex-badge rex-badge-purple") \
-                .style("margin-left: 8px;")._props["innerHTML"] = "DIRECT DRIVE"
-        ui.label("You are the director: pick model, write prompt, build the board "
-                 "shot by shot, animate, narrate, add music, assemble.") \
-            .classes("text-xs opacity-70")
+        ui.html(
+            '<div class="rex-mhero">'
+            '<span class="ico">🎬</span>'
+            '<div><h3>Ad Studio <span class="rex-badge rex-badge-purple" '
+            'style="vertical-align:middle;margin-left:6px;">DIRECT DRIVE</span></h3>'
+            '<p>Describe your ad and let the bot write the prompts, or drive every knob '
+            'yourself — generate stills, animate, narrate, add music, assemble.</p></div>'
+            '</div>')
+
+        def _mstep(n, title, sub="", ai=False):
+            cls = "n ai" if ai else "n"
+            ui.html(f'<div class="rex-mstep"><span class="{cls}">{n}</span>'
+                    f'<span class="t">{title}</span>'
+                    + (f'<span class="s">{sub}</span>' if sub else "") + "</div>")
 
         # ---- project row ----
         with ui.row().classes("w-full gap-2 items-end flex-wrap"):
@@ -3143,10 +3474,48 @@ def main_page():
             ui.button("🗑️ Delete project", on_click=_confirm_delete) \
                 .props("flat color=red").tooltip("Permanently delete the current project")
 
+        # ---- AI ad director ----
+        ui.separator()
+        _mstep("🪄", "Describe your ad", "the bot writes the prompts", ai=True)
+        ui.label("One or two lines about the product/advert. The bot writes an IMAGE "
+                 "prompt in the chosen image model's style + a MOTION prompt in the "
+                 "chosen video model's style.").classes("text-xs opacity-60")
+        manual_brief_in = ui.textarea(
+            label="Ad brief",
+            placeholder="e.g. a premium stainless steel water bottle on a mossy rock "
+                        "by a mountain stream at sunrise, aspirational outdoor brand") \
+            .classes("w-full").props("outlined dark dense autogrow")
+
+        async def _craft():
+            brief = (manual_brief_in.value or "").strip()
+            if not brief:
+                ui.notify("Write a brief first.", type="negative")
+                return
+            proj = _manual_proj()
+            aspect = proj.get("aspect_ratio", "16:9") if proj else "16:9"
+            ibid = None if manual_backend_sel.value == "(active)" else manual_backend_sel.value
+            vbid = (None if MANUAL_VIDEO.get("backend") in (None, "(active)")
+                    else MANUAL_VIDEO.get("backend"))
+            S.push(f"Crafting ad prompts (image={ibid or 'active'}, video={vbid or 'active'})…")
+            try:
+                r = await asyncio.to_thread(adir.craft_ad, brief, ibid, vbid, aspect)
+            except Exception as e:
+                S.push(f"Craft failed: {e}")
+                ui.notify(f"Craft failed: {e}", type="negative")
+                return
+            manual_prompt_in.value = r["image_prompt"]
+            manual_prompt_in.update()
+            manual_negative_in.value = r["negative_prompt"]
+            manual_negative_in.update()
+            MANUAL_CRAFTED["motion"] = r["motion_prompt"]
+            S.push(f"Prompts crafted — image style '{r['image_style']}', "
+                   f"motion style '{r['video_family']}'. Motion carries to new shots.")
+            ui.notify("Prompts ready — review, then Generate image.", type="positive")
+        ui.button("🪄 Craft prompts", on_click=_craft).classes("rex-btn-primary")
+
         # ---- generate section ----
         ui.separator()
-        ui.label("1 · Generate a still (or upload your own)") \
-            .classes("text-sm font-bold opacity-80")
+        _mstep("1", "Generate a still", "or upload your own")
         with ui.row().classes("w-full gap-2 items-end flex-wrap"):
             def _img_backend_opts():
                 try:
@@ -3237,12 +3606,76 @@ def main_page():
 
         # ---- board ----
         ui.separator()
-        ui.label("2 · Storyboard (shots in order)").classes("text-sm font-bold opacity-80")
+        _mstep("2", "Storyboard", "shots in order — animate, narrate, action→clip")
+
+        # Video model + its own knobs. The knob row is REBUILT whenever the model
+        # changes, so each backend reveals only the options it actually has.
+        with ui.row().classes("w-full gap-2 items-end flex-wrap"):
+            def _vid_backend_opts():
+                # Skip backends flagged disabled (broken / inert / not-generic-I2V)
+                # so the operator can't pick one that will only time out.
+                try:
+                    ids = list(
+                        (model_registry.list_available("video_backend") or {}).keys())
+                    keep = []
+                    for bid in ids:
+                        cfg = model_registry.get_available("video_backend", bid) or {}
+                        if cfg.get("disabled"):
+                            continue
+                        keep.append(bid)
+                    return ["(active)"] + keep
+                except Exception:
+                    return ["(active)"]
+            manual_vid_sel = ui.select(_vid_backend_opts(), value="(active)",
+                                       label="Video model (Animate)") \
+                .props("outlined dark dense").style("min-width: 260px;")
+        manual_vid_opts_row = ui.column().classes("w-full gap-1")
+        manual_vid_caption = ui.label("").classes("text-xs opacity-60")
+
+        def _rebuild_vid_opts():
+            bid = manual_vid_sel.value
+            MANUAL_VIDEO["backend"] = None if bid == "(active)" else bid
+            MANUAL_VID_WIDGETS.clear()
+            try:
+                cfg = (model_registry.get_active("video_backend")
+                       if bid == "(active)"
+                       else model_registry.get_available("video_backend", bid)) or {}
+            except Exception:
+                cfg = {}
+            manual_vid_caption.text = (
+                f"{cfg.get('_id', bid)} · max {cfg.get('max_clip_seconds', '?')}s/clip · "
+                f"{cfg.get('description', '')[:90]}")
+            manual_vid_opts_row.clear()
+            with manual_vid_opts_row:
+                with ui.row().classes("w-full gap-2 items-end flex-wrap"):
+                    if "steps" in cfg:
+                        MANUAL_VID_WIDGETS["steps"] = ui.input(
+                            label="Steps", value=str(cfg.get("steps"))) \
+                            .props("outlined dark dense").style("width: 90px;")
+                    if "cfg" in cfg:
+                        MANUAL_VID_WIDGETS["cfg"] = ui.input(
+                            label="CFG", value=str(cfg.get("cfg"))) \
+                            .props("outlined dark dense").style("width: 90px;")
+                    if "default_fps" in cfg:
+                        MANUAL_VID_WIDGETS["fps"] = ui.input(
+                            label="FPS", value=str(cfg.get("default_fps"))) \
+                            .props("outlined dark dense").style("width: 80px;")
+                    if "enable_4steps_lora" in cfg:
+                        MANUAL_VID_WIDGETS["lightning"] = ui.checkbox(
+                            "4-step Lightning LoRA (fast)",
+                            value=bool(cfg.get("enable_4steps_lora", True)))
+                MANUAL_VID_WIDGETS["negative"] = ui.input(
+                    label="Negative prompt (optional — blank = model default)") \
+                    .classes("w-full").props("outlined dark dense")
+
+        manual_vid_sel.on("update:model-value", lambda e: _rebuild_vid_opts())
+        _rebuild_vid_opts()   # build the active backend's knobs on first paint
+
         manual_board_container = ui.column().classes("w-full gap-2")
 
         # ---- music ----
         ui.separator()
-        ui.label("3 · Music (optional, ACE-Step)").classes("text-sm font-bold opacity-80")
+        _mstep("3", "Music", "optional — ACE-Step bed")
         with ui.row().classes("w-full gap-2 items-end flex-wrap"):
             manual_music_tags = ui.input(
                 label="Style tags",
@@ -3258,7 +3691,7 @@ def main_page():
 
         # ---- assemble ----
         ui.separator()
-        ui.label("4 · Assemble").classes("text-sm font-bold opacity-80")
+        _mstep("4", "Assemble", "stitch shots → final MP4s")
         with ui.row().classes("gap-3 items-center flex-wrap"):
             asp_169 = ui.checkbox("16:9", value=True)
             asp_916 = ui.checkbox("9:16", value=False)
@@ -5221,6 +5654,11 @@ def main_page():
                             if clip and clip.exists():
                                 ui.video(_media_url(clip)) \
                                     .style("border-radius: 8px; width: 100%;")
+                            endimg = mm.abs_path(proj, shot.get("end_image"))
+                            if endimg and endimg.exists():
+                                ui.label("→ last frame (flf2v):").classes("text-xs opacity-60")
+                                ui.image(_media_url(endimg)) \
+                                    .style("border-radius: 8px; opacity: 0.9;")
                             ui.label(f"Shot {n} · seed {shot.get('seed') or '—'}") \
                                 .classes("text-xs opacity-75")
                         # Controls
@@ -5252,6 +5690,35 @@ def main_page():
                                         ui.notify(f"Save failed: {ex}", type="negative")
                                 ui.button("💾 Save", on_click=_save).props("flat dense")
 
+                                async def _craft_mot(s=n, mb=mot_box, sh=shot):
+                                    # Scene = this shot's image prompt (fallback: current
+                                    # motion text). Style follows the chosen video model.
+                                    scene = (sh.get("prompt") or mb.value or "").strip()
+                                    if not scene:
+                                        ui.notify("No scene text on this shot — generate "
+                                                  "it from a prompt first, or type a motion.",
+                                                  type="negative")
+                                        return
+                                    vbid = (None if MANUAL_VIDEO.get("backend") in (None, "(active)")
+                                            else MANUAL_VIDEO.get("backend"))
+                                    S.push(f"Crafting motion for shot {s} (video={vbid or 'active'})…")
+                                    try:
+                                        m = await asyncio.to_thread(adir.craft_motion, scene, vbid)
+                                    except Exception as ex:
+                                        S.push(f"Motion craft failed: {ex}")
+                                        ui.notify(f"Motion craft failed: {ex}", type="negative")
+                                        return
+                                    mb.value = m
+                                    mb.update()
+                                    try:
+                                        mm.set_shot_fields(proj, s, motion_prompt=m)
+                                    except Exception:
+                                        pass
+                                    ui.notify(f"Shot {s} motion written.", type="positive")
+                                ui.button("🪄 Motion", on_click=_craft_mot).props("flat dense") \
+                                    .tooltip("Write a motion prompt from THIS shot's scene, "
+                                             "in the chosen video model's style")
+
                                 def _anim(s=n, mb=mot_box, nb=narr_box, db=dur_in):
                                     # Save first so animate uses what's on screen.
                                     try:
@@ -5261,7 +5728,8 @@ def main_page():
                                             duration=float(db.value or 5.0))
                                     except Exception:
                                         pass
-                                    manual_animate_action(s, full_refresh)
+                                    bid, vopts = _manual_video_options()
+                                    manual_animate_action(s, full_refresh, bid, vopts)
                                 ui.button("🎥 Animate", on_click=_anim) \
                                     .props("flat dense color=accent")
 
@@ -5300,6 +5768,157 @@ def main_page():
                                 ui.button("♻️ Use last gen", on_click=_repl).props("flat dense")
                                 ui.button(icon="delete", on_click=_rm) \
                                     .props("flat dense round color=red")
+
+                            # Action → clip: still + action → the SMOOTH LTX i2v two-stage
+                            # graph (the mascot experiment). Plus the keyframe route below.
+                            with ui.row().classes("gap-1 items-center w-full"):
+                                act_in = ui.input(
+                                    placeholder="action / motion, e.g. she lifts the bottle "
+                                                "and smiles") \
+                                    .props("outlined dark dense").classes("flex-1") \
+                                    .tooltip("Describe the motion once, use it either way.")
+
+                                def _actclip(s=n, ab=act_in):
+                                    manual_action_clip_action(s, ab.value or "", full_refresh)
+                                ui.button("🎬 Action → clip", on_click=_actclip) \
+                                    .props("unelevated dense color=accent") \
+                                    .tooltip("SMOOTH: animates the still with this action via "
+                                             "the LTX-2.3 i2v two-stage graph (the mascot "
+                                             "experiment). No keyframes, no frame edits.")
+
+                                def _actframe(s=n, ab=act_in):
+                                    manual_action_frame_action(s, ab.value or "", full_refresh)
+                                ui.button("→ end frame", on_click=_actframe) \
+                                    .props("flat dense") \
+                                    .tooltip("Alternative: edit the still into the end-of-action "
+                                             "frame (Qwen-Edit) for the keyframe/flf2v route below.")
+
+                            # Multi-frame (LTX-2.3 flf2v): optional LAST frame.
+                            with ui.row().classes("gap-1 items-center"):
+                                ui.label("Multi-frame →").classes("text-xs opacity-55") \
+                                    .tooltip("For the LTX-2.3 first-last-frame model: "
+                                             "set an END still; LTX interpolates start→end.")
+
+                                async def _end_up(e, s=n):
+                                    fn = mm.safe_filename(e.file.name)
+                                    tmp = mm.project_dir(proj["_id"]) / "images" / f"eup_{int(time.time())}_{fn}"
+                                    tmp.parent.mkdir(parents=True, exist_ok=True)
+                                    await e.file.save(tmp)
+                                    mm.set_shot_end_image(proj, s, tmp)
+                                    S.push(f"Shot {s}: last frame set ({fn})")
+                                    ui.notify(f"Shot {s} last frame set", type="positive")
+                                    full_refresh()
+                                ui.upload(label="Last frame", auto_upload=True,
+                                          on_upload=_end_up) \
+                                    .props("accept=image/* dense").style("max-width: 190px;")
+
+                                def _end_lastgen(s=n):
+                                    if not MANUAL_LAST_GEN.get("path"):
+                                        ui.notify("Nothing generated yet.", type="negative")
+                                        return
+                                    mm.set_shot_end_image(proj, s, Path(MANUAL_LAST_GEN["path"]))
+                                    S.push(f"Shot {s}: last frame = last gen")
+                                    full_refresh()
+                                ui.button("use last gen", on_click=_end_lastgen).props("flat dense")
+
+                                def _end_clear(s=n):
+                                    mm.set_shot_end_image(proj, s, None)
+                                    full_refresh()
+                                if shot.get("end_image"):
+                                    ui.button("✖", on_click=_end_clear).props("flat dense round") \
+                                        .tooltip("Clear last frame")
+
+                            # In-between keyframes from a description (needs a last frame).
+                            if shot.get("end_image"):
+                                with ui.row().classes("gap-1 items-center w-full"):
+                                    seq_in = ui.input(
+                                        placeholder="(optional) motion note, e.g. she turns "
+                                                    "and lifts the bottle overhead") \
+                                        .props("outlined dark dense").classes("flex-1") \
+                                        .tooltip("Interpolates between YOUR first and last "
+                                                 "frames (both used as references). flf2v "
+                                                 "renders first → middles → last. Note optional.")
+                                    seq_k = ui.number(value=4, min=1, max=6, format="%.0f") \
+                                        .props("outlined dark dense").style("width: 76px;") \
+                                        .tooltip("How many in-between frames (4 = 6 keyframes total)")
+
+                                    def _mkseq(s=n, sb=seq_in, kb=seq_k):
+                                        manual_midframes_action(
+                                            s, sb.value or "", int(kb.value or 1), full_refresh)
+                                    ui.button("🤖 Auto in-betweens", on_click=_mkseq) \
+                                        .props("flat dense color=accent") \
+                                        .tooltip("Generate the in-betweens automatically "
+                                                 "(interpolates between first & last)")
+
+                                    # Add your OWN in-between frame (first & last stay locked).
+                                    async def _add_mid_up(e, s=n):
+                                        fn = mm.safe_filename(e.file.name)
+                                        tmp = mm.project_dir(proj["_id"]) / "images" / f"mup_{int(time.time())}_{fn}"
+                                        tmp.parent.mkdir(parents=True, exist_ok=True)
+                                        await e.file.save(tmp)
+                                        mm.add_mid_image(proj, s, tmp)
+                                        S.push(f"Shot {s}: added an in-between frame ({fn})")
+                                        full_refresh()
+                                    ui.upload(label="➕ Add middle frame", auto_upload=True,
+                                              on_upload=_add_mid_up) \
+                                        .props("accept=image/* dense").style("max-width: 190px;")
+
+                                    def _use_last_as_mid(s=n):
+                                        if not MANUAL_LAST_GEN.get("path"):
+                                            ui.notify("Nothing generated yet.", type="negative")
+                                            return
+                                        mm.add_mid_image(proj, s, Path(MANUAL_LAST_GEN["path"]))
+                                        S.push(f"Shot {s}: added last gen as an in-between")
+                                        full_refresh()
+                                    ui.button("➕ use last gen", on_click=_use_last_as_mid) \
+                                        .props("flat dense")
+
+                                    if shot.get("mid_images"):
+                                        def _clr_mid(s=n):
+                                            mm.clear_midframes(proj, s); full_refresh()
+                                        ui.button(f"✖ clear {len(shot['mid_images'])}",
+                                                  on_click=_clr_mid).props("flat dense") \
+                                            .tooltip("Clear ALL in-between frames")
+                                # preview the in-between frames in order, each with a remove
+                                midrels = shot.get("mid_images") or []
+                                if midrels:
+                                    ui.label("In-between frames (in order) — first & last "
+                                             "are locked:").classes("text-xs opacity-60")
+                                    with ui.row().classes("gap-2 items-start flex-wrap"):
+                                        for _i, mrel in enumerate(midrels):
+                                            mp = mm.abs_path(proj, mrel)
+                                            if not (mp and mp.exists()):
+                                                continue
+                                            with ui.column().classes("items-center gap-0"):
+                                                ui.image(_media_url(mp)) \
+                                                    .style("width: 96px; border-radius: 8px;")
+                                                with ui.row().classes("items-center gap-1"):
+                                                    ui.label(f"Mid {_i+1}").classes("text-xs opacity-70")
+                                                    def _rm_mid(s=n, ix=_i):
+                                                        mm.remove_mid_image(proj, s, ix)
+                                                        full_refresh()
+                                                    ui.button(icon="close", on_click=_rm_mid) \
+                                                        .props("flat dense round size=sm color=red")
+
+                                # Full ACTION CONTACT SHEET: start → in-betweens → end
+                                with ui.row().classes("gap-1 items-center"):
+                                    def _mk_cs(s=n):
+                                        try:
+                                            r = mm.keyframe_contact_sheet(proj, s)
+                                            ui.notify("Contact sheet built."
+                                                      if r else "Need a start + end frame first.",
+                                                      type="positive" if r else "warning")
+                                        except Exception as ex:
+                                            ui.notify(f"Contact sheet failed: {ex}", type="negative")
+                                        full_refresh()
+                                    ui.button("🗂️ Contact sheet", on_click=_mk_cs) \
+                                        .props("flat dense") \
+                                        .tooltip("One image: the whole action — start → "
+                                                 "in-between frames → end, in order")
+                                cs = mm.abs_path(proj, shot.get("contact_sheet"))
+                                if cs and cs.exists():
+                                    ui.image(_media_url(cs)) \
+                                        .style("width:100%;border-radius:10px;margin-top:4px;")
 
         manual_music_container.clear()
         music = mm.abs_path(proj, (proj.get("music") or {}).get("path"))

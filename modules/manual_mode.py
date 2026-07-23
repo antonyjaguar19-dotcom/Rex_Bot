@@ -245,6 +245,9 @@ def add_shot(proj: dict, image_path: Path, prompt: str = "",
         "duration": float(duration),
         "narration": "",
         "narration_audio": None,
+        "end_image": None,      # optional LAST frame for multi-frame (LTX flf2v)
+        "mid_images": [],       # optional IN-BETWEEN keyframes (generated from a description)
+        "contact_sheet": None,  # grid of the action keyframes (start → mids → end)
     }
     if position is not None and 1 <= position <= len(proj["shots"]):
         proj["shots"].insert(position - 1, shot)
@@ -295,6 +298,35 @@ def set_shot_fields(proj: dict, n: int, **fields) -> dict:
     return shot
 
 
+def set_shot_end_image(proj: dict, n: int, image_path: Optional[Path]) -> dict:
+    """Attach (or clear, with None) a shot's END frame for multi-frame video
+    (LTX-2.3 flf2v interpolates start -> end). Clears the stale clip."""
+    shot = get_shot(proj, n)
+    if image_path is None:
+        shot["end_image"] = None
+        shot["clip"] = None
+        shot["contact_sheet"] = None
+        save_project(proj)
+        return shot
+    image_path = Path(image_path)
+    if not image_path.exists():
+        raise FileNotFoundError(f"End image not found: {image_path}")
+    pdir = project_dir(proj["_id"])
+    dest_name = f"end_{int(time.time() * 1000)}{image_path.suffix.lower() or '.png'}"
+    dest = pdir / "images" / dest_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if image_path.resolve() != dest.resolve():
+        shutil.copy2(image_path, dest)
+    shot["end_image"] = f"images/{dest_name}"
+    shot["clip"] = None
+    save_project(proj)
+    try:
+        keyframe_contact_sheet(proj, n)
+    except Exception:
+        pass
+    return shot
+
+
 def replace_shot_image(proj: dict, n: int, image_path: Path,
                        prompt: str = None, seed: Optional[int] = None) -> dict:
     """Swap a shot's still for a new one; clears its stale clip."""
@@ -338,6 +370,7 @@ def generate_image(prompt: str,
                    aspect_ratio: Optional[str] = None,
                    seed: Optional[int] = None,
                    reference_image: Optional[Path] = None,
+                   reference_images: Optional[list] = None,
                    proj: Optional[dict] = None) -> dict:
     """Freeform still generation. Steps/cfg come from runtime_settings overrides
     (same knobs the Settings card writes) — adapters already read those.
@@ -357,14 +390,22 @@ def generate_image(prompt: str,
     aspect = aspect_ratio or "16:9"
 
     kwargs = dict(negative_prompt=negative_prompt, aspect_ratio=aspect, seed=seed)
-    if reference_image:
+    if reference_images:
+        # Multi-reference edit (e.g. Qwen-Image-Edit blending a first + last frame).
+        kwargs["reference_images"] = [Path(p) for p in reference_images]
+        kwargs["reference_image"] = Path(reference_images[0])   # single-ref fallback
+    elif reference_image:
         kwargs["reference_image"] = Path(reference_image)
     try:
         result_path = backend.generate(prompt, **kwargs)
     except TypeError:
-        # Adapter doesn't take reference_image — retry without it.
-        kwargs.pop("reference_image", None)
-        result_path = backend.generate(prompt, **kwargs)
+        # Adapter doesn't take reference_images — drop to single ref, then none.
+        kwargs.pop("reference_images", None)
+        try:
+            result_path = backend.generate(prompt, **kwargs)
+        except TypeError:
+            kwargs.pop("reference_image", None)
+            result_path = backend.generate(prompt, **kwargs)
 
     result_path = Path(result_path)
     used_seed = int(getattr(backend, "_last_seed", seed) or seed)
@@ -379,11 +420,214 @@ def generate_image(prompt: str,
     return {"path": result_path, "seed": used_seed, "backend": backend.backend_id}
 
 
+def action_end_frame(proj: dict, n: int, action: str,
+                     edit_backend_id: str = "comfyui_qwen_edit",
+                     refine: bool = True, seed: Optional[int] = None) -> dict:
+    """Action-image-sequence step: take a shot's SINGLE still + a plain-language
+    action, use an image-EDIT model (default Qwen-Image-Edit) to render the
+    "after the action" frame, and pin it as the shot's END frame. Then a
+    first-last-frame video backend (LTX-2.3 flf2v) interpolates start -> action
+    into a clip.
+
+    refine=True runs the action through the LLM so a loose phrase ('she waves')
+    becomes a clean edit instruction that keeps identity/scene/camera.
+
+    Returns {"end_image": Path, "instruction": str, "seed": int}.
+    """
+    shot = get_shot(proj, n)
+    img = abs_path(proj, shot.get("image"))
+    if not img or not img.exists():
+        raise FileNotFoundError(f"Shot {n} has no still to act on.")
+    action = (action or "").strip()
+    if not action:
+        raise ValueError("Describe the action first.")
+
+    instruction = action
+    if refine:
+        try:
+            from modules import ad_director
+            instruction = ad_director.craft_action(action) or action
+        except Exception as e:
+            log.warning(f"action refine failed ({e}) — using raw action text")
+
+    # Edit the still into the end-of-action frame (identity/scene kept by the
+    # edit model; reference_image carries the original).
+    res = generate_image(
+        prompt=instruction,
+        backend_id=edit_backend_id,
+        aspect_ratio=proj.get("aspect_ratio", "16:9"),
+        seed=seed,
+        reference_image=img,
+        proj=proj,
+    )
+    set_shot_end_image(proj, n, Path(res["path"]))
+    try:
+        keyframe_contact_sheet(proj, n)      # start + (mids) + end, for review
+    except Exception as e:
+        log.warning(f"contact sheet skipped: {e}")
+    log.info(f"Shot {n}: action end-frame via {res['backend']} — '{instruction[:60]}'")
+    return {"end_image": Path(res["path"]), "instruction": instruction,
+            "seed": res["seed"]}
+
+
+def keyframe_contact_sheet(proj: dict, n: int) -> Optional[str]:
+    """Build a contact sheet of a shot's action keyframes in order — first still,
+    any in-between frames, then the last frame — and store the rel path on the shot
+    as `contact_sheet`. Returns the rel path (or None if there's nothing to show)."""
+    shot = get_shot(proj, n)
+    frames, labels = [], []
+    first = abs_path(proj, shot.get("image"))
+    if first and first.exists():
+        frames.append(first); labels.append("Start")
+    mids = shot.get("mid_images") or []
+    for i, mrel in enumerate(mids):
+        mp = abs_path(proj, mrel)
+        if mp and mp.exists():
+            frames.append(mp); labels.append(f"Mid {i+1}")
+    end = abs_path(proj, shot.get("end_image"))
+    if end and end.exists():
+        frames.append(end); labels.append("End")
+
+    if len(frames) < 2:      # nothing to contact-sheet yet
+        shot["contact_sheet"] = None
+        save_project(proj)
+        return None
+
+    from modules import contact_sheet
+    pdir = project_dir(proj["_id"])
+    out = pdir / "images" / f"contact_shot{n}_{int(time.time())}.png"
+    contact_sheet.build_contact_sheet(frames, out, shot_labels=labels, tile_width=360)
+    shot["contact_sheet"] = f"images/{out.name}"
+    save_project(proj)
+    log.info(f"Shot {n}: action contact sheet ({len(frames)} frames) → {out.name}")
+    return shot["contact_sheet"]
+
+
+def generate_midframes(proj: dict, n: int, description: str, k: int = 1,
+                       edit_backend_id: str = "comfyui_qwen_edit") -> dict:
+    """Keyframe-sequence step: given a shot with a FIRST still (image) and a LAST
+    still (end_image) plus a MOTION description, generate k in-between keyframes by
+    editing the first still toward evenly-spaced progress points, and store them on
+    the shot as `mid_images`. A first-last-frame video backend (LTX-2.3 flf2v) then
+    interpolates through first → mid_1 … mid_k → last.
+
+    Returns {"mid_images": [Path,...], "instructions": [str,...]}.
+    """
+    shot = get_shot(proj, n)
+    first = abs_path(proj, shot.get("image"))
+    if not first or not first.exists():
+        raise FileNotFoundError(f"Shot {n} has no first still.")
+    last = abs_path(proj, shot.get("end_image"))
+    if not last or not last.exists():
+        raise ValueError(f"Shot {n} needs a LAST frame first (set the end frame).")
+    description = (description or "").strip()
+
+    from modules import ad_director
+    instructions = ad_director.craft_midframes(description, k)
+
+    rels, paths = [], []
+    for i, instr in enumerate(instructions):
+        # Give the edit model BOTH frames (image 1 = start, image 2 = end) so each
+        # in-between is a true interpolation between the two stills you provided —
+        # not just an edit of the first frame.
+        res = generate_image(
+            prompt=instr, backend_id=edit_backend_id,
+            aspect_ratio=proj.get("aspect_ratio", "16:9"),
+            reference_images=[first, last], proj=proj,
+        )
+        src = Path(res["path"])
+        pdir = project_dir(proj["_id"])
+        dest = pdir / "images" / f"mid_{int(time.time() * 1000)}_{i}{src.suffix or '.png'}"
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        rels.append(f"images/{dest.name}")
+        paths.append(dest)
+        log.info(f"Shot {n}: mid-frame {i+1}/{len(instructions)} — '{instr[:50]}'")
+
+    shot["mid_images"] = rels
+    shot["clip"] = None
+    save_project(proj)
+    try:
+        keyframe_contact_sheet(proj, n)      # start + mids + end, in order
+    except Exception as e:
+        log.warning(f"contact sheet skipped: {e}")
+    return {"mid_images": paths, "instructions": instructions}
+
+
+def clear_midframes(proj: dict, n: int) -> None:
+    shot = get_shot(proj, n)
+    shot["mid_images"] = []
+    shot["clip"] = None
+    save_project(proj)
+    try:
+        keyframe_contact_sheet(proj, n)      # rebuild (start+end only, or clears)
+    except Exception:
+        pass
+
+
+def add_mid_image(proj: dict, n: int, image_path: Path,
+                  position: Optional[int] = None) -> dict:
+    """Manually add an IN-BETWEEN keyframe still (uploaded by the operator). Appended
+    in order, or inserted at 1-based `position`. First (image) and last (end_image)
+    stay locked — this only fills the middle. Rebuilds the contact sheet."""
+    shot = get_shot(proj, n)
+    image_path = Path(image_path)
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    pdir = project_dir(proj["_id"])
+    dest_name = f"mid_{int(time.time() * 1000)}{image_path.suffix.lower() or '.png'}"
+    dest = pdir / "images" / dest_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if image_path.resolve() != dest.resolve():
+        shutil.copy2(image_path, dest)
+    mids = shot.setdefault("mid_images", [])
+    rel = f"images/{dest_name}"
+    if position is not None and 1 <= position <= len(mids):
+        mids.insert(position - 1, rel)
+    else:
+        mids.append(rel)
+    shot["clip"] = None
+    save_project(proj)
+    try:
+        keyframe_contact_sheet(proj, n)
+    except Exception:
+        pass
+    return shot
+
+
+def remove_mid_image(proj: dict, n: int, idx: int) -> dict:
+    """Remove one in-between keyframe by 0-based index. Rebuilds the contact sheet."""
+    shot = get_shot(proj, n)
+    mids = shot.get("mid_images") or []
+    if 0 <= idx < len(mids):
+        mids.pop(idx)
+        shot["mid_images"] = mids
+        shot["clip"] = None
+        save_project(proj)
+        try:
+            keyframe_contact_sheet(proj, n)
+        except Exception:
+            pass
+    return shot
+
+
 def animate_shot(proj: dict, n: int, motion_prompt: Optional[str] = None,
-                 seed: Optional[int] = None) -> Path:
-    """Animate one shot's still via the ACTIVE video backend (I2V). Duration
-    capped at the model's max_clip_seconds (no chaining in manual mode —
-    keep it one honest take; raise the shot count instead)."""
+                 seed: Optional[int] = None,
+                 backend_id: Optional[str] = None,
+                 options: Optional[dict] = None) -> Path:
+    """Animate one shot's still via a video backend (I2V). Duration capped at
+    the model's max_clip_seconds (no chaining in manual mode — keep it one
+    honest take; raise the shot count instead).
+
+    backend_id: which video backend to drive (None = the active one).
+    options: per-backend knob overrides, overlaid onto the backend config
+             BEFORE it loads (so the adapter reads them at __init__). Keys:
+               steps          -> steps / steps_full
+               cfg            -> cfg          (also passed as cfg_override)
+               fps            -> default_fps
+               lightning_lora -> enable_4steps_lora (Wan 14B; also passed through)
+               negative       -> negative prompt (generate kwarg)
+    """
     shot = get_shot(proj, n)
     img = abs_path(proj, shot["image"])
     if not img or not img.exists():
@@ -397,8 +641,39 @@ def animate_shot(proj: dict, n: int, motion_prompt: Optional[str] = None,
         raise ValueError(f"Motion prompt blocked: {', '.join(blocked[:5])}")
 
     from modules import video_backend as vb
-    backend = vb.get_active_backend()
-    cfg = backend.config
+    if backend_id:
+        cfg = model_registry.get_available("video_backend", backend_id)
+        if cfg is None:
+            raise ValueError(f"Unknown video backend: {backend_id}")
+    else:
+        cfg = model_registry.get_active("video_backend")
+        if cfg is None:
+            raise ValueError("No active video backend configured.")
+
+    if cfg.get("disabled"):
+        reason = cfg.get("_disabled_reason") or "flagged disabled in models.json"
+        raise ValueError(
+            f"Video backend '{cfg.get('_id')}' is disabled — {reason[:160]} "
+            f"Pick another (Wan 2.2 14B works on this card).")
+
+    options = options or {}
+    negative = None
+    # Overlay the chosen knobs onto the config the adapter reads at load. cfg is
+    # a fresh copy from the registry (get_available/get_active dict-copy), so this
+    # never mutates models.json.
+    if options.get("steps") is not None:
+        cfg["steps"] = int(options["steps"])
+        cfg["steps_full"] = int(options["steps"])   # Wan 14B full-path key
+    if options.get("cfg") is not None:
+        cfg["cfg"] = float(options["cfg"])
+    if options.get("fps") is not None:
+        cfg["default_fps"] = int(options["fps"])
+    if options.get("lightning_lora") is not None:
+        cfg["enable_4steps_lora"] = bool(options["lightning_lora"])
+    if options.get("negative"):
+        negative = str(options["negative"]).strip() or None
+
+    backend = vb.build_backend(cfg)
     fps = int(cfg.get("default_fps", 16))
     max_sec = float(cfg.get("max_clip_seconds", 5.0))
     want_sec = min(float(shot.get("duration", DEFAULT_SHOT_SECONDS)), max_sec)
@@ -408,14 +683,65 @@ def animate_shot(proj: dict, n: int, motion_prompt: Optional[str] = None,
     if seed is None:
         seed = random.randint(1, 2**31 - 1)
 
-    result = backend.generate(
+    gen_kwargs = dict(
         prompt=motion,
         input_image=img,
+        negative_prompt=negative,
         frame_count=frame_count,
         fps=fps,
         aspect_ratio=proj.get("aspect_ratio", "16:9"),
         seed=seed,
     )
+    # Match the OUTPUT dims to the first still's real aspect ratio (rounded to LTX's
+    # 32-pixel stride, long edge capped for VRAM). Without this a wide/tall source is
+    # cropped/squished into the project's preset aspect — "the whole look is off".
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(img) as _im:
+            _iw, _ih = _im.size
+        _cap = 1344   # long-edge cap (multiple of 32; VRAM-safe for the two-stage path)
+        _sc = min(1.0, _cap / max(_iw, _ih))
+        _ow = max(256, int(round(_iw * _sc / 32)) * 32)
+        _oh = max(256, int(round(_ih * _sc / 32)) * 32)
+        gen_kwargs["width"] = _ow
+        gen_kwargs["height"] = _oh
+        log.info(f"Shot {n}: matching source aspect {_iw}x{_ih} -> render {_ow}x{_oh}")
+    except Exception as _e:
+        log.warning(f"aspect match skipped ({_e}); using preset aspect")
+    # Multi-frame backends (LTX-2.3 flf2v) interpolate to a LAST frame — pass the
+    # shot's end still when it has one. Backends without the kwarg ignore it
+    # (TypeError fallback below).
+    end_rel = shot.get("end_image")
+    end_abs = abs_path(proj, end_rel) if end_rel else None
+    if end_abs and end_abs.exists():
+        gen_kwargs["end_image"] = end_abs
+    # In-between keyframes (flf2v multi-frame): pass any that exist on disk.
+    mids = []
+    for mrel in (shot.get("mid_images") or []):
+        mabs = abs_path(proj, mrel)
+        if mabs and mabs.exists():
+            mids.append(mabs)
+    if mids:
+        gen_kwargs["mid_images"] = mids
+    # Audio-driven backends (LTX-2.3 ia2v) lip-sync to the shot's narration.
+    narr_rel = shot.get("narration_audio")
+    narr_abs = abs_path(proj, narr_rel) if narr_rel else None
+    if narr_abs and narr_abs.exists():
+        gen_kwargs["audio_path"] = narr_abs
+    # Backends that accept per-call overrides (Wan 14B) get the exact cfg/lora;
+    # others read them off the overlaid config and ignore these kwargs.
+    if options.get("cfg") is not None:
+        gen_kwargs["cfg_override"] = float(options["cfg"])
+    if options.get("lightning_lora") is not None:
+        gen_kwargs["lora_4step_override"] = bool(options["lightning_lora"])
+    try:
+        result = backend.generate(**gen_kwargs)
+    except TypeError:
+        # Progressive fallback: strip kwargs the chosen backend doesn't accept.
+        for k in ("cfg_override", "lora_4step_override", "end_image", "audio_path",
+                  "mid_images", "width", "height"):
+            gen_kwargs.pop(k, None)
+        result = backend.generate(**gen_kwargs)
     result = Path(result)
 
     pdir = project_dir(proj["_id"])
@@ -425,6 +751,7 @@ def animate_shot(proj: dict, n: int, motion_prompt: Optional[str] = None,
 
     shot["motion_prompt"] = motion
     shot["clip"] = f"clips/{dest.name}"
+    shot["video_backend"] = cfg.get("_id")
     save_project(proj)
     return dest
 
