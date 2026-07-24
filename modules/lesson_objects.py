@@ -85,6 +85,67 @@ def detect(text: str, objects: list) -> list:
     return out
 
 
+# A hand action near a mention means THAT is the mention to keep — the object is meant to be
+# in her hands, not lying on a table as well.
+_HELD_NEAR = re.compile(
+    r"\b(?:holding|carrying|showing|offering|lifting|handing|presenting|cradling|"
+    r"gripping|clutching|in\s+(?:her|his)\s+hand)\b", re.I)
+
+
+def one_mention_per_object(scene: str, objects: list) -> str:
+    """One object, ONE mention. Asked for a ball twice, a model draws two balls.
+
+    Measured: the writer produced "...a table where a small faceless blue rubber ball and a
+    real live golden Labrador puppy sit beside each other, holding up a small bright blue
+    rubber play ball..." — the ball placed AND held. Both Qwen-Edit 2509 and 2511 rendered
+    two balls, correctly: the sentence ordered two.
+
+    The mention kept is the HELD one (that is what a lesson shot wants — the prop in her
+    hand); with no held mention the first survives. Every other mention has its noun phrase
+    (article + up to five adjectives + the noun) cut out, and a stranded "and" is swept up.
+    Whole-word and plural-folded, using the object's own noun + aliases — so the 'doll' whose
+    desc is now a ball and whose aliases are ball/block/toy is matched however it was written.
+    """
+    s = scene or ""
+    if not s.strip() or not objects:
+        return scene
+    for obj in objects:
+        names = [re.escape(n) for n in _names(obj) if n]
+        if not names:
+            continue
+        pat = re.compile(r"\b(?:" + "|".join(names) + r")s?\b", re.I)
+        hits = list(pat.finditer(s))
+        if len(hits) < 2:
+            continue
+        # which mention survives: the held one, else the first
+        keep = hits[0]
+        for h in hits:
+            window = s[max(0, h.start() - 60):h.start()]
+            if _HELD_NEAR.search(window):
+                keep = h
+                break
+        # cut the OTHER mentions, noun phrase and all, back-to-front so offsets hold
+        for h in reversed(hits):
+            if h.start() == keep.start():
+                continue
+            phrase = re.compile(
+                r"(?:\b(?:a|an|the)\s+)?(?:(?!and\b)[\w-]+\s+){0,5}$")
+            m = phrase.search(s[:h.start()])
+            cut_from = m.start() if m else h.start()
+            s = s[:cut_from] + s[h.end():]
+        log.info("scene named %r more than once — kept one mention", obj.get("noun"))
+    # a cut can strand the "and" that joined the two objects, either at the head of a clause
+    # ("..., and a puppy sit beside each other") or straight after the preposition that
+    # introduced them ("in front of a table where and a puppy sit beside each other").
+    s = re.sub(r",\s*and\s+", ", ", s)
+    s = re.sub(r"\b(where|with|of|in|on|at|beside|near|holding|showing)\s+and\s+",
+               r"\1 ", s, flags=re.I)
+    s = re.sub(r"\band\s+and\b", "and", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s)
+    s = re.sub(r",\s*,", ",", s).strip(" ,")
+    return s
+
+
 def _by_key(objects: list, key: str) -> Optional[dict]:
     return next((o for o in (objects or []) if o.get("key") == key), None)
 

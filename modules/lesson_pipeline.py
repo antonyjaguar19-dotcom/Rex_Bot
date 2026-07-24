@@ -207,10 +207,23 @@ def _scene_and_refs(lesson: dict, i: int, mid: str, _p=lambda m: None) -> tuple:
     from modules import lesson_objects as lo
     MAX_REFS = 3        # Qwen-Edit image1..image3 (comfyui_qwen_edit.MAX_REFS)
 
-    orig_scene = lesson["beats"][i].get("mascot_scene", "")
-    scene_text = orig_scene
     lesson_id = lesson.get("lesson_id")
     objects = lo.objects_for(lesson)
+
+    # SCENE HYGIENE — the model draws the sentence it is GIVEN, so the sentence has to be
+    # right before anything else reads it. Both Qwen-Edit 2509 and 2511 were A/B'd on one
+    # beat and drew the same three faults, because all three were in the text:
+    #   • "…a ball and a puppy sit beside each other, holding up a ball" — a dangling hand
+    #     action attaches to the PUPPY, so the dog was drawn with a hand offering the ball.
+    #   • the ball named TWICE (placed AND held) — so two balls were drawn.
+    #   • "pointing at the puppy with the," — a truncated clause, whose missing noun the
+    #     sampler invents (swept up by mascot._tidy, which both guards exit through).
+    # Applied to the ORIGINAL scene, before detect/cast read it, so the object detector and
+    # the person detector see the same corrected words the renderer will.
+    orig_scene = mascot.action_belongs_to_mascot(
+        lesson["beats"][i].get("mascot_scene", ""))
+    orig_scene = lo.one_mention_per_object(orig_scene, objects)
+    scene_text = orig_scene
     delivered = lc.delivered_blank()
     delivered["framing"] = lesson["beats"][i].get("framing", "medium")
 

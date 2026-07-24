@@ -54,9 +54,14 @@ COMFY_INPUT = COMFY_ROOT / "input"
 COMFY_OUTPUT = COMFY_ROOT / "output"
 COMFY_URL = "http://127.0.0.1:8188"
 
-UNET_NAME = "qwen_image_edit_2509_fp8_e4m3fn.safetensors"
+# 2511 (Dec 2025) over 2509: better character consistency, less image drift, stronger
+# geometric reasoning — chosen after an A/B on the same lesson beat + seed. Same CLIP/VAE,
+# same ~20 GB fp8 footprint, Apache-2.0. The 2509 file stays on disk; revert by name.
+UNET_NAME = "qwen_image_edit_2511_fp8mixed.safetensors"
 CLIP_NAME = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE_NAME = "qwen_image_vae.safetensors"
+# Lessons render full-quality (use_lightning=False), so this 2509 Lightning LoRA is not on
+# the lesson path; kept for any fast-preview caller until a 2511 Lightning LoRA is installed.
 LIGHTNING_LORA = "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors"
 
 # The 4-step Lightning LoRA runs at cfg 1.0 (distilled guidance). Without it,

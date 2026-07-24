@@ -1202,6 +1202,16 @@ def _tidy(scene: str) -> str:
     # one hand raised"). Harmless to a diffusion model, but it reads as a bug in the log
     # and the log is how anyone ever notices these.
     out = re.sub(r"\b(?:with|and|holding|beside)\s*,", ",", out)
+    # ...and a TRUNCATED clause keeps its article: "pointing at the puppy with the," is what
+    # the writer actually produced, and the sampler resolved the missing noun by inventing
+    # one. Same cut, one determiner further along.
+    # Only a DETERMINER WITH NO NOUN is a truncation. "beside her," is a complete phrase and
+    # must survive — an earlier version of this ate it, which is exactly the manglings these
+    # guards exist to prevent.
+    out = re.sub(r"\b(?:with|and|holding|beside|at|in|on|of|to|toward|towards)"
+                 r"\s+(?:the|a|an)\s*,", ",", out)
+    out = re.sub(r",\s*\b(?:with|and|at|in|on|of|to|holding|beside)"
+                 r"(?:\s+(?:the|a|an))?\s*$", "", out)
     out = re.sub(r",\s*,", ",", out).strip(" ,")
     if out and _SUBJECT not in out.lower():
         out = f"{_SUBJECT} {out}"
@@ -1336,6 +1346,41 @@ _NEGATED = re.compile(
     r"|\bnot\s+holding\s+[^,.]*"                        # "not holding anything at all"
     r"|\bwithout\s+(?:a\s+|an\s+|any\s+)?\w+"           # "without a toy"
     r"|\bnothing\s+in\s+(?:her\s+)?hands?", re.I)
+
+
+# A HAND ACTION BELONGS TO THE MASCOT — she is the only one in a lesson shot with hands.
+# Measured: the writer produced "...a ball and a puppy sit beside each other, holding up a
+# small ball ... with one hand". English attaches a dangling participle to the NEAREST
+# subject, so "holding up" landed on the PUPPY — and both Qwen-Edit 2509 and 2511 drew a dog
+# with a hand offering the ball. The model obeyed the sentence; the sentence was wrong.
+# Only hand verbs are listed: an animal clause ("the puppy, wagging its tail", "scratching
+# its belly") must keep its own action — see alive_looks_alive for why animals are not props.
+_HAND_ACTION = re.compile(
+    r"^(?:and\s+)?(?:holding|carrying|showing|offering|pointing|lifting|handing|"
+    r"presenting|cradling|gripping|reaching|clutching)\b", re.I)
+
+
+def action_belongs_to_mascot(scene: str) -> str:
+    """Say WHO is holding. Any clause that starts with a hand action is bound to the mascot.
+
+    Explicit is never wrong here — the mascot IS the holder — and leaving it implicit is how
+    a dog ends up with a hand. Clause-scoped, and it only touches clauses whose FIRST word is
+    a hand verb, so a clause that already names its subject is left exactly as written.
+    """
+    s = scene or ""
+    if not s.strip():
+        return scene
+    out, changed = [], False
+    for clause in s.split(","):
+        c = clause.strip()
+        if c and _HAND_ACTION.match(c) and _SUBJECT not in c.lower():
+            c = re.sub(r"^(?:and\s+)?", "", c, count=1, flags=re.I)
+            c = f"{_SUBJECT} {c}"
+            changed = True
+        out.append(c)
+    if changed:
+        log.info("scene left a hand action dangling — bound it to the mascot")
+    return _tidy(", ".join(x for x in out if x))
 
 
 def holds_a_prop(scene: str) -> bool:
