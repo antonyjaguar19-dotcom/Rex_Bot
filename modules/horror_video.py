@@ -74,6 +74,7 @@ def render_shot_clips(
     aspect_ratio: str = "16:9",
     progress_cb: Optional[Callable[[str], None]] = None,
     fill_mode: str = "freeze",
+    backend=None,
 ) -> list[Path]:
     """One Wan I2V clip per beat, fit to its narration window. Returns per-beat
     clip paths (same order/length as beats). `fill_mode`: 'freeze' (hold last
@@ -86,7 +87,9 @@ def render_shot_clips(
 
     horror_id = story.get("horror_id") or story.get("_id")
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    be = video_backend.get_active_backend()
+    # A caller may PIN the model it was tuned against (lessons animate on Wan 2.2) instead of
+    # following the global active backend, which manual/facts work may have switched.
+    be = backend if backend is not None else video_backend.get_active_backend()
     fps = int(getattr(be, "default_fps", DEFAULT_FPS) or DEFAULT_FPS)
 
     clips = []

@@ -117,6 +117,18 @@ def get_active_backend() -> VideoBackend:
     return build_backend(model_registry.get_active("video_backend"))
 
 
+def get_named_backend(backend_id: str) -> VideoBackend:
+    """Load a SPECIFIC video backend by registry id (not the active one).
+
+    Mirrors image_backend.get_named_backend. Lets a mode PIN the model it was tuned
+    against — lessons are animated on Wan 2.2 — without touching the global active
+    backend that manual/facts may switch to something else. Raises if the id is unknown."""
+    cfg = model_registry.get_available("video_backend", backend_id)
+    if not cfg:
+        raise ValueError(f"Video backend '{backend_id}' not found in registry")
+    return build_backend(cfg)
+
+
 # ==============================================================================
 # Standalone test
 # ==============================================================================

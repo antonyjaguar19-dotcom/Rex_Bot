@@ -951,9 +951,21 @@ def render_lesson(lesson_id: str,
                    "beats": [dict(beats[i], motion_prompt=(
                        beats[i].get("motion_prompt") or default_motion(beats[i])))
                        for i in ticked]}
+            # PIN the lesson's video model (Wan 2.2 by default). Lessons are tuned and
+            # measured against it — A/B'd on one still/prompt/seed, HunyuanVideo 1.5 at 720p
+            # took 1964s against Wan's 471s — and the GLOBAL active backend is shared with
+            # manual/facts work, which may have switched it to something a lesson was never
+            # checked on. Falls back to the active backend if the pinned id is not installed.
+            _vb = None
+            try:
+                from modules import video_backend as _vbmod
+                from modules import runtime_settings as _rs2
+                _vb = _vbmod.get_named_backend(_rs2.get_lesson_video_backend())
+            except Exception as e:
+                _p(f"⚠️ pinned lesson video model unavailable ({e}); using the active one")
             made = horror_video.render_shot_clips(
                 sub, [stills[i] for i in ticked], [durations[i] for i in ticked],
-                aspect_ratio="16:9", progress_cb=_p, fill_mode="retime")
+                aspect_ratio="16:9", progress_cb=_p, fill_mode="retime", backend=_vb)
             for n, i in enumerate(ticked):
                 dst = clips_dir / f"clip_{i:02d}.mp4"
                 shutil.copyfile(made[n], dst)

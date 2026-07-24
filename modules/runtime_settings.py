@@ -792,6 +792,24 @@ def set_lesson_mascot(mascot_id: str) -> None:
     data = _load(); data["lesson_mascot"] = mascot_id; _save(data)
 
 
+def get_lesson_video_backend() -> str:
+    """Which video model ANIMATES lesson beats (default Wan 2.2 14B).
+
+    Pinned for lessons, like get_lesson_image_backend/get_lesson_mascot, so switching the
+    GLOBAL active backend for manual or facts work cannot silently change what a lesson
+    animates on. Wan is the measured choice: A/B'd on the same still, prompt and seed,
+    HunyuanVideo 1.5 at 720p took 1964s vs Wan's 471s, and its fast 480p path was rejected
+    on resolution. Falls back to the global active backend if this id is not in the registry."""
+    return (_load().get("lesson_video_backend") or "comfyui_wan22_14B").strip()
+
+
+def set_lesson_video_backend(backend_id: str) -> None:
+    backend_id = (backend_id or "").strip()
+    if not backend_id:
+        raise ValueError("lesson video backend id is empty")
+    data = _load(); data["lesson_video_backend"] = backend_id; _save(data)
+
+
 def get_lesson_lipsync() -> bool:
     """Lip-sync animated lesson beats (Wan body → LatentSync mouth). Default ON.
 
