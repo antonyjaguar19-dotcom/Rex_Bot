@@ -1212,6 +1212,15 @@ def _tidy(scene: str) -> str:
                  r"\s+(?:the|a|an)\s*,", ",", out)
     out = re.sub(r",\s*\b(?:with|and|at|in|on|of|to|holding|beside)"
                  r"(?:\s+(?:the|a|an))?\s*$", "", out)
+    # A preposition sitting straight on a comma is a mid-sentence truncation with no object
+    # ("a horse running across fields in, warm smile") — the model resolves the missing noun
+    # by inventing one. Drop the stranded preposition.
+    out = re.sub(r"\b(?:in|on|at|of|to|with|for|by|from|into|onto|toward|towards)\s*,",
+                 ",", out)
+    # ...and a function word left dangling at the very END ("her hands empty and").
+    out = re.sub(r"[\s,]+(?:and|but|or|with|in|on|at|of|to|for|by|from|as|beside|near|"
+                 r"holding|showing|carrying)[\s,]*$", "", out, flags=re.I)
+    out = re.sub(r"\s+,", ",", out)
     out = re.sub(r",\s*,", ",", out).strip(" ,")
     if out and _SUBJECT not in out.lower():
         out = f"{_SUBJECT} {out}"
@@ -1381,6 +1390,48 @@ def action_belongs_to_mascot(scene: str) -> str:
     if changed:
         log.info("scene left a hand action dangling — bound it to the mascot")
     return _tidy(", ".join(x for x in out if x))
+
+
+# THE PHANTOM APPLE, now coming from the WRITER not the sampler. Qwen has always bled an
+# apple into a free hand (banned in STYLE_TEACHING, see IMAGE_FEEDBACK.md), but the scene
+# WRITER also reaches for one — a lesson about living things came back "holding a small apple
+# in one hand". Narrow on purpose: only the documented fruit ghost is stripped, and only when
+# the lesson does NOT actually name that fruit. A bird eating a nut or a horse running are
+# legitimate "things eat / things move" examples and are LEFT ALONE — a guard that deleted
+# every noun the writer chose would gut the teaching.
+_GHOST_FRUIT = ("apple", "apples", "banana", "bananas", "orange", "oranges", "pear", "pears",
+                "fruit", "fruits")
+
+
+def drop_invented_fruit(scene: str, allowed_nouns: Optional[list] = None) -> str:
+    """Strip a held fruit the lesson never asked for. Clause-scoped, article and adjectives
+    and all, so 'holding a small red apple in one hand' leaves cleanly; the rest of the scene
+    is untouched. A fruit the lesson DOES name (allowed_nouns) is kept."""
+    s = scene or ""
+    if not s.strip():
+        return scene
+    allowed = {(n or "").lower() for n in (allowed_nouns or [])}
+    ghosts = [g for g in _GHOST_FRUIT if g not in allowed and g.rstrip("s") not in allowed]
+    if not ghosts:
+        return scene
+    # Excise the FRUIT'S NOUN PHRASE only — its article, up to three adjectives, the fruit,
+    # an optional "in one/her hand", and a trailing "and" or "holding" that joined it to the
+    # next thing — so "holding a small apple in one hand and a bird..." leaves "holding a
+    # bird...", keeping the (valid) bird. Clause-dropping would take the bird with it.
+    frac = r"(?:" + "|".join(ghosts) + r")"
+    np = re.compile(
+        r"\b(?:holding|carrying|with)?\s*(?:a|an|the)\s+(?:(?!and\b)\w+\s+){0,3}" + frac +
+        r"(?:\s+in\s+(?:one|her|his|its)\s+hands?)?"
+        r"(?:\s+and\b|\s+holding\b)?", re.I)
+    if not np.search(s):
+        return scene
+    log.info("scene invented a fruit the lesson never named — excised it")
+    out = np.sub(" ", s)
+    cleaned = _tidy(out)
+    # never delete the whole scene down to nothing, and never strand the mascot empty-handed
+    if not cleaned or _SUBJECT not in cleaned.lower():
+        return scene
+    return cleaned
 
 
 def holds_a_prop(scene: str) -> bool:
@@ -1943,6 +1994,9 @@ def explainer_scene(fact: str, topic: str = "", context: str = "",
             # character is gone. Telling the model not to is not enough; this is the
             # check.
             scene = clean_scene_for_the_mascot(scene, teaching=teaching)
+            if teaching:
+                # the writer's own phantom fruit — only if this lesson never named it
+                scene = drop_invented_fruit(scene, object_nouns)
             bad = scene_violation(scene)
             if not bad:
                 log.info(f"Mascot explainer scene: {scene}")

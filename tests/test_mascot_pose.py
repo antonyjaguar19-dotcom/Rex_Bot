@@ -883,3 +883,32 @@ def test_the_doll_is_a_faceless_ball():
 
     for banned in ("a face on the toy", "creepy doll", "living doll", "voodoo doll"):
         assert banned in mas.NEGATIVE_PRESENTER, banned
+
+
+def test_writer_phantom_fruit_is_excised_but_valid_examples_survive():
+    # The scene WRITER (not the sampler) reached for a phantom apple in a living-things
+    # lesson: "holding a small apple in one hand and a bird with a nut in its beak". The
+    # apple is the documented ghost and the lesson never named it — but the bird eating a
+    # nut is a legitimate "living things eat" example and MUST survive. Clause-dropping took
+    # the bird with the apple; noun-phrase excision keeps it.
+    scene = ("the mascot character holding a small apple in one hand and a bird with a nut "
+             "in its beak beside her, warm friendly smile")
+    out = mas.drop_invented_fruit(scene, ["puppy", "doll"])
+    assert "apple" not in out.lower()
+    assert "bird" in out.lower()                 # the valid example is untouched
+    assert "mascot character" in out.lower()
+    # a lesson that actually names the fruit keeps it
+    assert "apple" in mas.drop_invented_fruit(
+        "the mascot character holding a red apple, smiling", ["apple", "tree"]).lower()
+    # a scene with no phantom fruit is returned unchanged
+    clean = "the mascot character holding a blue ball, a puppy beside her, smiling"
+    assert mas.drop_invented_fruit(clean, ["puppy", "ball"]) == clean
+
+
+def test_tidy_drops_dangling_truncations_but_keeps_valid_phrases():
+    # A preposition sitting on a comma ("across fields in,") and a function word left at the
+    # very end ("her hands empty and") are truncations whose missing noun the sampler
+    # invents. They go; a real "in one hand" stays.
+    assert "fields in," not in mas._tidy("a horse running across fields in, warm smile")
+    assert not mas._tidy("the mascot character, her hands empty and").rstrip().endswith("and")
+    assert "in one hand" in mas._tidy("the mascot character holding a ball in one hand, smiling")
